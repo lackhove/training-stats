@@ -1,0 +1,25 @@
+# Quadlet unit (rootless podman). The <repo-root> placeholders are replaced
+# with the absolute repository path at install time; see README.md
+# ("Podman deployment (Quadlet)").
+
+[Unit]
+Description=Training Coach MCP server
+
+[Container]
+Image=localhost/training-coach-mcp:latest
+ContainerName=training-coach-mcp
+Network=training-mcp.network
+EnvironmentFile=<repo-root>/.env
+Volume=<repo-root>/config.toml:/app/config/config.toml:ro
+Volume=<repo-root>/data:/app/data
+Volume=/path/to/activities:/data/activities:ro
+# No PublishPort: the MCP is reachable only from containers on the shared
+# training-mcp network. For same-host-only access from outside containers,
+# add PublishPort=127.0.0.1:<port>:<port>.
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

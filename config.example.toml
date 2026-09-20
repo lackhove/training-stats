@@ -1,0 +1,71 @@
+# Example configuration for training-coach-mcp.
+# Copy to config.toml and adjust. Secrets never belong in this file:
+# they are read from environment variables (see .env.example).
+
+[application]
+name = "training-coach-mcp"
+log_level = "INFO"
+timezone = "Europe/Berlin"
+
+[cache]
+directory = "./data/cache"
+lock_timeout_seconds = 30
+# High-frequency FIT record data is never persisted; retained only in memory
+# during processing. Coarse derived aggregates (5-bpm HR histogram,
+# 10-minute weighted HR averages) are stored in activity_metrics.parquet.
+retain_time_series = false
+
+[athlete]
+max_heart_rate = 180
+resting_heart_rate = 55
+# Optional:
+# primary_goal = "Improve aerobic base"
+# weight_kg = 80.0
+# ftp_watts = 220
+
+[athlete.heart_rate_zones]
+z1_min = 90
+z1_max = 108
+z2_min = 109
+z2_max = 126
+z3_min = 127
+z3_max = 144
+z4_min = 145
+z4_max = 162
+z5_min = 163
+z5_max = 180
+
+[quality]
+moving_speed_threshold_mps = 1.0
+decoupling_min_duration_s = 1200.0
+decoupling_min_coverage = 0.80
+
+# ----- Input sources ---------------------------------------------------------
+# Multiple sources are supported; every entry is active.
+
+[[sources]]
+name = "garmin-local"
+type = "local"
+# Local source: point at a folder containing FIT files. In Docker/Podman,
+# mount your host folder at /data/activities (see docker-compose.yml).
+path = "/data/activities"
+recursive = true
+# follow_symlinks = false
+
+[[sources]]
+name = "nextcloud"
+type = "webdav"
+base_url = "https://cloud.example.com/remote.php/dav/files/USERNAME/"
+path = "Garmin/Activities"
+# Names of the environment variables holding the credentials:
+username_env = "NEXTCLOUD_USERNAME"
+password_env = "NEXTCLOUD_APP_PASSWORD"
+verify_tls = true
+timeout_seconds = 30
+recursive = true
+
+[server]
+# stdio (default, for local MCP clients) or http / streamable-http / sse
+transport = "stdio"
+host = "127.0.0.1"
+port = 8000

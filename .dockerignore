@@ -1,0 +1,13 @@
+.git
+.venv
+.gitignore
+data/*
+!data/.gitkeep
+examples
+tests
+.dockerignore
+docker-compose.yml
+.env
+.env.example
+PLAN.md
+training-coach-mcp.container

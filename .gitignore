@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Project data: caches and local configuration never get committed
+data/*
+!data/.gitkeep
+config.toml
+.env
+
+# Real FIT files stay out of the repository
+examples/
+*.fit
+!tests/fixtures/*.fit

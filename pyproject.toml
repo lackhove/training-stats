@@ -1,0 +1,76 @@
+[project]
+name = "training-coach-mcp"
+version = "0.1.0"
+description = "MCP server for FIT-based training analytics"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0",
+    "fitdecode>=0.10",
+    "httpx>=0.27",
+    "polars>=1.0",
+    "pyarrow>=17.0",
+    "pydantic>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[project.scripts]
+training-coach-mcp = "training_coach_mcp.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.9.0,<1.0.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "training_coach_mcp"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["fit_summary.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "N",
+    "ANN",
+    "RUF",
+]
+ignore = [
+    "ANN401",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["src"]
+packages = ["training_coach_mcp"]
+
+[[tool.mypy.overrides]]
+module = ["fitdecode", "fitdecode.*"]
+ignore_missing_imports = true

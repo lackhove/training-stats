@@ -1,0 +1,15 @@
+services:
+  training-coach-mcp:
+    build: .
+    container_name: training-coach-mcp
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # TOML configuration (copy config.example.toml and adjust)
+      - ./config.toml:/app/config/config.toml:ro
+      # Parquet cache persists between restarts
+      - ./data:/app/data
+      # Local FIT file source (optional; match the path in config.toml)
+      - ./activities:/data/activities:ro
+    ports:
+      - "8000:8000"
