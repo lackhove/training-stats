@@ -6,7 +6,9 @@
 Description=Training Coach MCP server
 
 [Container]
-Image=localhost/training-coach-mcp:latest
+# Published by CI on every push to main. If the package is kept private,
+# run "podman login ghcr.io" once as the service user first.
+Image=ghcr.io/lackhove/training-coach-mcp:latest
 ContainerName=training-coach-mcp
 Network=training-mcp.network
 EnvironmentFile=<repo-root>/.env

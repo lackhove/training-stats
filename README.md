@@ -102,8 +102,8 @@ On servers running [podman](https://podman.io), a Quadlet unit manages the
 container as a rootless user service:
 
 ```bash
-# 1. Build the image (repeat after code or dependency changes)
-podman build -t localhost/training-coach-mcp:latest .
+# 1. Pull the image (repeat to pick up new versions)
+podman pull ghcr.io/lackhove/training-coach-mcp:latest
 
 # 2. Install the unit; <repo-root> placeholders become this repo's absolute
 #    path (run the command from the repository root)
@@ -117,7 +117,7 @@ systemctl --user start training-coach-mcp.service
 ```
 
 Logs are available via `journalctl --user -u training-coach-mcp -f`; after
-rebuilding the image, restart with
+pulling a new image, restart with
 `systemctl --user restart training-coach-mcp.service`. The FIT source volume
 (`/path/to/activities:/data/activities`) must match the `path` of the local
 source in `config.toml`.

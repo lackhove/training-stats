@@ -1,6 +1,7 @@
 services:
   training-coach-mcp:
-    build: .
+    # Published by CI; use "build: ." to build locally instead
+    image: ghcr.io/lackhove/training-coach-mcp:latest
     container_name: training-coach-mcp
     restart: unless-stopped
     env_file: .env
