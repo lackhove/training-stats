@@ -96,6 +96,40 @@ port = 8000
 and connect Open WebUI (Admin Panel → Settings → Tools) to
 `http://your-host:8000/mcp`.
 
+### Auth (Bearer token)
+
+Once the server is reachable over HTTP, add a shared-secret bearer token so
+only clients that know the secret may call it. The token lives in an
+environment variable; `config.toml` only names the variable:
+
+```toml
+[server]
+transport = "streamable-http"
+
+[server.auth]
+token_env = "TRAINING_MCP_AUTH_TOKEN"
+```
+
+```bash
+export TRAINING_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+```
+
+Without this section the server accepts unauthenticated requests; with it,
+every MCP request must carry `Authorization: Bearer <token>`. The `[server.auth]`
+section is rejected alongside `transport = "stdio"` (stdio inherits security
+from the local environment). Rotate the token by changing the env value and
+restarting the server.
+
+For Open WebUI (native MCP, Streamable HTTP): **Settings → Admin →
+Integrations → External Tool Servers → Add Connection**, set **Type** to
+*MCP (Streamable HTTP)*, enter the server URL, choose **Auth: Bearer** and
+paste the token into the **Key** field — leave the Key empty only if the
+server runs without `[server.auth]`.
+
+FastMCP Python clients send the same header automatically via
+`BearerAuth(token)`; a plain `curl` can pass
+`-H "Authorization: Bearer <token>"`.
+
 ## Podman deployment (Quadlet)
 
 On servers running [podman](https://podman.io), a Quadlet unit manages the

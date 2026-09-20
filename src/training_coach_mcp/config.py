@@ -154,12 +154,45 @@ class WebDAVSourceConfig(BaseModel):
 SourceConfig = Annotated[LocalSourceConfig | WebDAVSourceConfig, Field(discriminator="type")]
 
 
+class AuthConfig(BaseModel):
+    """Shared-secret bearer authentication for HTTP-based transports.
+
+    Only the *name* of the environment variable holding the token is
+    configured here; the secret itself is resolved via
+    :func:`resolve_auth_token` and wrapped in a :class:`SecretStr`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["bearer"] = "bearer"
+    token_env: str
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        if not value or not value.strip():
+            msg = "server.auth.token_env must name an environment variable"
+            raise ValueError(msg)
+        return value
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     transport: Literal["stdio", "http", "sse", "streamable-http"] = "stdio"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
+    auth: AuthConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_auth_transport(self) -> ServerConfig:
+        if self.auth is not None and self.transport == "stdio":
+            msg = (
+                "server.auth applies only to HTTP transports (http, sse, "
+                "streamable-http); remove it or switch transport away from stdio"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class CacheConfig(BaseModel):
@@ -260,6 +293,24 @@ def resolve_webdav_credentials(config: AppConfig) -> dict[str, WebDAVCredentials
                 username=SecretStr(username), password=SecretStr(password)
             )
     return resolved
+
+
+def resolve_auth_token(config: AppConfig) -> SecretStr | None:
+    """Resolve the bearer auth token from the environment, if auth is enabled.
+
+    Raises :class:`ConfigurationError` if the referenced environment variable
+    is unset or empty. Error messages contain the variable name, never values.
+    """
+    import os
+
+    auth = config.server.auth
+    if auth is None:
+        return None
+    token = os.environ.get(auth.token_env)
+    if not token:
+        msg = f"server.auth: environment variable {auth.token_env!r} is not set or empty"
+        raise ConfigurationError(msg)
+    return SecretStr(token)
 
 
 def config_path_from_env() -> Path | None:

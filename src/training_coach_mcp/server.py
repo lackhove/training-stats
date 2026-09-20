@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime
 
 from fastmcp import FastMCP
+from fastmcp.server.auth import AuthProvider
 
 from .cache import schemas
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
@@ -39,12 +40,14 @@ class TrainingCoachServer:
         parser: FitParser,
         sync_service: SyncService,
         repository: TrainingRepository,
+        auth_provider: AuthProvider | None = None,
     ) -> None:
         self.config = config
         self.sources = sources
         self.parser = parser
         self.sync_service = sync_service
         self.repository = repository
+        self.auth_provider = auth_provider
 
     # -- tool implementations (directly testable) -------------------------
 
@@ -166,7 +169,7 @@ class TrainingCoachServer:
     # -- FastMCP wiring ------------------------------------------------------
 
     def build_mcp(self) -> FastMCP:
-        mcp = FastMCP(name=self.config.application.name)
+        mcp = FastMCP(name=self.config.application.name, auth=self.auth_provider)
 
         @mcp.tool
         def list_activities(
@@ -256,9 +259,14 @@ class TrainingCoachServer:
 
 def create_server(config: AppConfig) -> TrainingCoachServer:
     """Instantiate sources, parser, sync service and repository from config."""
-    from .config import resolve_webdav_credentials
+    from .auth import SharedSecretBearerVerifier
+    from .config import resolve_auth_token, resolve_webdav_credentials
 
     credentials = resolve_webdav_credentials(config)
+    auth_token = resolve_auth_token(config)
+    auth_provider: AuthProvider | None = (
+        SharedSecretBearerVerifier(auth_token) if auth_token is not None else None
+    )
     sources: list[ActivitySource] = []
     for source_config in config.sources:
         if isinstance(source_config, LocalSourceConfig):
@@ -303,6 +311,7 @@ def create_server(config: AppConfig) -> TrainingCoachServer:
         parser=parser,
         sync_service=sync_service,
         repository=repository,
+        auth_provider=auth_provider,
     )
 
 
