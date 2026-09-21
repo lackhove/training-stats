@@ -166,6 +166,20 @@ def _startup_sync(service: TrainingCoachServer) -> dict[str, object]:
     return result
 
 
+_OPEN_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _warn_unauthenticated_bind(host: str, has_auth: bool) -> None:
+    """Log a warning for non-loopback binds on an unauthenticated server."""
+    if not has_auth and host not in _OPEN_HOSTS:
+        logger.warning(
+            "server binds non-loopback host %r without [server.auth]; the REST "
+            "API accepts unauthenticated requests — configure bearer auth to "
+            "protect it",
+            host,
+        )
+
+
 @app.command
 def server(
     config: ConfigArg = None,
@@ -184,9 +198,11 @@ def server(
     logger.info("starting %s with config %s", app_config.application.name, config or "config.toml")
     service = create_server(app_config)
     _startup_sync(service)
+    bind_host = host if host is not None else app_config.server.host
+    _warn_unauthenticated_bind(bind_host, app_config.server.auth is not None)
     uvicorn.run(
         build_app(service),
-        host=host if host is not None else app_config.server.host,
+        host=bind_host,
         port=port if port is not None else app_config.server.port,
     )
 

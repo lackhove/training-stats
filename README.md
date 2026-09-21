@@ -110,6 +110,34 @@ uv run coach server --host 0.0.0.0 --port 8000
 The OpenAPI schema is served at `/openapi.json` (interactive docs at
 `/docs`); response payloads are fully typed.
 
+### Auth (Bearer token)
+
+Once the server is reachable beyond localhost, add a shared-secret bearer
+token so only clients that know the secret may call it. The token lives in
+an environment variable; `config.toml` only names the variable:
+
+```toml
+[server.auth]
+token_env = "TRAINING_MCP_AUTH_TOKEN"
+```
+
+```bash
+export TRAINING_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+```
+
+Without this section the server accepts unauthenticated requests (starting
+`coach server` on a non-loopback host without auth logs a warning); with it,
+every data request must carry `Authorization: Bearer <token>` while
+`/openapi.json` and `/docs` stay reachable for schema discovery. Rotate the
+token by changing the env value and restarting the server. The CLI verbs
+are unaffected — they read the cache directly and never use the token.
+
+For Open WebUI: add the server as an external OpenAPI tool server
+(**Admin Panel → Settings → Tools**), enter the base URL, choose
+**Auth: Bearer** and paste the token into the key field — leave it empty
+only if the server runs without `[server.auth]`. A plain `curl` passes the
+same header: `-H "Authorization: Bearer <token>"`.
+
 ### Open WebUI integration
 
 [Open WebUI](https://docs.openwebui.com/openapi-server/) can consume the API

@@ -154,11 +154,34 @@ class WebDAVSourceConfig(BaseModel):
 SourceConfig = Annotated[LocalSourceConfig | WebDAVSourceConfig, Field(discriminator="type")]
 
 
+class AuthConfig(BaseModel):
+    """Shared-secret bearer authentication for the REST server.
+
+    Only the *name* of the environment variable holding the token is
+    configured here; the secret itself is resolved via
+    :func:`resolve_auth_token` and wrapped in a :class:`SecretStr`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["bearer"] = "bearer"
+    token_env: str
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        if not value or not value.strip():
+            msg = "server.auth.token_env must name an environment variable"
+            raise ValueError(msg)
+        return value
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
+    auth: AuthConfig | None = None
 
 
 class CacheConfig(BaseModel):
@@ -259,6 +282,24 @@ def resolve_webdav_credentials(config: AppConfig) -> dict[str, WebDAVCredentials
                 username=SecretStr(username), password=SecretStr(password)
             )
     return resolved
+
+
+def resolve_auth_token(config: AppConfig) -> SecretStr | None:
+    """Resolve the bearer auth token from the environment, if auth is enabled.
+
+    Raises :class:`ConfigurationError` if the referenced environment variable
+    is unset or empty. Error messages contain the variable name, never values.
+    """
+    import os
+
+    auth = config.server.auth
+    if auth is None:
+        return None
+    token = os.environ.get(auth.token_env)
+    if not token:
+        msg = f"server.auth: environment variable {auth.token_env!r} is not set or empty"
+        raise ConfigurationError(msg)
+    return SecretStr(token)
 
 
 def config_path_from_env() -> Path | None:

@@ -68,3 +68,10 @@ recursive = true
 # Defaults for "coach server" (overridable via --host/--port).
 host = "127.0.0.1"
 port = 8000
+
+# Optional shared-secret bearer auth for the REST API. Uncomment to require
+# "Authorization: Bearer <token>" on every data request; the token value is
+# read from the named environment variable at startup (see .env.example).
+# Without this section the server accepts unauthenticated requests.
+# [server.auth]
+# token_env = "TRAINING_MCP_AUTH_TOKEN"

@@ -11,12 +11,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.requests import Request
 
 from . import __version__
+from .auth import BearerGuard
+from .config import resolve_auth_token
 from .server import TrainingCoachServer
 
 _MAX_LIMIT = 500
@@ -193,10 +195,14 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
     app.add_exception_handler(ValueError, _value_error_handler)
     app.add_exception_handler(LookupError, _lookup_error_handler)
 
+    token = resolve_auth_token(service.config)
+    route_dependencies = [Depends(BearerGuard(token))] if token is not None else []
+
     @app.get(
         "/activities",
         response_model=list[ActivitySummaryModel],
         summary="List activity summaries, newest first",
+        dependencies=route_dependencies,
         tags=["activities"],
         description=(
             "Synchronizes new or changed FIT files from all configured sources "
@@ -218,6 +224,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         "/activities/{activity_id}",
         response_model=ActivityDetailsModel,
         summary="Get one activity with metrics, zones, load and quality",
+        dependencies=route_dependencies,
         tags=["activities"],
     )
     def get_activity(activity_id: str) -> dict[str, object]:
@@ -227,6 +234,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         "/weekly",
         response_model=list[WeeklyRowModel],
         summary="Weekly training totals with previous-week comparisons",
+        dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
             "Newest ISO weeks first. When no date range is given, the last "
@@ -247,6 +255,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         "/overview",
         response_model=OverviewModel,
         summary="Compact coaching overview",
+        dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
             "Athlete profile, recent activities, weekly summaries, daily series "
