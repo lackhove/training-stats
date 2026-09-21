@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -92,7 +93,7 @@ class StubSource(ActivitySource):
                 source_name=self.name,
                 path=path,
                 size=len(content),
-                modified_at=datetime(2026, 1, 1, tzinfo=UTC),
+                modified_at=_stub_modified_at(content),
             )
             for path, content in sorted(self.files.items())
         ]
@@ -102,6 +103,18 @@ class StubSource(ActivitySource):
             msg = f"file not found: {source_file.path}"
             raise SourceError(msg)
         return self.files[source_file.path]
+
+
+def _stub_modified_at(content: bytes) -> datetime:
+    """Deterministic mtime derived from the content, like a real filesystem.
+
+    An in-place content change therefore bumps the mtime, which is what the
+    sync's metadata short-circuit keys on.
+    """
+    digest = hashlib.sha256(content).digest()
+    return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(
+        seconds=int.from_bytes(digest[:4], "big") % 100_000_000
+    )
 
 
 class StubParser:

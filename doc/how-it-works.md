@@ -39,7 +39,9 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
    aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages).
 3. Secrets only from environment variables (`SecretStr`, never logged).
 4. Atomic cache writes only (tmp file + fsync + `os.replace` under flock).
-5. Incremental sync via SHA-256 content hashes, not modification times.
+5. Incremental sync: size + mtime skip re-reads; SHA-256 content hashes
+   decide for downloaded candidates (the hash, not the mtime, is the
+   source of truth for "changed").
 6. Load is an estimate (`hr_trimp`), stored with method, version and confidence.
 7. Deterministic analytics — HR zones and athlete values come from configuration.
 8. Typed errors; per-file FIT failures are recorded in the source index and
@@ -71,9 +73,12 @@ version is bumped and the next sync reprocesses every file (current: `"4"`).
 
 1. Each source lists FIT files (`*.fit`, case-insensitive; symlinks are
    skipped unless `follow_symlinks`).
-2. Every file is read and hashed with SHA-256 during a sync.
-3. A file is **skipped** only when all of its cached segment rows match
-   both `source_hash` and `analysis_version` in `source_index.parquet`.
+2. Files whose `file_size` and `modified_at` match the previous sync are
+   skipped without being read at all (metadata short-circuit).
+3. Remaining files are read and hashed with SHA-256; a file is
+   **skipped** when all of its cached segment rows match both
+   `source_hash` and `analysis_version` in `source_index.parquet`.
+4. Files whose read previously failed (no stored hash) always retry.
 4. `rebuild_cache()` ignores cached derived data and reprocesses everything.
 
 ### 3.2 Why Cleaning Is Necessary
@@ -175,8 +180,10 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 ### 4.1 Sync Flow (`cache/sync.py`)
 
 1. Load source index + activity/metrics stores (in memory).
-2. List, read and hash all files from all enabled sources.
-3. Skip unchanged files (all segment rows matching hash + version).
+2. List all files from all enabled sources.
+3. Skip files matching size + mtime + version from the previous sync
+   (no read); read + hash the rest and skip those whose hash + version
+   also match.
 4. On change: **purge all cached rows of that file** (every segment), parse,
    repair, compute metrics, index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` with no store rows.

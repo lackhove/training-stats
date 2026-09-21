@@ -125,6 +125,31 @@ def test_successful_download() -> None:
     )
 
 
+def test_client_reused_across_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PROPFIND + GET + a second listing share one httpx.Client."""
+    import training_stats.sources.webdav as webdav_module
+
+    created: list[int] = []
+    real_client = httpx.Client
+
+    def counting_client(*args: object, **kwargs: object) -> httpx.Client:
+        created.append(1)
+        return real_client(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(webdav_module.httpx, "Client", counting_client)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PROPFIND":
+            return httpx.Response(207, text=PROPFIND_RESPONSE)
+        return httpx.Response(200, content=b"\x00\x01fit-bytes")
+
+    source = make_source(handler)
+    files = source.list_files()
+    source.read_file(files[0])
+    source.list_files()
+    assert len(created) == 1
+
+
 def test_authentication_failure() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(401)

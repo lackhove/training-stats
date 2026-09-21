@@ -1,8 +1,9 @@
 """Incremental synchronization from activity sources into the Parquet cache.
 
-Change detection works on SHA-256 content hashes stored in the source index.
-Every file is read and hashed during a sync; parsing and analysis only run
-for new or changed files (or when ``force``/``rebuild_cache`` is used).
+Change detection is two-tier: files whose stored size and modification time
+match the previous sync are skipped without being read at all; downloaded
+candidates are then SHA-256 hashed, and only files whose hash or analysis
+version changed are reprocessed.
 """
 
 from __future__ import annotations
@@ -137,6 +138,15 @@ class SyncService:
             sources_listed += 1
             discovered += len(files)
             for source_file in files:
+                previous_rows = self._previous_rows(index_rows, source.name, source_file.path)
+                if (
+                    not force
+                    and previous_rows
+                    and self._metadata_unchanged(previous_rows, source_file)
+                ):
+                    kept_index.extend(previous_rows)
+                    skipped += 1
+                    continue
                 try:
                     content = self._read_content(source_file)
                 except SourceError as exc:
@@ -145,7 +155,6 @@ class SyncService:
                     kept_index.append(self._failure_row(source_file, started_at, str(exc), None))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                previous_rows = self._previous_rows(index_rows, source.name, source_file.path)
                 if not force and previous_rows and self._unchanged(previous_rows, file_hash):
                     kept_index.extend(previous_rows)
                     skipped += 1
@@ -353,6 +362,35 @@ class SyncService:
             and row.get(schemas.ANALYSIS_VERSION) == self.analysis_version
             for row in previous_rows
         )
+
+    def _metadata_unchanged(
+        self, previous_rows: list[dict[str, object]], source_file: SourceFile
+    ) -> bool:
+        """True when size and modification time match all previous rows.
+
+        This avoids reading files at all. Rows without a stored hash (failed
+        reads) or missing metadata never short-circuit, so they are re-read
+        and the SHA-256 hash decides.
+        """
+        if source_file.size is None or source_file.modified_at is None:
+            return False
+        return all(
+            row.get("source_hash") is not None
+            and row.get(schemas.ANALYSIS_VERSION) == self.analysis_version
+            and self._same_size(row.get("file_size"), source_file.size)
+            and self._same_time(row.get("modified_at"), source_file.modified_at)
+            for row in previous_rows
+        )
+
+    @staticmethod
+    def _same_size(stored: object, size: int) -> bool:
+        return isinstance(stored, int) and not isinstance(stored, bool) and stored == size
+
+    @staticmethod
+    def _same_time(stored: object, modified_at: datetime) -> bool:
+        if not isinstance(stored, datetime) or stored.tzinfo is None:
+            return False
+        return stored.astimezone(UTC) == modified_at.astimezone(UTC)
 
     @staticmethod
     def _purge_previous(

@@ -22,9 +22,12 @@ T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 
 
 def make_sync(
-    tmp_path: Path, files: dict[str, bytes] | None = None, analysis_version: str = "1"
+    tmp_path: Path,
+    files: dict[str, bytes] | None = None,
+    analysis_version: str = "1",
+    source: StubSource | None = None,
 ) -> tuple[SyncService, StubSource, Path]:
-    source = StubSource(files=files)
+    source = source or StubSource(files=files)
     cache_dir = tmp_path / "cache"
     config = make_app_config(cache_dir, tmp_path / "src")
     service = SyncService(
@@ -36,6 +39,28 @@ def make_sync(
         analysis_version=analysis_version,
     )
     return service, source, cache_dir
+
+
+class _CountingSource(StubSource):
+    """Stub source that counts read_file calls (downloads)."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        super().__init__(files=files)
+        self.read_count = 0
+
+    def read_file(self, source_file: SourceFile) -> bytes:
+        self.read_count += 1
+        return super().read_file(source_file)
+
+
+class _MetadatalessSource(_CountingSource):
+    """Stub source that reports no size/mtime metadata."""
+
+    def list_files(self) -> list[SourceFile]:
+        return [
+            SourceFile(source_name=self.name, path=path, size=None, modified_at=None)
+            for path in sorted(self.files)
+        ]
 
 
 def one_file(**kwargs: object) -> dict[str, bytes]:
@@ -122,6 +147,61 @@ class TestIncrementalSync:
         frame = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
         assert frame.height == 1
         assert first.cache_updated_at is not None
+
+    def test_unchanged_files_not_downloaded(self, tmp_path: Path) -> None:
+        source = _CountingSource(one_file())
+        service, _source, _cache_dir = make_sync(tmp_path, source=source)
+        service.sync()
+        assert source.read_count == 1
+        result = service.sync()
+        assert source.read_count == 1  # metadata matched: no second read
+        assert result.files_skipped == 1
+        assert result.files_processed == 0
+
+    def test_changed_content_triggers_read(self, tmp_path: Path) -> None:
+        source = _CountingSource(one_file(duration_s=1800.0))
+        service, _source, _cache_dir = make_sync(tmp_path, source=source)
+        service.sync()
+        # Same size on purpose: only the content-derived mtime differs.
+        source.files["a.fit"] = stub_activity_content(T0, "cycling", 3600.0, 20000.0)
+        result = service.sync()
+        assert source.read_count == 2
+        assert result.files_processed == 1
+
+    def test_missing_metadata_always_reads(self, tmp_path: Path) -> None:
+        source = _MetadatalessSource(one_file())
+        service, _source, _cache_dir = make_sync(tmp_path, source=source)
+        service.sync()
+        result = service.sync()
+        # No metadata short-circuit: every sync re-reads the file, but the
+        # hash check still avoids reprocessing.
+        assert source.read_count == 2
+        assert result.files_skipped == 1
+        assert result.files_processed == 0
+
+    def test_failed_read_retries_with_matching_metadata(self, tmp_path: Path) -> None:
+        class _FailingReadSource(_CountingSource):
+            def __init__(self, files: dict[str, bytes]) -> None:
+                super().__init__(files)
+                self.fail_reads = True
+
+            def read_file(self, source_file: SourceFile) -> bytes:
+                self.read_count += 1
+                if self.fail_reads:
+                    msg = "simulated network failure"
+                    raise SourceError(msg)
+                return StubSource.read_file(self, source_file)
+
+        source = _FailingReadSource(one_file())
+        service, _source, _cache_dir = make_sync(tmp_path, source=source)
+        result = service.sync()
+        assert result.files_failed == 1
+        # A failed read leaves no stored hash: the next sync must retry even
+        # though size and mtime are identical.
+        source.fail_reads = False
+        result = service.sync()
+        assert source.read_count == 2
+        assert result.files_processed == 1
 
     def test_changed_file_reprocessed(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file(duration_s=1800.0))

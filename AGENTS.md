@@ -90,9 +90,13 @@ These are core design decisions — do not violate them casually:
 - **Atomic cache writes only.** All Parquet/JSON writes go through
   `cache/parquet.py` (tmp file + fsync + `os.replace`). Sync runs under
   `cache/locking.py`'s flock. Don't write cache files directly.
-- **Incremental sync via hashes.** Change detection uses SHA-256 hashes in
-  `source_index.parquet`, not modification times. Bumping the internal
-  `ANALYSIS_VERSION_VALUE` (`cache/schemas.py`) forces full reprocessing.
+- **Incremental sync via metadata + hashes.** Unchanged files are skipped
+  without being read when `file_size` + `modified_at` match the previous
+  sync (stored in `source_index.parquet`); downloaded candidates are then
+  SHA-256 hashed, and the hash — not the modification time — is the source
+  of truth for "actually changed". Rows without a stored hash (failed
+  reads) always retry. Bumping the internal `ANALYSIS_VERSION_VALUE`
+  (`cache/schemas.py`) forces full reprocessing.
 - **Load is an estimate, never "TSS".** The method is `hr_trimp` (Banister),
   stored with version and confidence. Don't rename it or drop the metadata.
 - **Deterministic analytics.** HR zones and athlete values come from

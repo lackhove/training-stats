@@ -50,6 +50,7 @@ class WebDAVSource(ActivitySource):
         self.config = config
         self._credentials = credentials
         self._transport = transport
+        self._http_client: httpx.Client | None = None
         base = str(config.base_url).rstrip("/") + "/"
         trimmed_path = config.path.strip("/")
         self._collection_url = base + quote(trimmed_path) + "/" if trimmed_path else base
@@ -171,12 +172,15 @@ class WebDAVSource(ActivitySource):
         return response.content
 
     def _client(self) -> httpx.Client:
-        return httpx.Client(
-            auth=(self._credentials.username, self._credentials.password),
-            verify=self.config.verify_tls,
-            timeout=self.config.timeout_seconds,
-            transport=self._transport,
-        )
+        # One client per source so connections are reused across requests.
+        if self._http_client is None:
+            self._http_client = httpx.Client(
+                auth=(self._credentials.username, self._credentials.password),
+                verify=self.config.verify_tls,
+                timeout=self.config.timeout_seconds,
+                transport=self._transport,
+            )
+        return self._http_client
 
 
 def _url_path(url: str) -> str:
