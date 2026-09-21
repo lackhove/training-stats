@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from training_stats.cache import schemas
 from training_stats.server import TrainingCoachServer, create_server
 
 # Fixture activities anchored to "today" so overview windows match.
@@ -25,13 +27,30 @@ def _stub_files() -> dict[str, bytes]:
 
 
 def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingCoachServer:
-    """Build a server backed by the deterministic stub source/parser."""
+    """Build a server backed by the deterministic stub source/parser.
+
+    The sync throttle is disabled so tests observe individual syncs; the
+    throttle itself is exercised in ``TestSyncThrottle``.
+    """
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
+    config.cache.sync_min_interval_seconds = 0.0
     server = create_server(config)
     # Swap in the deterministic stub source/parser for cache independence.
     server.sync_service.sources = [StubSource(files=files)]
     server.sync_service.parser = StubParser()
     return server
+
+
+def _make_throttled_server(tmp_path: Path, interval_s: float = 10.0) -> TrainingCoachServer:
+    server = _make_server(tmp_path, _stub_files())
+    server.config.cache.sync_min_interval_seconds = interval_s
+    return server
+
+
+def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
+    stamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / schemas.METADATA_FILE).write_text(json.dumps({"last_sync": stamp.isoformat()}))
 
 
 @pytest.fixture
@@ -92,6 +111,29 @@ class TestServiceOperations:
         assert unsynced_server.repository.list_activities(limit=10) == []
         _startup_sync(unsynced_server)
         assert len(unsynced_server.repository.list_activities(limit=10)) == 2
+
+    def test_weekly_summary_syncs_first(self, unsynced_server: TrainingCoachServer) -> None:
+        assert unsynced_server.repository.list_activities(limit=10) == []
+        rows = unsynced_server.weekly_summary(weeks=4)
+        assert len(rows) == 2
+
+    def test_weekly_summary_without_sync(self, unsynced_server: TrainingCoachServer) -> None:
+        assert unsynced_server.weekly_summary(weeks=4, sync_first=False) == []
+
+    def test_overview_syncs_first(self, unsynced_server: TrainingCoachServer) -> None:
+        overview = unsynced_server.overview(days=14)
+        assert overview["data_quality"]["activity_count"] == 2
+        assert len(overview["daily_series"]) == 2
+
+    def test_overview_without_sync(self, unsynced_server: TrainingCoachServer) -> None:
+        overview = unsynced_server.overview(days=14, sync_first=False)
+        assert overview["data_quality"]["activity_count"] == 0
+
+    def test_get_activity_does_not_sync(self, unsynced_server: TrainingCoachServer) -> None:
+        with pytest.raises(LookupError, match="not found"):
+            unsynced_server.get_activity("does-not-exist")
+        # Cache-only: no sync happened, so the store is still empty.
+        assert unsynced_server.repository.list_activities(limit=10) == []
 
     def test_list_activities(self, server: TrainingCoachServer) -> None:
         activities = server.list_activities()
@@ -188,6 +230,72 @@ class TestServiceOperations:
     def test_overview_invalid_days(self, server: TrainingCoachServer) -> None:
         with pytest.raises(ValueError, match="days"):
             server.overview(days=-1)
+
+
+class TestSyncThrottle:
+    def test_throttles_within_interval(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        first = server.sync_if_due()
+        assert first.get("throttled") is not True  # fresh cache: real sync
+        assert first["files_processed"] == 2
+
+        second = server.sync_if_due()
+        assert second["throttled"] is True
+        assert second["seconds_since_last_sync"] >= 0
+
+    def test_throttle_expires(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import training_stats.server as server_module
+
+        server = _make_throttled_server(tmp_path)
+        server.sync_if_due()
+        real_monotonic = server_module.time.monotonic
+        monkeypatch.setattr(server_module.time, "monotonic", lambda: real_monotonic() + 60.0)
+        result = server.sync_if_due()
+        assert result.get("throttled") is not True
+
+    def test_zero_interval_always_syncs(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path, interval_s=0.0)
+        server.sync_if_due()
+        result = server.sync_if_due()
+        assert result.get("throttled") is not True
+
+    def test_failed_sync_does_not_stamp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = _make_throttled_server(tmp_path)
+
+        def broken_sync() -> object:
+            raise RuntimeError("disk gone")
+
+        monkeypatch.setattr(server.sync_service, "sync", broken_sync)
+        failed = server.sync_if_due()
+        assert failed["cache_updated_at"] is None
+        monkeypatch.undo()
+        result = server.sync_if_due()
+        assert result.get("throttled") is not True  # failure must not block retries
+        assert result["files_processed"] == 2
+
+    def test_persisted_last_sync_within_window(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        _write_metadata(tmp_path / "cache", age_seconds=5.0)
+        result = server.sync_if_due()
+        assert result["throttled"] is True
+        assert result["seconds_since_last_sync"] <= 10.0
+
+    def test_persisted_last_sync_expired(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        _write_metadata(tmp_path / "cache", age_seconds=60.0)
+        result = server.sync_if_due()
+        assert result.get("throttled") is not True
+        assert result["files_processed"] == 2
+
+    def test_persisted_invalid_metadata_syncs(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / schemas.METADATA_FILE).write_text("not json at all")
+        result = server.sync_if_due()
+        assert result.get("throttled") is not True
 
 
 class TestCreateServer:

@@ -43,6 +43,19 @@ def read_parquet(path: Path) -> pl.DataFrame:
         raise CacheError(msg) from exc
 
 
+def read_json(path: Path) -> dict[str, object] | None:
+    """Read a JSON object file; return ``None`` when missing or malformed."""
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("cannot read %s: %s", path, exc)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _ensure_parent(path: Path) -> None:
     parent = path.parent
     try:

@@ -26,8 +26,7 @@ EXPECTED_OVERVIEW_KEYS = {
 }
 
 
-@pytest.fixture
-def config_path(tmp_path: Path) -> Path:
+def _write_config(tmp_path: Path, interval_s: float) -> Path:
     """Real FIT fixtures as local source; isolated cache directory."""
     activities = tmp_path / "activities"
     activities.mkdir()
@@ -65,10 +64,23 @@ def config_path(tmp_path: Path) -> Path:
                 "",
                 "[cache]",
                 f'directory = "{cache_dir}"',
+                f"sync_min_interval_seconds = {interval_s}",
             ]
         )
     )
     return config
+
+
+@pytest.fixture
+def config_path(tmp_path: Path) -> Path:
+    """Config with the sync throttle disabled (interval 0)."""
+    return _write_config(tmp_path, interval_s=0.0)
+
+
+@pytest.fixture
+def throttled_config_path(tmp_path: Path) -> Path:
+    """Config with the default sync throttle (10 s)."""
+    return _write_config(tmp_path, interval_s=10.0)
 
 
 def _stdout_payload(capsys: pytest.CaptureFixture[str]) -> object:
@@ -140,21 +152,29 @@ class TestShowCommand:
 
 
 class TestWeeklyCommand:
-    def test_weekly(self, config_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        # Weekly does not synchronize; populate the cache via list first.
-        assert main(["-c", str(config_path), "list"]) == 0
-        capsys.readouterr()
+    def test_weekly_syncs_first(
+        self, config_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Weekly synchronizes on its own; no prior list needed.
         assert main(["-c", str(config_path), "weekly", "--weeks", "4"]) == 0
-        rows = _stdout_payload(capsys)
+        captured = capsys.readouterr()
+        assert "syncing sources..." in captured.err
+        rows = json.loads(captured.out)
         assert isinstance(rows, list) and len(rows) == 2
         assert "comparison_vs_prev_week" in rows[0]  # type: ignore[operator]
+
+    def test_weekly_no_sync_serves_empty_cache(
+        self, config_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["-c", str(config_path), "weekly", "--no-sync"]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == []
+        assert "sync" not in captured.err
 
 
 class TestOverviewCommand:
     def test_overview_sections(self, config_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        # Overview does not synchronize; populate the cache via list first.
-        assert main(["-c", str(config_path), "list"]) == 0
-        capsys.readouterr()
+        # Overview synchronizes on its own; no prior list needed.
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
         overview = _stdout_payload(capsys)
         assert set(overview) == EXPECTED_OVERVIEW_KEYS  # type: ignore[arg-type]
@@ -172,6 +192,31 @@ class TestErrorExits:
 
     def test_unknown_command(self, config_path: Path) -> None:
         assert main(["-c", str(config_path), "frobnicate"]) == 2
+
+
+class TestSyncThrottleFeedback:
+    def test_second_command_within_interval_is_skipped(
+        self, throttled_config_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # First run performs a real sync and stamps metadata.json.
+        assert main(["-c", str(throttled_config_path), "list"]) == 0
+        first = capsys.readouterr()
+        assert "sync: 2 found" in first.err
+
+        # Fresh process: the persisted last_sync timestamp throttles the sync.
+        assert main(["-c", str(throttled_config_path), "list"]) == 0
+        second = capsys.readouterr()
+        assert "sync: skipped (last sync" in second.err
+        assert "syncing sources..." not in second.err
+        assert len(json.loads(second.out)) == 2
+
+    def test_zero_interval_reports_real_sync(
+        self, config_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["-c", str(config_path), "list"]) == 0
+        captured = capsys.readouterr()
+        assert "sync: 2 found, 2 new, 0 unchanged, 0 failed" in captured.err
+        assert "skipped" not in captured.err
 
 
 class TestSyncSummaryFeedback:

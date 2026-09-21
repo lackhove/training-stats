@@ -190,6 +190,7 @@ class CacheConfig(BaseModel):
     directory: Path = Path("./data/cache")
     lock_timeout_seconds: float = Field(default=30.0, gt=0)
     retain_time_series: bool = False
+    sync_min_interval_seconds: float = Field(default=10.0, ge=0)
 
 
 class QualityConfig(BaseModel):

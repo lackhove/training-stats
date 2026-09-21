@@ -35,20 +35,28 @@ cp config.example.toml config.toml   # edit paths and athlete values
 uv run training-stats list --limit 10
 ```
 
-Synchronization runs automatically at server startup and before every
-`list` call; only new or changed files are processed. All commands print
-JSON on stdout and nothing else; progress and diagnostics (sync summary,
-source errors) go to stderr, so piping stays clean:
+# 2. Use the CLI; queries synchronize your sources automatically
+uv run training-stats list --limit 10
+```
+
+Synchronization runs automatically at server startup and before every query
+(`list`, `weekly`, `overview`; `show` serves the cache as-is). It is
+throttled: a real sync runs at most once per
+`cache.sync_min_interval_seconds` (default 10 s), so bursts of commands or
+API requests contact your sources only once — set the interval to `0` to
+always synchronize, `--no-sync` to never synchronize for one call. All
+commands print JSON on stdout and nothing else; progress and diagnostics
+(sync summary, source errors) go to stderr, so piping stays clean:
 `training-stats list | jq '.[].sport'`.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `training-stats list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes sources first) |
-| `training-stats show <activity-id>` | One activity incl. zones, load, data quality |
-| `training-stats weekly [--weeks --sport --start --end]` | Weekly totals + previous-week comparison |
-| `training-stats overview [--days --sport]` | Compact bundle: profile, daily series, weekly summaries, form, quality |
+| `training-stats list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes if due) |
+| `training-stats show <activity-id>` | One activity incl. zones, load, data quality (serves cached data) |
+| `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly totals + previous-week comparison (synchronizes if due) |
+| `training-stats overview [--days --sport --no-sync]` | Compact bundle: profile, daily series, weekly summaries, form, quality (synchronizes if due) |
 | `training-stats server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
 
 Global options: `--config/-c` (before or after the verb), `--help`, `--version`.
@@ -104,13 +112,14 @@ uv run training-stats server --host 0.0.0.0 --port 8000
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /activities` | Compact activity list (synchronizes sources first); `start_date`, `end_date`, `sport`, `limit` |
-| `GET /activities/{activity_id}` | One activity incl. zones, load, data quality |
-| `GET /weekly` | Weekly totals + previous-week comparison; `weeks`, `sport`, dates |
-| `GET /overview` | Coaching overview; `days`, `sport` |
+| `GET /activities` | Compact activity list (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
+| `GET /activities/{activity_id}` | One activity incl. zones, load, data quality (serves cached data) |
+| `GET /weekly` | Weekly totals + previous-week comparison (synchronizes if due); `weeks`, `sport`, dates |
+| `GET /overview` | Coaching overview (synchronizes if due); `days`, `sport` |
 
 The OpenAPI schema is served at `/openapi.json` (interactive docs at
-`/docs`); response payloads are fully typed.
+`/docs`); response payloads are fully typed, and each syncing endpoint's
+description documents the throttled synchronization.
 
 ### Auth (Bearer token)
 
@@ -210,11 +219,14 @@ data/cache/
 ```
 
 All writes are atomic (temporary file + rename) and guarded by a lock file.
-Synchronization runs at server startup and before every `list`/`GET
-/activities` call; a failed source (e.g. an unreachable WebDAV server) is
-logged and does not abort the remaining sources or the response. A full
-rebuild happens when the internal analysis version in `cache/schemas.py`
-invalidates derived data on metric semantics changes.
+Synchronization runs at server startup and before every query command or
+endpoint (`show`/`GET /activities/{id}` serve the cache as-is), throttled
+by `cache.sync_min_interval_seconds` (default 10 s, anchored at the
+`last_sync` timestamp in `metadata.json`); a failed source (e.g. an
+unreachable WebDAV server) is logged and does not abort the remaining
+sources or the response, and a failed sync is never recorded as "recent".
+A full rebuild happens when the internal analysis version in
+`cache/schemas.py` invalidates derived data on metric semantics changes.
 
 ## Development
 

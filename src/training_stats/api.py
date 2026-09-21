@@ -29,6 +29,13 @@ StartDate = Annotated[date | None, Query(description="Inclusive lower bound (YYY
 EndDate = Annotated[date | None, Query(description="Inclusive upper bound (YYYY-MM-DD).")]
 SportQuery = Annotated[str | None, Query(description="Exact sport name, case-insensitive.")]
 
+_SYNC_NOTE = (
+    "Synchronizes new or changed FIT files from all configured sources first. "
+    "The sync is throttled: it runs at most once per "
+    "``cache.sync_min_interval_seconds`` (default 10 seconds); within that "
+    "window data is served from the local cache without contacting sources."
+)
+
 
 # -- response models (mirror the domain to_dict() payloads) -------------------
 
@@ -204,11 +211,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         summary="List activity summaries, newest first",
         dependencies=route_dependencies,
         tags=["activities"],
-        description=(
-            "Synchronizes new or changed FIT files from all configured sources "
-            "before listing. Dates use YYYY-MM-DD format in the configured "
-            "local timezone."
-        ),
+        description=(_SYNC_NOTE + " Dates use YYYY-MM-DD format in the configured local timezone."),
     )
     def list_activities(
         start_date: StartDate = None,
@@ -224,6 +227,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         "/activities/{activity_id}",
         response_model=ActivityDetailsModel,
         summary="Get one activity with metrics, zones, load and quality",
+        description="Serves cached data; IDs come from /activities.",
         dependencies=route_dependencies,
         tags=["activities"],
     )
@@ -237,8 +241,8 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
-            "Newest ISO weeks first. When no date range is given, the last "
-            "``weeks`` weeks are returned."
+            _SYNC_NOTE + " Newest ISO weeks first. When no date range is "
+            "given, the last ``weeks`` weeks are returned."
         ),
     )
     def weekly_summary(
@@ -258,9 +262,10 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
-            "Athlete profile, recent activities, weekly summaries, daily series "
-            "(per-(date, sport) totals for every metric), zone distribution, "
-            "training form with history, tour readiness and data quality."
+            _SYNC_NOTE + " Athlete profile, recent activities, weekly "
+            "summaries, daily series (per-(date, sport) totals for every "
+            "metric), zone distribution, training form with history, tour "
+            "readiness and data quality."
         ),
     )
     def overview(

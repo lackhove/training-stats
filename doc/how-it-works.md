@@ -373,21 +373,31 @@ repair outcomes so the LLM can reason about data trustworthiness.
 |---|---|
 | `list [--start? --end? --sport? --limit? --no-sync]` | Syncs sources first, then compact summaries (newest first), incl. `local_start_time`, `moving_time_s` |
 | `show <activity-id>` | Full record: zones, histogram, 10-min buckets, drift, decoupling, load, paused time, hygiene flags |
-| `weekly [--start? --end? --weeks? --sport?]` | ISO-week totals with previous-week comparison |
-| `overview [--days? --sport?]` | Compact coaching bundle: profile, recent activities, weeklies, daily series, zone distribution, form + form history, quality, latest activity |
+| `weekly [--start? --end? --weeks? --sport? --no-sync]` | ISO-week totals with previous-week comparison |
+| `overview [--days? --sport? --no-sync]` | Compact coaching bundle: profile, recent activities, weeklies, daily series, zone distribution, form + form history, quality, latest activity |
 
 **REST** (same service layer; OpenAPI at `/openapi.json`)
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /activities` | As `list`; synchronizes sources first |
-| `GET /activities/{activity_id}` | As `show` |
-| `GET /weekly` | As `weekly` |
-| `GET /overview` | As `overview` |
+| `GET /activities` | As `list`; synchronizes if due |
+| `GET /activities/{activity_id}` | As `show`; serves cached data |
+| `GET /weekly` | As `weekly`; synchronizes if due |
+| `GET /overview` | As `overview`; synchronizes if due |
 
 The overview's daily series carries per-(date, sport) totals for every
 metric (duration, distance, elevation, load, activities, zone seconds), so
 any metric trend is a filter and projection over it.
+
+`list`, `weekly` and `overview` synchronize *if due*: a real sync runs
+only when the last successful one is older than
+`cache.sync_min_interval_seconds` (default 10 s, `0` disables the
+throttle). The gate is two-layer: an in-memory monotonic stamp covers
+repeated calls in one process (REST request bursts); without it, the
+persisted `last_sync` timestamp in `metadata.json` covers fresh CLI
+processes. Stamps are only recorded when the cache was actually written,
+so failed syncs never block retries. `show` and `GET
+/activities/{activity_id}` serve the cache as-is.
 
 Date filters use `YYYY-MM-DD` in the configured local timezone; limits are
 validated (max 500 activities / 104 weeks / 3650 days). Responses never

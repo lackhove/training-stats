@@ -128,9 +128,15 @@ These are core design decisions — do not violate them casually:
   `datetime.now()` so time-window tools stay valid over time.
 - Cache tests create isolated `tmp_path` directories; the flock test
   requires a POSIX OS.
-- `weekly`/`overview` never synchronize; only `list`/`GET /activities` do
-  (`--no-sync` opts out) plus startup sync in `training-stats server`. CLI tests
-  must populate the cache via `list` before exercising weekly/overview.
+- Query operations synchronize "if due": a real sync runs only when the
+  last successful one is older than `cache.sync_min_interval_seconds`
+  (default 10 s; two-layer stamp: in-memory monotonic + persisted
+  `last_sync` in `metadata.json`; failed syncs never stamp). Applies to
+  `list`/`weekly`/`overview` and `GET /activities`, `/weekly`, `/overview`;
+  `show`/`GET /activities/{id}` serve the cache as-is. `--no-sync` opts
+  out; startup sync in `training-stats server` is unconditional. CLI tests
+  must exercise weekly/overview against an empty cache directly (they
+  self-synchronize).
 - New behavior needs tests; bug fixes need a regression test first.
 - `test_fit_parser.py` contains golden zone values for both fixtures —
   they lock the vectorized `time_in_zones` to the original loop semantics

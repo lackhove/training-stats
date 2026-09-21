@@ -28,6 +28,7 @@ def _stub_files() -> dict[str, bytes]:
 
 def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingCoachServer:
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
+    config.cache.sync_min_interval_seconds = 0.0
     server = create_server(config)
     server.sync_service.sources = [StubSource(files=files)]
     server.sync_service.parser = StubParser()
@@ -151,6 +152,24 @@ class TestOverviewEndpoint:
             response = client.get("/overview", params={"days": 14, "sport": "cycling"})
         sports = {row["sport"] for row in response.json()["daily_series"]}
         assert sports == {"cycling"}
+
+
+class TestSyncOnEndpoints:
+    def test_weekly_and_overview_sync_first(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, _stub_files())
+        with _client(server) as client:
+            weekly = client.get("/weekly", params={"weeks": 4})
+            overview = client.get("/overview", params={"days": 14})
+        assert weekly.status_code == 200
+        assert len(weekly.json()) == 2
+        assert overview.json()["data_quality"]["activity_count"] == 2
+
+    def test_get_activity_serves_cache_only(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, _stub_files())
+        with _client(server) as client:
+            response = client.get("/activities/does-not-exist")
+        assert response.status_code == 404
+        assert server.repository.list_activities(limit=10) == []
 
 
 class TestOpenApi:

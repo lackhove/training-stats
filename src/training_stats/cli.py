@@ -42,6 +42,17 @@ EndArg = Annotated[date | None, Parameter(name=["--end"], help="End date (YYYY-M
 LimitArg = Annotated[
     int, Parameter(name=["--limit"], help="Maximum number of activities to return.")
 ]
+SyncFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--sync-first"],
+        negative=["--no-sync"],
+        help=(
+            "Synchronize sources unless the last sync is younger than "
+            "cache.sync_min_interval_seconds (default: enabled)."
+        ),
+    ),
+]
 ConfigArg = Annotated[
     Path | None,
     Parameter(
@@ -133,6 +144,15 @@ def _print_sync_summary(result: dict[str, object]) -> None:
             print(f"sync source error: {error}", file=sys.stderr)
 
 
+def _print_sync_feedback(result: dict[str, object]) -> None:
+    """Report the outcome of a (possibly throttled) sync on stderr."""
+    if result.get("throttled"):
+        seconds = result["seconds_since_last_sync"]
+        print(f"sync: skipped (last sync {seconds}s ago)", file=sys.stderr)
+        return
+    _print_sync_summary(result)
+
+
 @app.command(name="list")
 def list_activities(
     config: ConfigArg = None,
@@ -140,19 +160,12 @@ def list_activities(
     end: EndArg = None,
     sport: SportArg = None,
     limit: LimitArg = 50,
-    sync_first: Annotated[
-        bool,
-        Parameter(
-            name=["--sync-first"],
-            negative=["--no-sync"],
-            help="Synchronize sources before listing (default: enabled).",
-        ),
-    ] = True,
+    sync_first: SyncFlag = True,
 ) -> None:
     """List compact activity summaries, newest first."""
     service = _service(config)
     if sync_first:
-        _print_sync_summary(service.sync_activities())
+        _print_sync_feedback(service.sync_if_due())
     _print(
         service.list_activities(
             start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
@@ -173,10 +186,16 @@ def weekly(
     sport: SportArg = None,
     start: StartArg = None,
     end: EndArg = None,
+    sync_first: SyncFlag = True,
 ) -> None:
     """Show weekly training totals with previous-week comparisons."""
+    service = _service(config)
+    if sync_first:
+        _print_sync_feedback(service.sync_if_due())
     _print(
-        _service(config).weekly_summary(start_date=start, end_date=end, weeks=weeks, sport=sport)
+        service.weekly_summary(
+            start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
+        )
     )
 
 
@@ -185,9 +204,13 @@ def overview(
     config: ConfigArg = None,
     days: Annotated[int, Parameter(help="Length of the period ending today.")] = 28,
     sport: SportArg = None,
+    sync_first: SyncFlag = True,
 ) -> None:
     """Show the coaching overview: profile, daily series, form, quality."""
-    _print(_service(config).overview(days=days, sport=sport))
+    service = _service(config)
+    if sync_first:
+        _print_sync_feedback(service.sync_if_due())
+    _print(service.overview(days=days, sport=sport, sync_first=False))
 
 
 def _startup_sync(service: TrainingCoachServer) -> dict[str, object]:

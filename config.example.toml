@@ -10,6 +10,10 @@ timezone = "Europe/Berlin"
 [cache]
 directory = "./data/cache"
 lock_timeout_seconds = 30
+# Throttle for automatic syncs: a real sync runs at most once per interval
+# (anchored at the last_sync timestamp in metadata.json). 0 always
+# synchronizes; --no-sync / list's flag skips syncing entirely.
+sync_min_interval_seconds = 10
 # High-frequency FIT record data is never persisted; retained only in memory
 # during processing. Coarse derived aggregates (5-bpm HR histogram,
 # 10-minute weighted HR averages) are stored in activity_metrics.parquet.

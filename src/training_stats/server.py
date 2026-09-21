@@ -9,9 +9,11 @@ FastAPI application (:mod:`training_stats.api`) and the CLI
 from __future__ import annotations
 
 import logging
-from datetime import date
+import time
+from datetime import UTC, date, datetime
 
 from .cache import schemas
+from .cache.parquet import read_json
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
 from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
@@ -45,16 +47,51 @@ class TrainingCoachServer:
         self.parser = parser
         self.sync_service = sync_service
         self.repository = repository
+        self._last_sync_monotonic: float | None = None
 
     # -- service operations (directly testable) ----------------------------
 
+    def sync_if_due(self) -> dict[str, object]:
+        """Synchronize unless the last successful sync is recent.
+
+        Two-layer throttle: an in-memory monotonic stamp covers repeated
+        calls in one process (e.g. REST request bursts); when absent, the
+        ``last_sync`` timestamp from ``cache/metadata.json`` covers fresh
+        CLI processes. Stamps are only recorded when the cache was actually
+        written, so failed syncs never block retries. A
+        ``cache.sync_min_interval_seconds`` of ``0`` always synchronizes.
+        """
+        interval = self.config.cache.sync_min_interval_seconds
+        now = time.monotonic()
+        since = self._seconds_since_last_sync(now)
+        if interval > 0 and since is not None and since < interval:
+            return {"throttled": True, "seconds_since_last_sync": round(max(since, 0.0), 1)}
+        result = self.sync_activities()
+        if result["cache_updated_at"] is not None:
+            self._last_sync_monotonic = now
+        return result
+
+    def _seconds_since_last_sync(self, now: float) -> float | None:
+        if self._last_sync_monotonic is not None:
+            return now - self._last_sync_monotonic
+        metadata = read_json(self.config.cache.directory / schemas.METADATA_FILE)
+        last_sync = metadata.get("last_sync") if metadata else None
+        if not isinstance(last_sync, str):
+            return None
+        try:
+            stamp = datetime.fromisoformat(last_sync)
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - stamp).total_seconds()
+
     def sync_activities(self) -> dict[str, object]:
-        """Synchronize new or changed FIT files; never raises.
+        """Synchronize new or changed FIT files unconditionally; never raises.
 
         Source-level failures (e.g. an unreachable WebDAV source) are reported
         in ``source_errors``; unexpected sync failures are logged as a warning
-        so callers can keep serving the existing cache. Runs at server startup
-        and before every list operation.
+        so callers can keep serving the existing cache. Runs at server startup.
         """
         try:
             result = self.sync_service.sync()
@@ -87,7 +124,7 @@ class TrainingCoachServer:
     ) -> list[dict[str, object]]:
         """List compact activity summaries, newest first."""
         if sync_first:
-            self.sync_activities()
+            self.sync_if_due()
         _validate_int_range("limit", limit, 1, _MAX_LIMIT)
         activities = self.repository.list_activities(
             start_date=start_date, end_date=end_date, sport=sport, limit=limit
@@ -108,20 +145,27 @@ class TrainingCoachServer:
         end_date: date | None = None,
         weeks: int = 8,
         sport: str | None = None,
+        sync_first: bool = True,
     ) -> list[dict[str, object]]:
         """Weekly training totals with previous-week comparisons."""
+        if sync_first:
+            self.sync_if_due()
         _validate_int_range("weeks", weeks, 1, _MAX_WEEKS)
         rows = self.repository.weekly_summary(
             start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
         )
         return [row.to_dict() for row in rows]
 
-    def overview(self, days: int = 28, sport: str | None = None) -> dict[str, object]:
+    def overview(
+        self, days: int = 28, sport: str | None = None, sync_first: bool = True
+    ) -> dict[str, object]:
         """Compact overview: profile, daily series, weekly summaries and form.
 
         The daily series carries per-(date, sport) totals for every metric,
         so any metric trend is a filter and projection over it.
         """
+        if sync_first:
+            self.sync_if_due()
         _validate_int_range("days", days, 1, _MAX_DAYS)
         return self.repository.overview(days=days, sport=sport).to_dict()
 
