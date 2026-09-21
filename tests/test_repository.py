@@ -6,8 +6,6 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
 from training_coach_mcp.cache.repository import ParquetTrainingRepository
 from training_coach_mcp.cache.sync import SyncService
@@ -49,13 +47,13 @@ class TestEmptyCache:
         assert repository.get_activity("nope") is None
         assert repository.daily_summary() == []
         assert repository.weekly_summary() == []
-        trend = repository.training_trends("load", days=7)
-        assert trend.points == ()
         form = repository.training_form()
         assert form.current_ctl == 0.0
         assert form.days_since_60k_ride is None
         quality = repository.data_quality()
         assert quality.activity_count == 0
+        overview = repository.overview()
+        assert overview.daily_series == ()
 
 
 class TestListActivities:
@@ -125,21 +123,6 @@ class TestSummaries:
         repository = build_repository(tmp_path, two_files())
         rows = repository.weekly_summary(sport="cycling")
         assert [row.sport for row in rows] == ["cycling"]
-
-
-class TestTrends:
-    def test_known_window(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        today = datetime.now(ZoneInfo("Europe/Berlin")).date()
-        days_back = (today - date(2026, 6, 1)).days
-        trend = repository.training_trends("load", days=days_back + 1)
-        assert trend.metric == "load"
-        assert len(trend.points) == 2
-
-    def test_invalid_metric_rejected(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        with pytest.raises(ValueError, match="unknown metric"):
-            repository.training_trends("power")
 
 
 class TestDataQuality:

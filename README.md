@@ -2,11 +2,10 @@
 
 **100% AI genereated, use at your own risk!**
 
-A Python [MCP](https://modelcontextprotocol.io) server that reads FIT activity
-files (Garmin & friends) from local directories or Nextcloud via WebDAV,
-derives training analytics (heart-rate zones, estimated load, weekly
-summaries, trends) and exposes them to LLM clients through
-[FastMCP](https://gofastmcp.com).
+A Python command line tool and REST API that reads FIT activity files (Garmin &
+friends) from local directories or Nextcloud via WebDAV and derives training
+analytics: heart-rate zones, estimated load, weekly summaries and a compact
+coaching overview.
 
 Key properties:
 
@@ -32,19 +31,34 @@ uv sync
 # 1. Create a configuration
 cp config.example.toml config.toml   # edit paths and athlete values
 
-# 2. Start the MCP server (stdio); it synchronizes your sources automatically
-uv run training-coach-mcp config.toml
+# 2. Use the CLI; `list` synchronizes your sources automatically
+uv run coach list --limit 10
 ```
 
 Synchronization runs automatically at server startup and before every
-`list_activities` tool call; only new or changed files are processed.
+`list` call; only new or changed files are processed. All commands print
+JSON on stdout and log to stderr.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `coach list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes sources first) |
+| `coach show <activity-id>` | One activity incl. zones, load, data quality |
+| `coach weekly [--weeks --sport --start --end]` | Weekly totals + previous-week comparison |
+| `coach overview [--days --sport]` | Compact bundle: profile, daily series, weekly summaries, form, quality |
+| `coach server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
+
+Global options: `--config/-c` (before or after the verb), `--help`, `--version`.
+The overview's daily series carries per-(date, sport) totals for every metric,
+so any metric trend is a simple filter and projection over it.
 
 ## Configuration
 
 Copy `config.example.toml` to `config.toml`. The configuration path is
 resolved in this order:
 
-1. CLI argument: `uv run training-coach-mcp /path/to/config.toml`
+1. CLI option: `uv run coach -c /path/to/config.toml list`
 2. `TRAINING_MCP_CONFIG` environment variable
 3. `./config.toml`
 
@@ -55,7 +69,6 @@ resolved in this order:
 name = "garmin-local"
 type = "local"
 path = "/data/activities"
-enabled = true
 recursive = true
 ```
 
@@ -75,26 +88,35 @@ No environment variables are required for local sources.
    NEXTCLOUD_APP_PASSWORD="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
    ```
 
-4. Set `type = "webdav"` and `enabled = true`.
+4. Set `type = "webdav"` in the source block.
 
 Combined local + WebDAV configurations are supported: list both `[[sources]]`
-blocks; `enabled = false` skips a source without deleting its config.
+blocks; every entry is active.
 
-### Server transport
+## REST API
 
-For local MCP clients (Claude Desktop, Open WebUI desktop, …) keep
-`transport = "stdio"`. To serve over HTTP for remote clients such as
-[Open WebUI](https://docs.openwebui.com/openapi-server/), set:
-
-```toml
-[server]
-transport = "streamable-http"   # or "http", "sse"
-host = "0.0.0.0"
-port = 8000
+```bash
+uv run coach server            # binds [server] host/port from config.toml
+uv run coach server --host 0.0.0.0 --port 8000
 ```
 
-and connect Open WebUI (Admin Panel → Settings → Tools) to
-`http://your-host:8000/mcp`.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /activities` | Compact activity list (synchronizes sources first); `start_date`, `end_date`, `sport`, `limit` |
+| `GET /activities/{activity_id}` | One activity incl. zones, load, data quality |
+| `GET /weekly` | Weekly totals + previous-week comparison; `weeks`, `sport`, dates |
+| `GET /overview` | Coaching overview; `days`, `sport` |
+
+The OpenAPI schema is served at `/openapi.json` (interactive docs at
+`/docs`); response payloads are fully typed.
+
+### Open WebUI integration
+
+[Open WebUI](https://docs.openwebui.com/openapi-server/) can consume the API
+as an external OpenAPI tool server: add `http://your-host:8000` (the server
+base URL, not a special path) as an OpenAPI tool server in
+**Admin Panel → Settings → Tools**. Open WebUI reads `/openapi.json` and maps
+the endpoints to callable tools.
 
 ## Podman deployment (Quadlet)
 
@@ -122,11 +144,11 @@ pulling a new image, restart with
 (`/path/to/activities:/data/activities`) must match the `path` of the local
 source in `config.toml`.
 
-### Reaching the MCP from another container
+### Reaching the API from another container
 
 A web UI in its own container cannot use `localhost` — inside that container
 localhost is the web UI itself. Both containers join a shared podman network
-so they reach each other by container DNS name; the MCP is not published to
+so they reach each other by container DNS name; the API is not published to
 the host or LAN:
 
 ```bash
@@ -136,27 +158,14 @@ systemctl --user daemon-reload
 systemctl --user restart training-mcp-network.service training-coach-mcp.service
 ```
 
-The web UI then connects to `http://training-coach-mcp:<port>/mcp` (container
+The web UI then connects to `http://training-coach-mcp:<port>` (container
 DNS name; requires `[server] host = "0.0.0.0"` in `config.toml` so the port
-is reachable from outside the MCP container).
+is reachable from outside the API container).
 
 If a same-host client ever needs direct access, add a loopback-only
 `PublishPort=127.0.0.1:<port>:<port>` to the unit — never a plain
-`PublishPort=<port>:<port>`, which would expose the MCP to the whole
+`PublishPort=<port>:<port>`, which would expose the API to the whole
 network.
-
-## MCP tools
-
-| Tool | Purpose |
-| --- | --- |
-| `list_activities(start_date, end_date, sport, limit)` | Compact activity list (synchronizes sources first) |
-| `get_activity(activity_id)` | One activity incl. zones, load, data quality |
-| `weekly_summary(start_date, end_date, weeks, sport)` | Weekly totals + previous-week comparison |
-| `training_trends(metric, days, sport)` | Daily trend of `duration`/`distance`/`elevation`/`load`/`activities` |
-| `get_coach_context(days, sport)` | Compact bundle for coaching conversations |
-
-Read-only resources: `athlete://profile`, `training://zones`,
-`training://data-quality`, `training://current-week`.
 
 ## Cache layout
 
@@ -171,11 +180,11 @@ data/cache/
 ```
 
 All writes are atomic (temporary file + rename) and guarded by a lock file.
-Synchronization runs at server startup and before every `list_activities`
-call; a failed source (e.g. an unreachable WebDAV server) is logged and does
-not abort the remaining sources or the tool response. A full rebuild happens
-when the internal analysis version in `cache/schemas.py` invalidates derived
-data on metric semantics changes.
+Synchronization runs at server startup and before every `list`/`GET
+/activities` call; a failed source (e.g. an unreachable WebDAV server) is
+logged and does not abort the remaining sources or the response. A full
+rebuild happens when the internal analysis version in `cache/schemas.py`
+invalidates derived data on metric semantics changes.
 
 ## Development
 

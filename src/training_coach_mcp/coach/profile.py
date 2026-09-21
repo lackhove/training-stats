@@ -1,4 +1,4 @@
-"""Athlete profile serialization for MCP resources and coach context."""
+"""Athlete profile serialization for the overview bundle."""
 
 from __future__ import annotations
 

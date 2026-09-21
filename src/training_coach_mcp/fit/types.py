@@ -2,7 +2,7 @@
 
 Record data holds high-frequency time-series samples in memory only, as a
 Polars frame with a fixed schema. It must never be persisted to the cache or
-included in MCP responses.
+included in API responses.
 """
 
 from __future__ import annotations

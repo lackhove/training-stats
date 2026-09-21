@@ -1,4 +1,4 @@
-"""Typed exceptions for the training coach MCP server."""
+"""Typed exceptions for the training coach."""
 
 
 class TrainingMCPError(Exception):

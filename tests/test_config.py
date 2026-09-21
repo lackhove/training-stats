@@ -71,7 +71,8 @@ class TestValidConfigs:
     def test_defaults(self, tmp_path: Path) -> None:
         config = load_config(_write_config(tmp_path, VALID_LOCAL))
         assert config.application.log_level == "INFO"
-        assert config.server.transport == "stdio"
+        assert config.server.host == "127.0.0.1"
+        assert config.server.port == 8000
         assert config.cache.retain_time_series is False
         assert config.quality.moving_speed_threshold_mps == 1.0
         assert config.quality.decoupling_min_duration_s == 1200.0
@@ -140,9 +141,9 @@ path = "/other"
         with pytest.raises(ConfigurationError, match="log_level"):
             load_config(_write_config(tmp_path, content))
 
-    def test_invalid_transport(self, tmp_path: Path) -> None:
-        content = VALID_LOCAL + '[server]\ntransport = "carrier-pigeon"\n'
-        with pytest.raises(ConfigurationError, match="transport"):
+    def test_invalid_port(self, tmp_path: Path) -> None:
+        content = VALID_LOCAL + "[server]\nport = 99999\n"
+        with pytest.raises(ConfigurationError, match="port"):
             load_config(_write_config(tmp_path, content))
 
     def test_unknown_key(self, tmp_path: Path) -> None:

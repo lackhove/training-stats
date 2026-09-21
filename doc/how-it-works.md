@@ -1,4 +1,4 @@
-# How the Training Coach MCP Works
+# How the Training Coach Works
 
 Documentation of the architecture, the data-cleaning pipeline, processing
 steps and all metric definitions.
@@ -6,7 +6,7 @@ steps and all metric definitions.
 - Sources: local directories and Nextcloud via WebDAV (read FIT files only)
 - Language: Python 3.12+, everything managed through `uv`
 - Cache: Polars DataFrames persisted as Parquet (aggregates only, never raw time series)
-- Interface: FastMCP server exposing domain tools and resources
+- Interface: verb-based CLI (JSON output) and FastAPI REST API with OpenAPI schema
 
 ---
 
@@ -20,10 +20,12 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
 |---|---|
 | `sources/` | `ActivitySource` ABC; `LocalDirectorySource` (filesystem walk) and `WebDAVSource` (httpx + env-resolved secrets) |
 | `fit/` | `FitParser` protocol returning a `ParsedFile`; `FitDecodeParser` (fitdecode boundary); `repair.py` (timeline repair, segmentation, moving time); `normalize.py` (coercion helpers); `types.py` (`RECORD_SCHEMA`, `ParsedActivity`, `ParsedFile`) |
-| `analytics/` | Per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`, `trends`), training form (`fitness`) |
+| `analytics/` | Per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`) |
 | `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), flock locking (`locking.py`), incremental sync (`sync.py`), read-side repository (`repository.py`) |
-| `coach/` | Athlete profile from TOML, coach context assembly |
-| `server.py` | FastMCP wiring; tool methods on `TrainingCoachServer` are directly testable |
+| `coach/` | Athlete profile from TOML, overview assembly |
+| `server.py` | Service layer; methods on `TrainingCoachServer` are directly testable |
+| `api.py` | FastAPI application with Pydantic response models (OpenAPI schema) |
+| `cli.py` | cyclopts CLI (JSON output) |
 | `config.py` | Pydantic TOML models; WebDAV secrets only via environment variables |
 | `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, …) |
 | `errors.py` | Typed exception hierarchy (`TrainingMCPError` base) |
@@ -356,25 +358,33 @@ repair outcomes so the LLM can reason about data trustworthiness.
 
 ---
 
-## 9. MCP Tools & Resources
+## 9. CLI Commands & REST Endpoints
 
-**Tools**
+**CLI** (`coach`, JSON output; `coach server` runs the REST API)
 
-| Tool | Purpose |
+| Command | Purpose |
 |---|---|
-| `list_activities(start_date?, end_date?, sport?, limit?)` | Syncs sources first, then compact summaries (newest first), incl. `local_start_time`, `moving_time_s` |
-| `get_activity(activity_id)` | Full record: zones, histogram, 10-min buckets, drift, decoupling, load, paused time, hygiene flags |
-| `weekly_summary(start_date?, end_date?, weeks?, sport?)` | ISO-week totals with previous-week comparison |
-| `training_trends(metric, days?, sport?)` | Daily trend for duration/distance/elevation/load/activities |
-| `training_form(days?, sport?)` | CTL/ATL/TSB curves, classification, tour readiness |
-| `get_coach_context(days?, sport?)` | Compact coaching bundle: profile, recent activities, weeklies, zone distribution, load trend, quality, latest activity, form |
+| `list [--start? --end? --sport? --limit? --no-sync]` | Syncs sources first, then compact summaries (newest first), incl. `local_start_time`, `moving_time_s` |
+| `show <activity-id>` | Full record: zones, histogram, 10-min buckets, drift, decoupling, load, paused time, hygiene flags |
+| `weekly [--start? --end? --weeks? --sport?]` | ISO-week totals with previous-week comparison |
+| `overview [--days? --sport?]` | Compact coaching bundle: profile, recent activities, weeklies, daily series, zone distribution, form + form history, quality, latest activity |
 
-**Resources:** `athlete://profile`, `training://zones`,
-`training://data-quality`, `training://current-week`, `training://form`.
+**REST** (same service layer; OpenAPI at `/openapi.json`)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /activities` | As `list`; synchronizes sources first |
+| `GET /activities/{activity_id}` | As `show` |
+| `GET /weekly` | As `weekly` |
+| `GET /overview` | As `overview` |
+
+The overview's daily series carries per-(date, sport) totals for every
+metric (duration, distance, elevation, load, activities, zone seconds), so
+any metric trend is a filter and projection over it.
 
 Date filters use `YYYY-MM-DD` in the configured local timezone; limits are
-validated (max 500 activities / 104 weeks / 3650 days). Tool responses
-never contain raw time-series data.
+validated (max 500 activities / 104 weeks / 3650 days). Responses never
+contain raw time-series data.
 
 ---
 

@@ -1,27 +1,32 @@
-"""Compact coach context assembly for LLM conversations."""
+"""Compact overview assembly for coaching conversations and scripts."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 
 from ..analytics.daily import DailySummaryRow
 from ..config import AthleteConfig
-from ..models import CoachContext
+from ..models import Overview
 from .profile import athlete_profile
 
 if TYPE_CHECKING:
     from ..cache.repository import TrainingRepository
 
 
-def build_coach_context(
+def build_overview(
     repository: TrainingRepository,
     athlete: AthleteConfig,
     tz: tzinfo,
     days: int = 28,
     sport: str | None = None,
-) -> CoachContext:
-    """Compose a compact coaching context for the last ``days`` days."""
+) -> Overview:
+    """Compose a compact training overview for the last ``days`` days.
+
+    The daily series carries per-(date, sport) totals for every metric, so
+    any metric trend is a filter and projection over that series; the form
+    history carries the daily CTL/ATL/TSB curve.
+    """
     end_date = datetime.now(tz).date()
     start_date = end_date - timedelta(days=max(days, 1) - 1)
 
@@ -32,8 +37,6 @@ def build_coach_context(
         start_date=start_date, end_date=end_date, weeks=4, sport=sport
     )
     daily_rows = repository.daily_summary(start_date=start_date, end_date=end_date, sport=sport)
-    zone_distribution = _zone_distribution(daily_rows)
-    load_trend = repository.training_trends(metric="load", days=days, sport=sport)
     quality = repository.data_quality()
     latest = _latest_activity(repository, sport)
     form_result = repository.training_form(days=days, sport=sport)
@@ -44,6 +47,7 @@ def build_coach_context(
         "tsb": form_result.current_tsb,
         "classification": form_result.form_classification,
         "is_warmup": form_result.is_warmup,
+        "load_confidence_ratio": form_result.load_confidence_ratio,
     }
     tour_readiness_dict: dict[str, object] = {
         "rolling_7d_km": form_result.rolling_7d_distance_km,
@@ -51,12 +55,13 @@ def build_coach_context(
         "days_since_60k": form_result.days_since_60k_ride,
     }
 
-    return CoachContext(
+    return Overview(
         athlete_profile=athlete_profile(athlete),
         recent_activities=tuple(item.to_dict() for item in recent),
         weekly_summaries=tuple(row.to_dict() for row in weekly),
-        zone_distribution_s=zone_distribution,
-        load_trend=load_trend.to_dict(),
+        daily_series=tuple(row.to_dict() for row in daily_rows),
+        form_history=tuple(point.to_dict() for point in form_result.trend_points),
+        zone_distribution_s=_zone_distribution(daily_rows),
         data_quality=quality.to_dict(),
         latest_activity=latest,
         period_start=start_date.isoformat(),
@@ -64,13 +69,6 @@ def build_coach_context(
         form=form_dict,
         tour_readiness=tour_readiness_dict,
     )
-
-
-def current_week_bounds(tz: tzinfo, today: date | None = None) -> tuple[date, date]:
-    """Return Monday and Sunday of the current ISO week."""
-    day = today if today is not None else datetime.now(tz).date()
-    monday = day - timedelta(days=day.weekday())
-    return monday, monday + timedelta(days=6)
 
 
 def _zone_distribution(rows: list[DailySummaryRow]) -> dict[str, float]:

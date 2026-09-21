@@ -1,12 +1,11 @@
-"""Coach context building."""
+"""Overview assembly and athlete profile helpers."""
 
-from .context import build_coach_context, current_week_bounds
+from .overview import build_overview
 from .profile import athlete_profile, load_basis, zone_descriptions
 
 __all__ = [
     "athlete_profile",
-    "build_coach_context",
-    "current_week_bounds",
+    "build_overview",
     "load_basis",
     "zone_descriptions",
 ]

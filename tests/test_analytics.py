@@ -1,4 +1,4 @@
-"""Tests for activity metrics, daily/weekly aggregation and trends."""
+"""Tests for activity metrics and daily/weekly aggregation."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from training_coach_mcp.analytics.daily import (
     DailySummaryRow,
     summarize_daily,
 )
-from training_coach_mcp.analytics.trends import compute_trend, validate_metric
 from training_coach_mcp.analytics.weekly import daily_to_weekly
 from training_coach_mcp.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
 
@@ -216,37 +215,6 @@ class TestWeeklyAggregation:
     def test_week_start_is_monday(self) -> None:
         weekly = daily_to_weekly([_daily("2026-06-03", 50.0)])  # Wednesday
         assert weekly[0].week_start == "2026-06-01"
-
-
-class TestTrends:
-    def test_metric_validation(self) -> None:
-        assert validate_metric("load") == "load"
-        assert validate_metric("DISTANCE") == "distance"
-        with pytest.raises(ValueError, match="unknown metric"):
-            validate_metric("power")
-
-    def test_direction_increasing(self) -> None:
-        rows = [_daily(f"2026-06-{day:02d}", float(day * 10)) for day in range(1, 5)]
-        trend = compute_trend(rows, "load", sport=None)
-        assert trend.direction == "increasing"
-        assert trend.total == pytest.approx(10 + 20 + 30 + 40)
-        assert trend.change_pct is not None and trend.change_pct > 0
-
-    def test_direction_stable(self) -> None:
-        rows = [
-            _daily("2026-06-01", 100.0),
-            _daily("2026-06-02", 100.0),
-            _daily("2026-06-03", 100.0),
-            _daily("2026-06-04", 100.0),
-        ]
-        trend = compute_trend(rows, "load", sport=None)
-        assert trend.direction == "stable"
-
-    def test_empty(self) -> None:
-        trend = compute_trend([], "load", sport=None)
-        assert trend.points == ()
-        assert trend.total == 0.0
-        assert trend.direction == "stable"
 
 
 def _metrics(activity_id: str, load: float | None = None) -> ActivityMetrics:

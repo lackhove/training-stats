@@ -65,7 +65,6 @@ timeout_seconds = 30
 recursive = true
 
 [server]
-# stdio (default, for local MCP clients) or http / streamable-http / sse
-transport = "stdio"
+# Defaults for "coach server" (overridable via --host/--port).
 host = "127.0.0.1"
 port = 8000

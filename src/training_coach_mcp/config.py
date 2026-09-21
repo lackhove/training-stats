@@ -157,7 +157,6 @@ SourceConfig = Annotated[LocalSourceConfig | WebDAVSourceConfig, Field(discrimin
 class ServerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    transport: Literal["stdio", "http", "sse", "streamable-http"] = "stdio"
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
 

@@ -22,4 +22,4 @@ VOLUME ["/app/config", "/app/data"]
 EXPOSE 8000
 
 # WebDAV credentials are injected via environment variables.
-CMD ["uv", "run", "--no-dev", "training-coach-mcp"]
+CMD ["uv", "run", "--no-dev", "coach", "server"]

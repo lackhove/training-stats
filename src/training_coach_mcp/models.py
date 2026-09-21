@@ -178,14 +178,20 @@ class DataQuality:
 
 
 @dataclass(frozen=True, slots=True)
-class CoachContext:
-    """Compact context bundle for LLM coaching conversations."""
+class Overview:
+    """Compact overview bundle for coaching conversations and scripts.
+
+    Subsumes coach context, training form and metric trends: the daily
+    series carries per-(date, sport) totals for every metric, and the form
+    history carries the daily CTL/ATL/TSB curve.
+    """
 
     athlete_profile: dict[str, object]
     recent_activities: tuple[dict[str, object], ...]
     weekly_summaries: tuple[dict[str, object], ...]
+    daily_series: tuple[dict[str, object], ...]
+    form_history: tuple[dict[str, object], ...]
     zone_distribution_s: dict[str, float]
-    load_trend: dict[str, object]
     data_quality: dict[str, object]
     latest_activity: dict[str, object] | None
     period_start: str
@@ -199,12 +205,13 @@ class CoachContext:
             "period": {"start": self.period_start, "end": self.period_end},
             "recent_activities": list(self.recent_activities),
             "weekly_summaries": list(self.weekly_summaries),
+            "daily_series": list(self.daily_series),
             "zone_distribution_s": self.zone_distribution_s,
-            "load_trend": self.load_trend,
-            "data_quality": self.data_quality,
-            "latest_activity": self.latest_activity,
             "form": self.form,
+            "form_history": list(self.form_history),
             "tour_readiness": self.tour_readiness,
+            "latest_activity": self.latest_activity,
+            "data_quality": self.data_quality,
         }
 
 

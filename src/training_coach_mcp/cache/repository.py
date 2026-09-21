@@ -1,11 +1,11 @@
-"""Read-side repository abstracting Parquet access from MCP tools."""
+"""Read-side repository abstracting Parquet access from the API and CLI."""
 
 from __future__ import annotations
 
 import json
 import logging
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -18,15 +18,14 @@ from ..analytics.fitness import (
     compute_rolling_distance,
     compute_training_form,
 )
-from ..analytics.trends import TrendResult, compute_trend
 from ..analytics.weekly import WeeklySummaryRow
 from ..config import AthleteConfig
 from ..errors import CacheError
 from ..models import (
     ActivityDetails,
     ActivitySummary,
-    CoachContext,
     DataQuality,
+    Overview,
     TrainingFormResult,
 )
 from . import parquet, schemas
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 class TrainingRepository(Protocol):
-    """Read interface used by the MCP server."""
+    """Read interface used by the API and CLI layers."""
 
     def list_activities(
         self,
@@ -59,15 +58,11 @@ class TrainingRepository(Protocol):
         sport: str | None = None,
     ) -> list[WeeklySummaryRow]: ...
 
-    def training_trends(
-        self, metric: str, days: int = 30, sport: str | None = None
-    ) -> TrendResult: ...
-
     def training_form(self, days: int = 42, sport: str | None = None) -> TrainingFormResult: ...
 
     def data_quality(self) -> DataQuality: ...
 
-    def coach_context(self, days: int = 28, sport: str | None = None) -> CoachContext: ...
+    def overview(self, days: int = 28, sport: str | None = None) -> Overview: ...
 
 
 class ParquetTrainingRepository:
@@ -152,12 +147,6 @@ class ParquetTrainingRepository:
         if start_date is None and end_date is None:
             filtered = filtered[:weeks]
         return [_weekly_row(row) for row in filtered]
-
-    def training_trends(self, metric: str, days: int = 30, sport: str | None = None) -> TrendResult:
-        end_date = datetime.now(self.tz).date()
-        start_date = end_date - timedelta(days=max(days, 1) - 1)
-        rows = self.daily_summary(start_date=start_date, end_date=end_date, sport=sport)
-        return compute_trend(rows, metric, sport)
 
     def training_form(self, days: int = 42, sport: str | None = None) -> TrainingFormResult:
         today = datetime.now(self.tz).date()
@@ -274,10 +263,10 @@ class ParquetTrainingRepository:
             duplicate_activity_count=duplicates,
         )
 
-    def coach_context(self, days: int = 28, sport: str | None = None) -> CoachContext:
-        from ..coach.context import build_coach_context
+    def overview(self, days: int = 28, sport: str | None = None) -> Overview:
+        from ..coach.overview import build_overview
 
-        return build_coach_context(self, self.athlete, self.tz, days=days, sport=sport)
+        return build_overview(self, self.athlete, self.tz, days=days, sport=sport)
 
     # -- helpers -----------------------------------------------------------
 

@@ -4,14 +4,15 @@ Guidance for AI coding agents working in this repository.
 
 ## Project Overview
 
-`training-coach-mcp` is a Python MCP (Model Context Protocol) server that:
+`training-coach-mcp` is a Python CLI and FastAPI REST server that:
 
 1. Reads FIT activity files from local directories or Nextcloud via WebDAV
 2. Detects new/changed files incrementally (SHA-256 content hashes)
 3. Parses FIT sessions and records via `fitdecode`
-4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries, trends)
+4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries)
 5. Caches aggregates as Parquet files (never time-series data)
-6. Exposes domain-oriented tools through FastMCP
+6. Exposes verb-based CLI commands (JSON output) and a typed REST API with
+   OpenAPI schema (consumable as an Open WebUI external OpenAPI tool server)
 
 Architecture details and design decisions are captured below; user-facing
 setup instructions in `README.md`.
@@ -25,7 +26,7 @@ any task; the code is only complete when all of them pass):
 uv run ruff format --check .   # formatting (run `uv run ruff format .` to fix)
 uv run ruff check .            # linting (run with `--fix` to auto-fix)
 uv run mypy --strict src       # static typing (src only, not tests)
-uv run pytest                  # tests (~142 tests, <10 s)
+uv run pytest                  # tests (~224 tests, <15 s)
 ```
 
 Combined one-liner:
@@ -38,7 +39,8 @@ Other useful commands:
 
 ```bash
 uv sync                        # install/sync dependencies after pyproject changes
-uv run training-coach-mcp [config.toml]   # run the server locally (stdio)
+uv run coach list --limit 5    # CLI smoke test (needs config.toml + secrets)
+uv run coach server            # run the REST API locally
 uv run pytest tests/test_cache.py -x -q   # single test file
 ```
 
@@ -52,16 +54,18 @@ fit/       FitParser protocol (returns ParsedFile), FitDecodeParser,
            repair (clock shifts + segment splits), normalize helpers,
            RECORD_SCHEMA (records as transient Polars frame)
 analytics/ activities, heart_rate (vectorized zones), load (hr_trimp),
-           daily, weekly, trends
+           daily, weekly
 cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync, repository
-coach/     athlete profile (from TOML), coach context assembly
-server.py  FastMCP wiring; tool methods on TrainingCoachServer are directly testable
+coach/     athlete profile (from TOML), overview assembly
+server.py  service layer; methods on TrainingCoachServer are directly testable
+api.py     FastAPI application with Pydantic response models (OpenAPI schema)
+cli.py     cyclopts CLI (JSON output); app.meta.default consumes global --config
 config.py  Pydantic TOML models, env-based secret resolution
-models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries, ...)
+models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries, Overview, ...)
 errors.py  typed exception hierarchy (TrainingMCPError base)
 ```
 
-Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> server`.
+Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> server -> (api, cli)`.
 
 ## Critical Invariants
 
@@ -75,9 +79,9 @@ These are core design decisions — do not violate them casually:
 
 - **No raw time-series persistence.** Record data lives as a transient Polars
   frame (`fit/types.py` `RECORD_SCHEMA`) during processing and is discarded.
-  Raw records must never appear in Parquet files, MCP responses, or logs.
+  Raw records must never appear in Parquet files, REST/CLI responses, or logs.
   Coarse derived aggregates (5-bpm HR histogram, 10-minute weighted HR
-  averages) are allowed in `activity_metrics.parquet` and MCP responses.
+  averages) are allowed in `activity_metrics.parquet` and API responses.
   Schemas in `cache/schemas.py` enforce this.
 - **Secrets only from environment variables.** The TOML file stores the
   *names* of env vars (`username_env`/`password_env`). Values are wrapped in
@@ -120,6 +124,9 @@ These are core design decisions — do not violate them casually:
   `datetime.now()` so time-window tools stay valid over time.
 - Cache tests create isolated `tmp_path` directories; the flock test
   requires a POSIX OS.
+- `weekly`/`overview` never synchronize; only `list`/`GET /activities` do
+  (`--no-sync` opts out) plus startup sync in `coach server`. CLI tests
+  must populate the cache via `list` before exercising weekly/overview.
 - New behavior needs tests; bug fixes need a regression test first.
 - `test_fit_parser.py` contains golden zone values for both fixtures —
   they lock the vectorized `time_in_zones` to the original loop semantics
@@ -129,7 +136,8 @@ These are core design decisions — do not violate them casually:
 
 - `mypy --strict` is configured with one narrow override: `fitdecode` has no
   type stubs (`ignore_missing_imports`). Keep fitdecode usage isolated to
-  `fit/parser.py` so this stays contained.
+  `fit/parser.py`; keep cyclopts usage isolated to `cli.py` (cyclopts and
+  uvicorn ship type information, no override needed).
 - Polars is used both for transient record frames (`fit/types.py`) and for
   cache/storage (`cache/`); it is intentional that `fit/` and `analytics/`
   depend on it for record data.
