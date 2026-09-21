@@ -9,7 +9,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from training_coach_mcp.config import (
+from training_stats.config import (
     AppConfig,
     ApplicationConfig,
     AthleteConfig,
@@ -18,10 +18,10 @@ from training_coach_mcp.config import (
     LocalSourceConfig,
     ServerConfig,
 )
-from training_coach_mcp.errors import FitParseError, SourceError
-from training_coach_mcp.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
-from training_coach_mcp.models import SourceFile
-from training_coach_mcp.sources.base import ActivitySource
+from training_stats.errors import FitParseError, SourceError
+from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
+from training_stats.models import SourceFile
+from training_stats.sources.base import ActivitySource
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

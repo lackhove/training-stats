@@ -8,11 +8,11 @@ import polars as pl
 import pytest
 
 from tests.conftest import FIXTURES, ZONE_BOUNDS
-from training_coach_mcp.analytics.heart_rate import build_zone_bounds, time_in_zones
-from training_coach_mcp.errors import FitParseError
-from training_coach_mcp.fit.parser import FitDecodeParser
-from training_coach_mcp.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
-from training_coach_mcp.models import SourceFile
+from training_stats.analytics.heart_rate import build_zone_bounds, time_in_zones
+from training_stats.errors import FitParseError
+from training_stats.fit.parser import FitDecodeParser
+from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
+from training_stats.models import SourceFile
 
 PARSER = FitDecodeParser()
 

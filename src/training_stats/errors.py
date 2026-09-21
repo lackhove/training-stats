@@ -1,15 +1,15 @@
-"""Typed exceptions for the training coach."""
+"""Typed exceptions for training-stats."""
 
 
-class TrainingMCPError(Exception):
+class TrainingStatsError(Exception):
     """Base class for all errors raised by this package."""
 
 
-class ConfigurationError(TrainingMCPError):
+class ConfigurationError(TrainingStatsError):
     """Raised when configuration is missing, malformed or inconsistent."""
 
 
-class SourceError(TrainingMCPError):
+class SourceError(TrainingStatsError):
     """Raised when an activity source cannot be listed or read."""
 
 
@@ -21,13 +21,13 @@ class RemoteFileError(SourceError):
     """Raised when a remote file cannot be accessed or downloaded."""
 
 
-class FitParseError(TrainingMCPError):
+class FitParseError(TrainingStatsError):
     """Raised when a FIT file cannot be parsed."""
 
 
-class CacheError(TrainingMCPError):
+class CacheError(TrainingStatsError):
     """Raised when the Parquet cache cannot be read or written."""
 
 
-class AnalysisError(TrainingMCPError):
+class AnalysisError(TrainingStatsError):
     """Raised when analytics computation fails unexpectedly."""

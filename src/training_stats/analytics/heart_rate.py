@@ -113,7 +113,7 @@ def time_in_zones(
     a plausible heart-rate value. ``hr_coverage_ratio`` is the share of the
     sampled time span with HR data.
 
-    ``records`` follows :data:`training_coach_mcp.fit.types.RECORD_SCHEMA` and
+    ``records`` follows :data:`training_stats.fit.types.RECORD_SCHEMA` and
     is never mutated.
     """
     if records.height < 2 or not zones:

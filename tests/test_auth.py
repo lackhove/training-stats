@@ -10,17 +10,17 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
-from training_coach_mcp.api import build_app
-from training_coach_mcp.auth import BearerGuard
-from training_coach_mcp.config import (
+from training_stats.api import build_app
+from training_stats.auth import BearerGuard
+from training_stats.config import (
     AuthConfig,
     ServerConfig,
     resolve_auth_token,
 )
-from training_coach_mcp.errors import ConfigurationError
-from training_coach_mcp.server import TrainingCoachServer, create_server
+from training_stats.errors import ConfigurationError
+from training_stats.server import TrainingCoachServer, create_server
 
-TOKEN_ENV = "TRAINING_MCP_AUTH_TOKEN"
+TOKEN_ENV = "TRAINING_STATS_AUTH_TOKEN"
 TOKEN = "test-token-0123456789abcdef"
 
 
@@ -148,9 +148,9 @@ class TestGuardRepr:
 
 class TestOpenBindWarning:
     def test_warns_for_non_loopback_without_auth(self, caplog: pytest.LogCaptureFixture) -> None:
-        from training_coach_mcp.cli import _warn_unauthenticated_bind
+        from training_stats.cli import _warn_unauthenticated_bind
 
-        with caplog.at_level("WARNING", logger="training_coach_mcp.cli"):
+        with caplog.at_level("WARNING", logger="training_stats.cli"):
             _warn_unauthenticated_bind("0.0.0.0", has_auth=False)
         assert any("non-loopback" in record.message for record in caplog.records)
 
@@ -161,8 +161,8 @@ class TestOpenBindWarning:
     def test_no_warning_otherwise(
         self, caplog: pytest.LogCaptureFixture, host: str, has_auth: bool
     ) -> None:
-        from training_coach_mcp.cli import _warn_unauthenticated_bind
+        from training_stats.cli import _warn_unauthenticated_bind
 
-        with caplog.at_level("WARNING", logger="training_coach_mcp.cli"):
+        with caplog.at_level("WARNING", logger="training_stats.cli"):
             _warn_unauthenticated_bind(host, has_auth)
         assert caplog.records == []

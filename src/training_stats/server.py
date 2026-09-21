@@ -2,8 +2,8 @@
 
 Methods are thin, validating adapters over the repository and sync service;
 all business logic lives in the analytics, cache and coach layers. The
-FastAPI application (:mod:`training_coach_mcp.api`) and the CLI
-(:mod:`training_coach_mcp.cli`) are both wired over this class.
+FastAPI application (:mod:`training_stats.api`) and the CLI
+(:mod:`training_stats.cli`) are both wired over this class.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from .cache import schemas
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
 from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
-from .errors import TrainingMCPError
+from .errors import TrainingStatsError
 from .fit.parser import FitDecodeParser, FitParser
 from .models import SyncResult
 from .sources.base import ActivitySource
@@ -151,7 +151,7 @@ def create_server(config: AppConfig) -> TrainingCoachServer:
             )
         else:  # pragma: no cover - exhaustive by construction
             msg = f"unsupported source type: {type(source_config).__name__}"
-            raise TrainingMCPError(msg)
+            raise TrainingStatsError(msg)
 
     parser: FitParser = FitDecodeParser(quality=config.quality)
     sync_service = SyncService(

@@ -1,4 +1,4 @@
-"""Console entry point shim for the coach CLI."""
+"""Console entry point shim for the training-stats CLI."""
 
 from .cli import main
 

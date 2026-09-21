@@ -27,8 +27,8 @@ from .server import TrainingCoachServer, create_server
 logger = logging.getLogger(__name__)
 
 app = App(
-    name="coach",
-    help="Training coach for FIT activity data. All output is JSON.",
+    name="training-stats",
+    help="Training stats for FIT activity data. All output is JSON.",
     version=__version__,
     result_action="return_none",
 )
@@ -208,7 +208,7 @@ def server(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the coach CLI; returns the process exit code."""
+    """Run the training-stats CLI; returns the process exit code."""
     try:
         app.meta(argv, exit_on_error=False, print_error=False, result_action="return_none")
     except CycloptsError as exc:

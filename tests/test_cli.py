@@ -1,4 +1,4 @@
-"""Tests for the cyclopts-based coach CLI (JSON output, exit codes)."""
+"""Tests for the cyclopts-based training-stats CLI (JSON output, exit codes)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import FIXTURES
-from training_coach_mcp.cli import main
+from training_stats.cli import main
 
 EXPECTED_OVERVIEW_KEYS = {
     "athlete_profile",
@@ -39,7 +39,7 @@ def config_path(tmp_path: Path) -> Path:
         "\n".join(
             [
                 "[application]",
-                'name = "coach-cli-test"',
+                'name = "training-stats-test"',
                 'timezone = "Europe/Berlin"',
                 "",
                 "[athlete]",

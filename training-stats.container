@@ -3,20 +3,20 @@
 # ("Podman deployment (Quadlet)").
 
 [Unit]
-Description=Training Coach REST API server
+Description=Training Stats REST API server
 
 [Container]
 # Published by CI on every push to main. If the package is kept private,
 # run "podman login ghcr.io" once as the service user first.
-Image=ghcr.io/lackhove/training-coach-mcp:latest
-ContainerName=training-coach-mcp
-Network=training-mcp.network
+Image=ghcr.io/lackhove/training-stats:latest
+ContainerName=training-stats
+Network=training-stats.network
 EnvironmentFile=<repo-root>/.env
 Volume=<repo-root>/config.toml:/app/config/config.toml:ro
 Volume=<repo-root>/data:/app/data
 Volume=/path/to/activities:/data/activities:ro
 # No PublishPort: the API is reachable only from containers on the shared
-# training-mcp network. For same-host-only access from outside containers,
+# training-stats network. For same-host-only access from outside containers,
 # add PublishPort=127.0.0.1:<port>:<port>.
 
 [Service]

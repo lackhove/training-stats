@@ -10,18 +10,18 @@ import polars as pl
 import pytest
 
 from tests.conftest import StubParser, make_app_config, make_record_frame, stub_activity_content
-from training_coach_mcp.analytics.activities import (
+from training_stats.analytics.activities import (
     ActivityMetrics,
     AnalyzedActivity,
     compute_activity_metrics,
 )
-from training_coach_mcp.analytics.daily import (
+from training_stats.analytics.daily import (
     HARD_LOAD_THRESHOLD,
     DailySummaryRow,
     summarize_daily,
 )
-from training_coach_mcp.analytics.weekly import daily_to_weekly
-from training_coach_mcp.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
+from training_stats.analytics.weekly import daily_to_weekly
+from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
 
 
 def _parsed(
@@ -260,7 +260,7 @@ def _daily(date: str, load: float) -> DailySummaryRow:
 def test_stub_parser_roundtrip() -> None:
     """The conftest StubParser is deterministic."""
     parser = StubParser()
-    from training_coach_mcp.models import SourceFile
+    from training_stats.models import SourceFile
 
     content = stub_activity_content(
         datetime(2026, 6, 1, 10, 0, tzinfo=UTC), "cycling", 600.0, 10000.0, [120] * 5

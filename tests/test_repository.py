@@ -7,8 +7,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
-from training_coach_mcp.cache.repository import ParquetTrainingRepository
-from training_coach_mcp.cache.sync import SyncService
+from training_stats.cache.repository import ParquetTrainingRepository
+from training_stats.cache.sync import SyncService
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 

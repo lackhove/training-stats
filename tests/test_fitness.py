@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from training_coach_mcp.analytics.fitness import (
+from training_stats.analytics.fitness import (
     ATL_DECAY,
     CLASSIFICATION_FRESH,
     CLASSIFICATION_HIGH_FATIGUE,

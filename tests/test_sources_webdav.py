@@ -5,9 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from training_coach_mcp.config import WebDAVCredentials, WebDAVSourceConfig
-from training_coach_mcp.errors import AuthenticationError, RemoteFileError, SourceError
-from training_coach_mcp.sources.webdav import WebDAVSource
+from training_stats.config import WebDAVCredentials, WebDAVSourceConfig
+from training_stats.errors import AuthenticationError, RemoteFileError, SourceError
+from training_stats.sources.webdav import WebDAVSource
 
 BASE_URL = "https://cloud.example.com/remote.php/dav/files/alice/"
 

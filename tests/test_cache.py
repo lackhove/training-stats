@@ -11,12 +11,12 @@ import polars as pl
 import pytest
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
-from training_coach_mcp.cache import parquet, schemas
-from training_coach_mcp.cache.locking import sync_lock
-from training_coach_mcp.cache.sync import SyncService
-from training_coach_mcp.errors import CacheError, SourceError
-from training_coach_mcp.fit.types import ParsedFile
-from training_coach_mcp.models import SourceFile
+from training_stats.cache import parquet, schemas
+from training_stats.cache.locking import sync_lock
+from training_stats.cache.sync import SyncService
+from training_stats.errors import CacheError, SourceError
+from training_stats.fit.types import ParsedFile
+from training_stats.models import SourceFile
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 

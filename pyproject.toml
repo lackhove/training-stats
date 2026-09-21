@@ -1,5 +1,5 @@
 [project]
-name = "training-coach-mcp"
+name = "training-stats"
 version = "0.1.0"
 description = "REST API and CLI for FIT-based training analytics"
 readme = "README.md"
@@ -24,15 +24,14 @@ dev = [
 ]
 
 [project.scripts]
-coach = "training_coach_mcp.cli:main"
-training-coach-mcp = "training_coach_mcp.cli:main"
+training-stats = "training_stats.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.9.0,<1.0.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "training_coach_mcp"
+module-name = "training_stats"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -72,7 +71,7 @@ indent-style = "space"
 python_version = "3.12"
 strict = true
 mypy_path = ["src"]
-packages = ["training_coach_mcp"]
+packages = ["training_stats"]
 
 [[tool.mypy.overrides]]
 module = ["fitdecode", "fitdecode.*"]

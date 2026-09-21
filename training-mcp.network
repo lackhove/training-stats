@@ -1,9 +1,0 @@
-# Quadlet network shared by the training-coach MCP server and the web UI
-# container, so containers reach each other by DNS name (see README.md,
-# "Podman deployment (Quadlet)").
-
-[Unit]
-Description=Network for training coach containers
-
-[Network]
-NetworkName=training-mcp

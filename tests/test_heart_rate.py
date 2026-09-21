@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from tests.conftest import ZONE_BOUNDS, make_record_frame
-from training_coach_mcp.analytics.heart_rate import (
+from training_stats.analytics.heart_rate import (
     MAX_RECORD_INTERVAL_S,
     build_zone_bounds,
     hr_bucket_averages,
@@ -16,7 +16,7 @@ from training_coach_mcp.analytics.heart_rate import (
     hr_histogram,
     time_in_zones,
 )
-from training_coach_mcp.fit.types import RECORD_SCHEMA, empty_records
+from training_stats.fit.types import RECORD_SCHEMA, empty_records
 
 ZONES = build_zone_bounds(ZONE_BOUNDS)
 START = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)

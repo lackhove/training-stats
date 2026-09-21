@@ -1,9 +1,9 @@
-# Example configuration for training-coach-mcp.
+# Example configuration for training-stats.
 # Copy to config.toml and adjust. Secrets never belong in this file:
 # they are read from environment variables (see .env.example).
 
 [application]
-name = "training-coach-mcp"
+name = "training-stats"
 log_level = "INFO"
 timezone = "Europe/Berlin"
 
@@ -65,7 +65,7 @@ timeout_seconds = 30
 recursive = true
 
 [server]
-# Defaults for "coach server" (overridable via --host/--port).
+# Defaults for "training-stats server" (overridable via --host/--port).
 host = "127.0.0.1"
 port = 8000
 
@@ -74,4 +74,4 @@ port = 8000
 # read from the named environment variable at startup (see .env.example).
 # Without this section the server accepts unauthenticated requests.
 # [server.auth]
-# token_env = "TRAINING_MCP_AUTH_TOKEN"
+# token_env = "TRAINING_STATS_AUTH_TOKEN"

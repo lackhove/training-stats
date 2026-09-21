@@ -1,7 +1,7 @@
 """FIT parsing boundary.
 
 The rest of the system depends only on the :class:`FitParser` protocol and
-the :mod:`training_coach_mcp.fit.types` dataclasses, never on fitdecode.
+the :mod:`training_stats.fit.types` dataclasses, never on fitdecode.
 """
 
 from __future__ import annotations

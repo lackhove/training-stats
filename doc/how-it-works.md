@@ -1,4 +1,4 @@
-# How the Training Coach Works
+# How training-stats works
 
 Documentation of the architecture, the data-cleaning pipeline, processing
 steps and all metric definitions.
@@ -28,7 +28,7 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
 | `cli.py` | cyclopts CLI (JSON output) |
 | `config.py` | Pydantic TOML models; WebDAV secrets only via environment variables |
 | `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, …) |
-| `errors.py` | Typed exception hierarchy (`TrainingMCPError` base) |
+| `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
 
 **Core invariants**
 
@@ -164,7 +164,7 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 - **Exact duplicate detection:** when two files produce the same
   `activity_id` (typical: the same ride exported by both watch and app),
   the later file is marked `duplicate` in the source index and its rows are
-  excluded from activities, metrics, daily/weekly aggregates and MCP
+  excluded from activities, metrics, daily/weekly aggregates and API
   responses. Fuzzy near-duplicate detection (different clocks producing
   slightly different IDs) is explicitly out of scope.
 
@@ -360,7 +360,7 @@ repair outcomes so the LLM can reason about data trustworthiness.
 
 ## 9. CLI Commands & REST Endpoints
 
-**CLI** (`coach`, JSON output; `coach server` runs the REST API)
+**CLI** (`training-stats`, JSON output; `training-stats server` runs the REST API)
 
 | Command | Purpose |
 |---|---|

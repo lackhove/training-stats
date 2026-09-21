@@ -26,13 +26,13 @@ from pydantic import (
 
 from .errors import ConfigurationError
 
-CONFIG_ENV_VAR = "TRAINING_MCP_CONFIG"
+CONFIG_ENV_VAR = "TRAINING_STATS_CONFIG"
 
 
 class ApplicationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = "training-coach-mcp"
+    name: str = "training-stats"
     log_level: str = "INFO"
     timezone: str = "UTC"
 
@@ -303,7 +303,7 @@ def resolve_auth_token(config: AppConfig) -> SecretStr | None:
 
 
 def config_path_from_env() -> Path | None:
-    """Return the configuration path from ``TRAINING_MCP_CONFIG`` if set."""
+    """Return the configuration path from ``TRAINING_STATS_CONFIG`` if set."""
     import os
 
     value = os.environ.get(CONFIG_ENV_VAR)

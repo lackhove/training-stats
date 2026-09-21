@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Project Overview
 
-`training-coach-mcp` is a Python CLI and FastAPI REST server that:
+`training-stats` is a Python CLI and FastAPI REST server that:
 
 1. Reads FIT activity files from local directories or Nextcloud via WebDAV
 2. Detects new/changed files incrementally (SHA-256 content hashes)
@@ -39,14 +39,14 @@ Other useful commands:
 
 ```bash
 uv sync                        # install/sync dependencies after pyproject changes
-uv run coach list --limit 5    # CLI smoke test (needs config.toml + secrets)
-uv run coach server            # run the REST API locally
+uv run training-stats list --limit 5    # CLI smoke test (needs config.toml + secrets)
+uv run training-stats server            # run the REST API locally
 uv run pytest tests/test_cache.py -x -q   # single test file
 ```
 
 ## Architecture
 
-Package lives in `src/training_coach_mcp/` (uv build backend, `uv_build`).
+Package lives in `src/training_stats/` (uv build backend, `uv_build`).
 
 ```
 sources/   ActivitySource ABC -> LocalDirectorySource, WebDAVSource (httpx)
@@ -62,7 +62,7 @@ api.py     FastAPI application with Pydantic response models (OpenAPI schema)
 cli.py     cyclopts CLI (JSON output); app.meta.default consumes global --config
 config.py  Pydantic TOML models, env-based secret resolution
 models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries, Overview, ...)
-errors.py  typed exception hierarchy (TrainingMCPError base)
+errors.py  typed exception hierarchy (TrainingStatsError base)
 ```
 
 Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> server -> (api, cli)`.
@@ -125,7 +125,7 @@ These are core design decisions — do not violate them casually:
 - Cache tests create isolated `tmp_path` directories; the flock test
   requires a POSIX OS.
 - `weekly`/`overview` never synchronize; only `list`/`GET /activities` do
-  (`--no-sync` opts out) plus startup sync in `coach server`. CLI tests
+  (`--no-sync` opts out) plus startup sync in `training-stats server`. CLI tests
   must populate the cache via `list` before exercising weekly/overview.
 - New behavior needs tests; bug fixes need a regression test first.
 - `test_fit_parser.py` contains golden zone values for both fixtures —

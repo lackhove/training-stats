@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
-from training_coach_mcp.server import TrainingCoachServer, create_server
+from training_stats.server import TrainingCoachServer, create_server
 
 # Fixture activities anchored to "today" so overview windows match.
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -81,13 +81,13 @@ class TestServiceOperations:
             raise RuntimeError("disk gone")
 
         monkeypatch.setattr(server.sync_service, "sync", broken_sync)
-        with caplog.at_level(logging.WARNING, logger="training_coach_mcp.server"):
+        with caplog.at_level(logging.WARNING, logger="training_stats.server"):
             activities = server.list_activities()
         assert len(activities) == 2
         assert any("activity sync failed" in record.message for record in caplog.records)
 
     def test_startup_sync_populates_cache(self, unsynced_server: TrainingCoachServer) -> None:
-        from training_coach_mcp.cli import _startup_sync
+        from training_stats.cli import _startup_sync
 
         assert unsynced_server.repository.list_activities(limit=10) == []
         _startup_sync(unsynced_server)
@@ -197,7 +197,7 @@ class TestCreateServer:
         assert [source.name for source in server.sources] == ["local"]
 
     def test_webdav_source_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from training_coach_mcp.config import (
+        from training_stats.config import (
             WebDAVSourceConfig,
         )
 

@@ -1,4 +1,4 @@
-# training-coach-mcp
+# training-stats
 
 **100% AI genereated, use at your own risk!**
 
@@ -25,14 +25,14 @@ Key properties:
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
 ```bash
-git clone <this-repo> && cd training-coach-mcp
+git clone <this-repo> && cd training-stats
 uv sync
 
 # 1. Create a configuration
 cp config.example.toml config.toml   # edit paths and athlete values
 
 # 2. Use the CLI; `list` synchronizes your sources automatically
-uv run coach list --limit 10
+uv run training-stats list --limit 10
 ```
 
 Synchronization runs automatically at server startup and before every
@@ -43,11 +43,11 @@ JSON on stdout and log to stderr.
 
 | Command | Purpose |
 | --- | --- |
-| `coach list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes sources first) |
-| `coach show <activity-id>` | One activity incl. zones, load, data quality |
-| `coach weekly [--weeks --sport --start --end]` | Weekly totals + previous-week comparison |
-| `coach overview [--days --sport]` | Compact bundle: profile, daily series, weekly summaries, form, quality |
-| `coach server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
+| `training-stats list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes sources first) |
+| `training-stats show <activity-id>` | One activity incl. zones, load, data quality |
+| `training-stats weekly [--weeks --sport --start --end]` | Weekly totals + previous-week comparison |
+| `training-stats overview [--days --sport]` | Compact bundle: profile, daily series, weekly summaries, form, quality |
+| `training-stats server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
 
 Global options: `--config/-c` (before or after the verb), `--help`, `--version`.
 The overview's daily series carries per-(date, sport) totals for every metric,
@@ -58,8 +58,8 @@ so any metric trend is a simple filter and projection over it.
 Copy `config.example.toml` to `config.toml`. The configuration path is
 resolved in this order:
 
-1. CLI option: `uv run coach -c /path/to/config.toml list`
-2. `TRAINING_MCP_CONFIG` environment variable
+1. CLI option: `uv run training-stats -c /path/to/config.toml list`
+2. `TRAINING_STATS_CONFIG` environment variable
 3. `./config.toml`
 
 ### Local-only setup
@@ -96,8 +96,8 @@ blocks; every entry is active.
 ## REST API
 
 ```bash
-uv run coach server            # binds [server] host/port from config.toml
-uv run coach server --host 0.0.0.0 --port 8000
+uv run training-stats server            # binds [server] host/port from config.toml
+uv run training-stats server --host 0.0.0.0 --port 8000
 ```
 
 | Endpoint | Purpose |
@@ -118,15 +118,15 @@ an environment variable; `config.toml` only names the variable:
 
 ```toml
 [server.auth]
-token_env = "TRAINING_MCP_AUTH_TOKEN"
+token_env = "TRAINING_STATS_AUTH_TOKEN"
 ```
 
 ```bash
-export TRAINING_MCP_AUTH_TOKEN="$(openssl rand -hex 32)"
+export TRAINING_STATS_AUTH_TOKEN="$(openssl rand -hex 32)"
 ```
 
 Without this section the server accepts unauthenticated requests (starting
-`coach server` on a non-loopback host without auth logs a warning); with it,
+`training-stats server` on a non-loopback host without auth logs a warning); with it,
 every data request must carry `Authorization: Bearer <token>` while
 `/openapi.json` and `/docs` stay reachable for schema discovery. Rotate the
 token by changing the env value and restarting the server. The CLI verbs
@@ -153,22 +153,22 @@ container as a rootless user service:
 
 ```bash
 # 1. Pull the image (repeat to pick up new versions)
-podman pull ghcr.io/lackhove/training-coach-mcp:latest
+podman pull ghcr.io/lackhove/training-stats:latest
 
 # 2. Install the unit; <repo-root> placeholders become this repo's absolute
 #    path (run the command from the repository root)
 mkdir -p ~/.config/containers/systemd
-sed "s|<repo-root>|$PWD|" training-coach-mcp.container \
-    > ~/.config/containers/systemd/training-coach-mcp.container
+sed "s|<repo-root>|$PWD|" training-stats.container \
+    > ~/.config/containers/systemd/training-stats.container
 
 # 3. Start, and start automatically on login
 systemctl --user daemon-reload
-systemctl --user start training-coach-mcp.service
+systemctl --user start training-stats.service
 ```
 
-Logs are available via `journalctl --user -u training-coach-mcp -f`; after
+Logs are available via `journalctl --user -u training-stats -f`; after
 pulling a new image, restart with
-`systemctl --user restart training-coach-mcp.service`. The FIT source volume
+`systemctl --user restart training-stats.service`. The FIT source volume
 (`/path/to/activities:/data/activities`) must match the `path` of the local
 source in `config.toml`.
 
@@ -180,13 +180,13 @@ so they reach each other by container DNS name; the API is not published to
 the host or LAN:
 
 ```bash
-cp training-mcp.network ~/.config/containers/systemd/
-# add "Network=training-mcp.network" to the web UI's .container file too
+cp training-stats.network ~/.config/containers/systemd/
+# add "Network=training-stats.network" to the web UI's .container file too
 systemctl --user daemon-reload
-systemctl --user restart training-mcp-network.service training-coach-mcp.service
+systemctl --user restart training-stats-network.service training-stats.service
 ```
 
-The web UI then connects to `http://training-coach-mcp:<port>` (container
+The web UI then connects to `http://training-stats:<port>` (container
 DNS name; requires `[server] host = "0.0.0.0"` in `config.toml` so the port
 is reachable from outside the API container).
 
