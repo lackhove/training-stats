@@ -80,13 +80,19 @@ class TestListCommand:
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["--config", str(config_path), "list"]) == 0
-        activities = _stdout_payload(capsys)
+        captured = capsys.readouterr()
+        activities = json.loads(captured.out)
         assert isinstance(activities, list) and len(activities) == 2
         assert {item["sport"] for item in activities} == {"cycling"}  # type: ignore[index]
+        # Sync feedback goes to stderr; stdout stays pure JSON.
+        assert "syncing sources..." in captured.err
+        assert "sync: 2 found, 2 new, 0 unchanged, 0 failed" in captured.err
 
         # Second run: unchanged files are skipped via content hashes.
         assert main(["--config", str(config_path), "list"]) == 0
-        assert len(_stdout_payload(capsys)) == 2  # type: ignore[arg-type]
+        captured = capsys.readouterr()
+        assert len(json.loads(captured.out)) == 2
+        assert "sync: 2 found, 0 new, 2 unchanged, 0 failed" in captured.err
 
     def test_config_before_command(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -98,7 +104,9 @@ class TestListCommand:
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list", "--no-sync"]) == 0
-        assert _stdout_payload(capsys) == []
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == []
+        assert "sync" not in captured.err
 
     def test_sport_filter(self, config_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["-c", str(config_path), "list", "--sport", "cycling"]) == 0
@@ -164,3 +172,45 @@ class TestErrorExits:
 
     def test_unknown_command(self, config_path: Path) -> None:
         assert main(["-c", str(config_path), "frobnicate"]) == 2
+
+
+class TestSyncSummaryFeedback:
+    def test_extras_and_source_errors(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from training_stats.cli import _print_sync_summary
+
+        _print_sync_summary(
+            {
+                "files_discovered": 12,
+                "files_processed": 2,
+                "files_skipped": 10,
+                "files_failed": 0,
+                "files_repaired": 1,
+                "segments_discarded": 3,
+                "duplicates_detected": 1,
+                "source_errors": ["nextcloud: connection refused"],
+            }
+        )
+        err = capsys.readouterr().err
+        assert "syncing sources..." in err
+        assert "sync: 12 found, 2 new, 10 unchanged, 0 failed" in err
+        assert "sync: 1 repaired, 3 segments discarded, 1 duplicate" in err
+        assert "sync source error: nextcloud: connection refused" in err
+
+    def test_no_extras_lines_when_clean(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from training_stats.cli import _print_sync_summary
+
+        _print_sync_summary(
+            {
+                "files_discovered": 4,
+                "files_processed": 0,
+                "files_skipped": 4,
+                "files_failed": 0,
+                "files_repaired": 0,
+                "segments_discarded": 0,
+                "duplicates_detected": 0,
+                "source_errors": [],
+            }
+        )
+        err = capsys.readouterr().err.splitlines()
+        assert len(err) == 2  # progress + summary, no extras/source lines
+        assert all("repaired" not in line for line in err)

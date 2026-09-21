@@ -97,6 +97,42 @@ def _launcher(
     )
 
 
+def _int_value(value: object) -> int:
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _print_sync_summary(result: dict[str, object]) -> None:
+    """Print one sync progress/summary line plus error details to stderr.
+
+    Stdout stays machine-readable: JSON payloads go there and only there.
+    """
+    print("syncing sources...", file=sys.stderr)
+    print(
+        "sync: "
+        f"{_int_value(result['files_discovered'])} found, "
+        f"{_int_value(result['files_processed'])} new, "
+        f"{_int_value(result['files_skipped'])} unchanged, "
+        f"{_int_value(result['files_failed'])} failed",
+        file=sys.stderr,
+    )
+    extras: list[str] = []
+    repaired = _int_value(result["files_repaired"])
+    discarded = _int_value(result["segments_discarded"])
+    duplicates = _int_value(result["duplicates_detected"])
+    if repaired:
+        extras.append(f"{repaired} repaired")
+    if discarded:
+        extras.append(f"{discarded} segments discarded")
+    if duplicates:
+        extras.append(f"{duplicates} duplicate" if duplicates == 1 else f"{duplicates} duplicates")
+    if extras:
+        print("sync: " + ", ".join(extras), file=sys.stderr)
+    source_errors = result["source_errors"]
+    if isinstance(source_errors, list):
+        for error in source_errors:
+            print(f"sync source error: {error}", file=sys.stderr)
+
+
 @app.command(name="list")
 def list_activities(
     config: ConfigArg = None,
@@ -115,9 +151,11 @@ def list_activities(
 ) -> None:
     """List compact activity summaries, newest first."""
     service = _service(config)
+    if sync_first:
+        _print_sync_summary(service.sync_activities())
     _print(
         service.list_activities(
-            start_date=start, end_date=end, sport=sport, limit=limit, sync_first=sync_first
+            start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
         )
     )
 

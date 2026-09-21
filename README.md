@@ -37,7 +37,9 @@ uv run training-stats list --limit 10
 
 Synchronization runs automatically at server startup and before every
 `list` call; only new or changed files are processed. All commands print
-JSON on stdout and log to stderr.
+JSON on stdout and nothing else; progress and diagnostics (sync summary,
+source errors) go to stderr, so piping stays clean:
+`training-stats list | jq '.[].sport'`.
 
 ## Commands
 
