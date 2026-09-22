@@ -58,7 +58,9 @@ analytics/ activities, heart_rate (vectorized zones), load (hr_trimp),
            daily, weekly
 ingest.py  FileProcessor: parse one file, compute metrics, build Parquet
            row dicts (domain half of sync, injected into cache/sync.py)
-cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync, repository
+cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync,
+           repository (storage boundary: read-side queries + sync state
+           load/save; the only module touching Parquet directly)
 coach/     athlete profile (from TOML), overview assembly
 services.py  service layer returning domain models; methods on
              TrainingStatsService are directly testable
@@ -169,8 +171,8 @@ These are core design decisions — do not violate them casually:
   cache/storage (`cache/`); it is intentional that `fit/` and `analytics/`
   depend on it for record data.
 - Polars `to_dicts()` returns `dict[str, object]`; use the module-level
-  `_optional_float`/`_int`/`_str` converter helpers in `cache/sync.py` and
-  `cache/repository.py` when reading values back. Same pattern for
+  `_optional_float`/`_int`/`_str` converter helpers in `cache/repository.py`
+  when reading values back. Same pattern for
   `Series.sum()`/`min()`/`max()` results — guard with `isinstance` checks
   (see `analytics/heart_rate.py`).
 

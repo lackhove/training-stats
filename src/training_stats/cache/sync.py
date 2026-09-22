@@ -5,43 +5,45 @@ time match the previous sync are skipped without being read at all; downloaded
 candidates are reprocessed unconditionally. FIT files are only ever added,
 deleted or rewritten, and a rewrite changes size or modification time.
 Parsing and metric computation are delegated to the injected
-:class:`~training_stats.ingest.FileProcessor`.
+:class:`~training_stats.ingest.FileProcessor`; all cache I/O goes through the
+injected :class:`SyncCacheRepository`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-import polars as pl
-
-from ..analytics.activities import ActivityMetrics, AnalyzedActivity
-from ..analytics.daily import DailySummaryRow, summarize_daily
-from ..analytics.weekly import WeeklySummaryRow, daily_to_weekly
-from ..converters import (
-    buckets_from_json,
-    flags_from_json,
-    histogram_from_json,
-    optional_float,
-    optional_int,
-    optional_str,
-    required_float,
-)
 from ..errors import SourceError
-from ..fit.types import ParsedActivity, empty_records
 from ..models import SourceFile, SyncResult
 from ..sources.base import ActivitySource
-from . import parquet, schemas
+from . import schemas
 from .locking import sync_lock
+from .repository import SyncState
 
 if TYPE_CHECKING:
     # Runtime import would cycle: ingest -> cache.schemas -> this module.
     from ..ingest import FileProcessor
 
 logger = logging.getLogger(__name__)
+
+
+class SyncCacheRepository(Protocol):
+    """Storage interface :class:`SyncService` needs from the cache repository.
+
+    Narrow, write-oriented counterpart of ``TrainingRepository``; implemented
+    structurally by ``ParquetTrainingRepository`` so the storage engine stays
+    swappable behind the repository.
+    """
+
+    def load_sync_state(self) -> SyncState: ...
+
+    def save_sync_snapshot(
+        self, state: SyncState, *, last_sync: datetime, analysis_version: str
+    ) -> None: ...
 
 
 class SyncService:
@@ -52,15 +54,15 @@ class SyncService:
         *,
         sources: list[ActivitySource],
         processor: FileProcessor,
+        repository: SyncCacheRepository,
         cache_dir: Path,
-        timezone: tzinfo,
         analysis_version: str,
         lock_timeout_seconds: float = 30.0,
     ) -> None:
         self.sources = sources
         self.processor = processor
+        self.repository = repository
         self.cache_dir = cache_dir
-        self.tz = timezone
         self.analysis_version = analysis_version
         self.lock_timeout_seconds = lock_timeout_seconds
 
@@ -77,8 +79,7 @@ class SyncService:
 
     def _run_sync(self) -> SyncResult:
         started_at = datetime.now(UTC)
-        index_rows = self._load_index()
-        activities, metrics = self._load_store()
+        state = self.repository.load_sync_state()
 
         discovered = 0
         processed = 0
@@ -101,7 +102,7 @@ class SyncService:
             sources_listed += 1
             discovered += len(files)
             for source_file in files:
-                previous_rows = self._previous_rows(index_rows, source.name, source_file.path)
+                previous_rows = self._previous_rows(state.index_rows, source.name, source_file.path)
                 if previous_rows and self._metadata_unchanged(previous_rows, source_file):
                     kept_index.extend(previous_rows)
                     skipped += 1
@@ -114,15 +115,15 @@ class SyncService:
                     kept_index.append(self._failure_row(source_file, started_at, str(exc), None))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(previous_rows, activities, metrics)
+                self._purge_previous(previous_rows, state.activities, state.metrics)
                 outcome = self.processor.process(
-                    source_file, content, file_hash, set(activities), started_at
+                    source_file, content, file_hash, set(state.activities), started_at
                 )
                 kept_index.extend(outcome.index_rows)
                 for activity_row in outcome.ok_activity_rows:
-                    activities[str(activity_row["activity_id"])] = activity_row
+                    state.activities[str(activity_row["activity_id"])] = activity_row
                 for metrics_row in outcome.ok_metrics_rows:
-                    metrics[str(metrics_row["activity_id"])] = metrics_row
+                    state.metrics[str(metrics_row["activity_id"])] = metrics_row
                 if outcome.ok_activity_rows or outcome.duplicates:
                     processed += 1
                 else:
@@ -141,7 +142,13 @@ class SyncService:
                 len(source_errors),
             )
         else:
-            self._write_cache(activities, metrics, kept_index, started_at)
+            self.repository.save_sync_snapshot(
+                SyncState(
+                    index_rows=kept_index, activities=state.activities, metrics=state.metrics
+                ),
+                last_sync=started_at,
+                analysis_version=self.analysis_version,
+            )
             logger.info(
                 "sync complete: %d discovered, %d processed, %d skipped, %d failed, "
                 "%d duplicates, %d repaired files, %d discarded segments",
@@ -193,27 +200,6 @@ class SyncService:
         msg = f"source {source_file.source_name!r} is not configured"
         raise SourceError(msg)
 
-    def _load_index(self) -> list[dict[str, object]]:
-        frame = parquet.read_parquet(self.cache_dir / schemas.SOURCE_INDEX_FILE)
-        if frame.is_empty():
-            return []
-        return frame.to_dicts()
-
-    def _load_store(self) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
-        activities_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
-        metrics_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        activities = (
-            {str(row["activity_id"]): row for row in activities_frame.to_dicts()}
-            if not activities_frame.is_empty()
-            else {}
-        )
-        metrics = (
-            {str(row["activity_id"]): row for row in metrics_frame.to_dicts()}
-            if not metrics_frame.is_empty()
-            else {}
-        )
-        return activities, metrics
-
     def _previous_rows(
         self, index_rows: list[dict[str, object]], source_name: str, path: str
     ) -> list[dict[str, object]]:
@@ -263,179 +249,3 @@ class SyncService:
             if activity_id:
                 activities.pop(str(activity_id), None)
                 metrics.pop(str(activity_id), None)
-
-    def _write_cache(
-        self,
-        activities: dict[str, dict[str, object]],
-        metrics: dict[str, dict[str, object]],
-        index_rows: list[dict[str, object]],
-        started_at: datetime,
-    ) -> None:
-        # Prune store rows without an active "ok" index row (removed or
-        # re-specified files, historical orphans) so activities, aggregates
-        # and the index stay consistent.
-        ok_ids = {
-            str(row["activity_id"])
-            for row in index_rows
-            if row.get("status") == schemas.STATUS_OK and row.get("activity_id") is not None
-        }
-        activities = {key: row for key, row in activities.items() if key in ok_ids}
-        metrics = {key: row for key, row in metrics.items() if key in ok_ids}
-        analyzed = [
-            self._rebuild_analyzed(
-                activities[str(row["activity_id"])], metrics[str(row["activity_id"])]
-            )
-            for row in index_rows
-            if row.get("status") == schemas.STATUS_OK
-            and row.get("activity_id") is not None
-            and str(row["activity_id"]) in activities
-            and str(row["activity_id"]) in metrics
-        ]
-        daily_rows = summarize_daily(analyzed, self.tz)
-        weekly_rows = daily_to_weekly(daily_rows)
-
-        parquet.write_parquet_atomic(
-            _frame(activities, schemas.ACTIVITY_SCHEMA), self.cache_dir / schemas.ACTIVITIES_FILE
-        )
-        parquet.write_parquet_atomic(
-            _frame(metrics, schemas.ACTIVITY_METRICS_SCHEMA),
-            self.cache_dir / schemas.ACTIVITY_METRICS_FILE,
-        )
-        parquet.write_parquet_atomic(
-            pl.DataFrame(_daily_records(daily_rows), schema=schemas.DAILY_SCHEMA),
-            self.cache_dir / schemas.DAILY_FILE,
-        )
-        parquet.write_parquet_atomic(
-            pl.DataFrame(_weekly_records(weekly_rows), schema=schemas.WEEKLY_SCHEMA),
-            self.cache_dir / schemas.WEEKLY_FILE,
-        )
-        parquet.write_parquet_atomic(
-            _index_frame(index_rows), self.cache_dir / schemas.SOURCE_INDEX_FILE
-        )
-        parquet.write_json_atomic(
-            {
-                "last_sync": started_at.isoformat(),
-                "analysis_version": self.analysis_version,
-                "activity_count": len(activities),
-                "failed_file_count": sum(
-                    1 for row in index_rows if row.get("status") == schemas.STATUS_FAILED
-                ),
-            },
-            self.cache_dir / schemas.METADATA_FILE,
-        )
-
-    def _rebuild_analyzed(
-        self, activity_row: dict[str, object], metrics_row: dict[str, object]
-    ) -> AnalyzedActivity:
-        start_time = activity_row["start_time"]
-        if not isinstance(start_time, datetime):
-            msg = "activity start_time has unexpected type"
-            raise SourceError(msg)
-        parsed = ParsedActivity(
-            activity_id=str(activity_row["activity_id"]),
-            start_time=start_time,
-            sport=str(activity_row["sport"]),
-            sub_sport=optional_str(activity_row.get("sub_sport")),
-            duration_s=optional_float(activity_row.get("duration_s")),
-            moving_time_s=optional_float(activity_row.get("moving_time_s")),
-            distance_m=optional_float(activity_row.get("distance_m")),
-            elevation_gain_m=optional_float(activity_row.get("elevation_gain_m")),
-            avg_hr=optional_float(activity_row.get("avg_hr")),
-            max_hr=optional_float(activity_row.get("max_hr")),
-            avg_speed_mps=optional_float(activity_row.get("avg_speed_mps")),
-            max_speed_mps=optional_float(activity_row.get("max_speed_mps")),
-            calories=optional_float(activity_row.get("calories")),
-            records=empty_records(),
-            source_path=str(activity_row["source_path"]),
-            source_hash="",
-            paused_time_s=optional_float(activity_row.get("paused_time_s")),
-            segment_index=optional_int(activity_row.get("segment_index")) or 0,
-            segment_count=optional_int(activity_row.get("segment_count")) or 1,
-            repair_flags=flags_from_json(activity_row.get("repair_flags_json")),
-        )
-        metric_values = ActivityMetrics(
-            activity_id=str(metrics_row["activity_id"]),
-            hr_zone_1_s=required_float(metrics_row.get("hr_zone_1_s")),
-            hr_zone_2_s=required_float(metrics_row.get("hr_zone_2_s")),
-            hr_zone_3_s=required_float(metrics_row.get("hr_zone_3_s")),
-            hr_zone_4_s=required_float(metrics_row.get("hr_zone_4_s")),
-            hr_zone_5_s=required_float(metrics_row.get("hr_zone_5_s")),
-            hr_coverage_ratio=required_float(metrics_row.get("hr_coverage_ratio")),
-            hr_histogram_s=histogram_from_json(metrics_row.get("hr_histogram_json")),
-            hr_10min_averages=buckets_from_json(metrics_row.get("hr_10min_json")),
-            hr_drift_bpm_per_hour=optional_float(metrics_row.get("hr_drift_bpm_per_hour")),
-            load_value=optional_float(metrics_row.get("load_value")),
-            load_method=optional_str(metrics_row.get("load_method")),
-            load_confidence=optional_str(metrics_row.get("load_confidence")),
-            data_completeness=required_float(metrics_row.get("data_completeness")),
-            analysis_version=str(metrics_row[schemas.ANALYSIS_VERSION]),
-            ef_first_half=optional_float(metrics_row.get("ef_first_half")),
-            ef_second_half=optional_float(metrics_row.get("ef_second_half")),
-            aerobic_decoupling_pct=optional_float(metrics_row.get("aerobic_decoupling_pct")),
-            decoupling_confidence=optional_str(metrics_row.get("decoupling_confidence"))
-            or "insufficient_duration",
-        )
-        return AnalyzedActivity(activity=parsed, metrics=metric_values)
-
-
-def _frame(rows: dict[str, dict[str, object]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
-    if not rows:
-        return pl.DataFrame(schema=schema)
-    return pl.DataFrame(list(rows.values()), schema=schema)
-
-
-def _index_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
-    if not rows:
-        return pl.DataFrame(schema=schemas.SOURCE_INDEX_SCHEMA)
-    return pl.DataFrame(rows, schema=schemas.SOURCE_INDEX_SCHEMA)
-
-
-def _daily_records(rows: list[DailySummaryRow]) -> list[dict[str, object]]:
-    return [
-        {
-            "date": row.date,
-            "sport": row.sport,
-            "activity_count": row.activity_count,
-            "duration_s": row.duration_s,
-            "distance_m": row.distance_m,
-            "elevation_gain_m": row.elevation_gain_m,
-            "hr_zone_1_s": row.hr_zone_1_s,
-            "hr_zone_2_s": row.hr_zone_2_s,
-            "hr_zone_3_s": row.hr_zone_3_s,
-            "hr_zone_4_s": row.hr_zone_4_s,
-            "hr_zone_5_s": row.hr_zone_5_s,
-            "load_value": row.load_value,
-            "hard_activity_count": row.hard_activity_count,
-            "longest_activity_s": row.longest_activity_s,
-            "longest_activity_id": row.longest_activity_id,
-        }
-        for row in rows
-    ]
-
-
-def _weekly_records(rows: list[WeeklySummaryRow]) -> list[dict[str, object]]:
-    return [
-        {
-            "iso_year": row.iso_year,
-            "iso_week": row.iso_week,
-            "week_start": row.week_start,
-            "sport": row.sport,
-            "activity_count": row.activity_count,
-            "duration_s": row.duration_s,
-            "distance_m": row.distance_m,
-            "elevation_gain_m": row.elevation_gain_m,
-            "hr_zone_1_s": row.hr_zone_1_s,
-            "hr_zone_2_s": row.hr_zone_2_s,
-            "hr_zone_3_s": row.hr_zone_3_s,
-            "hr_zone_4_s": row.hr_zone_4_s,
-            "hr_zone_5_s": row.hr_zone_5_s,
-            "load_value": row.load_value,
-            "hard_activity_count": row.hard_activity_count,
-            "longest_activity_s": row.longest_activity_s,
-            "longest_activity_id": row.longest_activity_id,
-            "load_value_prev": row.load_value_prev,
-            "duration_s_prev": row.duration_s_prev,
-            "distance_m_prev": row.distance_m_prev,
-        }
-        for row in rows
-    ]

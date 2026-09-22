@@ -20,8 +20,12 @@ def build_repository(tmp_path: Path, files: dict[str, bytes]) -> ParquetTraining
     service = SyncService(
         sources=[source],
         processor=make_processor(athlete=config.athlete, analysis_version="1"),
+        repository=ParquetTrainingRepository(
+            cache_dir=cache_dir,
+            timezone=config.application.zoneinfo,
+            athlete=config.athlete,
+        ),
         cache_dir=cache_dir,
-        timezone=config.application.zoneinfo,
         analysis_version="1",
     )
     service.sync()

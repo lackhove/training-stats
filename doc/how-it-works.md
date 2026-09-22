@@ -182,9 +182,10 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 
 ## 4. Processing: Sync & Cache
 
-### 4.1 Sync Flow (`cache/sync.py` + `ingest.py`)
+### 4.1 Sync Flow (`cache/sync.py` + `ingest.py` + `cache/repository.py`)
 
-1. Load source index + activity/metrics stores (in memory).
+1. Load source index + activity/metrics stores (in memory) via
+   `repository.load_sync_state()`.
 2. List all files from all enabled sources.
 3. Skip files matching size + mtime + version from the previous sync
    (no read); read + reprocess the rest.
@@ -192,8 +193,10 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
    delegate to `ingest.FileProcessor` — parse, repair, compute metrics,
    index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` with no store rows.
-6. Rebuild daily/weekly aggregates **strictly from `status == "ok"` rows**.
-7. Write all Parquet files + `metadata.json` atomically under `sync.lock`.
+6. `repository.save_sync_snapshot()` prunes orphan store rows (no `ok`
+   index row), rebuilds daily/weekly aggregates **strictly from
+   `status == "ok"` rows** and writes all Parquet files + `metadata.json`
+   atomically under `sync.lock`.
 
 Failure isolation: an unreadable/unparseable file gets a `failed` index row
 with the error message; the sync continues. A failing *source* (e.g. WebDAV

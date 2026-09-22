@@ -19,6 +19,7 @@ from tests.conftest import (
 )
 from training_stats.cache import parquet, schemas
 from training_stats.cache.locking import sync_lock
+from training_stats.cache.repository import ParquetTrainingRepository
 from training_stats.cache.sync import SyncService
 from training_stats.errors import CacheError, SourceError
 from training_stats.fit.types import ParsedFile
@@ -36,11 +37,14 @@ def make_sync(
     source = source or StubSource(files=files)
     cache_dir = tmp_path / "cache"
     config = make_app_config(cache_dir, tmp_path / "src")
+    repository = ParquetTrainingRepository(
+        cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+    )
     service = SyncService(
         sources=[source],
         processor=make_processor(athlete=config.athlete, analysis_version=analysis_version),
+        repository=repository,
         cache_dir=cache_dir,
-        timezone=config.application.zoneinfo,
         analysis_version=analysis_version,
     )
     return service, source, cache_dir
@@ -290,8 +294,12 @@ class TestCacheProtection:
                 athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
                 analysis_version="1",
             ),
+            repository=ParquetTrainingRepository(
+                cache_dir=cache_dir,
+                timezone=make_app_config(cache_dir, tmp_path / "src").application.zoneinfo,
+                athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
+            ),
             cache_dir=cache_dir,
-            timezone=make_app_config(cache_dir, tmp_path / "src").application.zoneinfo,
             analysis_version="1",
         )
         result = broken.sync()
@@ -309,8 +317,10 @@ class TestCacheProtection:
         empty = SyncService(
             sources=[],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
+            repository=ParquetTrainingRepository(
+                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+            ),
             cache_dir=cache_dir,
-            timezone=config.application.zoneinfo,
             analysis_version="1",
         )
         result = empty.sync()
@@ -383,8 +393,10 @@ class TestFailureHandling:
         service = SyncService(
             sources=[source_b, source_a],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
+            repository=ParquetTrainingRepository(
+                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+            ),
             cache_dir=cache_dir,
-            timezone=config.application.zoneinfo,
             analysis_version="1",
         )
         result = service.sync()
@@ -467,8 +479,10 @@ class TestSegmentSync:
             processor=make_processor(
                 athlete=config.athlete, analysis_version="1", parser=FlagParser()
             ),
+            repository=ParquetTrainingRepository(
+                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+            ),
             cache_dir=cache_dir,
-            timezone=config.application.zoneinfo,
             analysis_version="1",
         )
         result = service.sync()

@@ -16,7 +16,6 @@ from datetime import UTC, date, datetime
 
 from .analytics.weekly import WeeklySummaryRow
 from .cache import schemas
-from .cache.parquet import read_json
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
 from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
@@ -83,16 +82,9 @@ class TrainingStatsService:
     def _seconds_since_last_sync(self, now: float) -> float | None:
         if self._last_sync_monotonic is not None:
             return now - self._last_sync_monotonic
-        metadata = read_json(self.config.cache.directory / schemas.METADATA_FILE)
-        last_sync = metadata.get("last_sync") if metadata else None
-        if not isinstance(last_sync, str):
+        stamp = self.repository.last_sync_stamp()
+        if stamp is None:
             return None
-        try:
-            stamp = datetime.fromisoformat(last_sync)
-        except ValueError:
-            return None
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=UTC)
         return (datetime.now(UTC) - stamp).total_seconds()
 
     def sync_activities(self) -> SyncResult:
@@ -211,18 +203,18 @@ def create_service(config: AppConfig) -> TrainingStatsService:
         quality=config.quality,
         analysis_version=schemas.ANALYSIS_VERSION_VALUE,
     )
-    sync_service = SyncService(
-        sources=sources,
-        processor=processor,
-        cache_dir=config.cache.directory,
-        timezone=config.application.zoneinfo,
-        analysis_version=schemas.ANALYSIS_VERSION_VALUE,
-        lock_timeout_seconds=config.cache.lock_timeout_seconds,
-    )
     repository = ParquetTrainingRepository(
         cache_dir=config.cache.directory,
         timezone=config.application.zoneinfo,
         athlete=config.athlete,
+        lock_timeout_seconds=config.cache.lock_timeout_seconds,
+    )
+    sync_service = SyncService(
+        sources=sources,
+        processor=processor,
+        repository=repository,
+        cache_dir=config.cache.directory,
+        analysis_version=schemas.ANALYSIS_VERSION_VALUE,
         lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
     return TrainingStatsService(

@@ -1,33 +1,43 @@
-"""Read-side repository abstracting Parquet access from the API and CLI."""
+"""Repository abstracting Parquet access from the service layers.
+
+Read side (``TrainingRepository``): queries for the API and CLI. Write side
+(``SyncState`` load/save): the storage boundary for ``cache/sync.py``, so the
+storage engine stays swappable behind this module.
+"""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from ..analytics.daily import DailySummaryRow
+from ..analytics.activities import ActivityMetrics, AnalyzedActivity
+from ..analytics.daily import DailySummaryRow, summarize_daily
 from ..analytics.fitness import (
     compute_days_since_60k,
     compute_rolling_distance,
     compute_training_form,
 )
-from ..analytics.weekly import WeeklySummaryRow
+from ..analytics.weekly import WeeklySummaryRow, daily_to_weekly
 from ..config import AthleteConfig
 from ..converters import (
     buckets_from_json,
     flags_from_json,
     histogram_from_json,
     optional_float,
+    optional_int,
     optional_str,
+    required_float,
 )
 from ..errors import CacheError
+from ..fit.types import ParsedActivity, empty_records
 from ..models import (
     ActivityDetails,
     ActivitySummary,
@@ -39,6 +49,20 @@ from . import parquet, schemas
 from .locking import read_lock
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SyncState:
+    """Sync working set: index rows plus the activity/metrics stores.
+
+    The dicts are mutated in place by the sync loop; ``index_rows`` is
+    replaced wholesale via a new :class:`SyncState` when the snapshot is
+    saved (rows of deleted files are simply not carried over).
+    """
+
+    index_rows: list[dict[str, object]]
+    activities: dict[str, dict[str, object]]
+    metrics: dict[str, dict[str, object]]
 
 
 class TrainingRepository(Protocol):
@@ -71,6 +95,8 @@ class TrainingRepository(Protocol):
     def data_quality(self) -> DataQuality: ...
 
     def overview(self, days: int = 28, sport: str | None = None) -> Overview: ...
+
+    def last_sync_stamp(self) -> datetime | None: ...
 
 
 class ParquetTrainingRepository:
@@ -315,6 +341,93 @@ class ParquetTrainingRepository:
 
         return build_overview(self, self.athlete, self.tz, days=days, sport=sport)
 
+    # -- sync write side ----------------------------------------------------
+
+    def load_sync_state(self) -> SyncState:
+        """Read the sync working set: source index plus activity/metrics stores."""
+        index_frame = parquet.read_parquet(self.cache_dir / schemas.SOURCE_INDEX_FILE)
+        activities_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
+        metrics_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
+        return SyncState(
+            index_rows=[] if index_frame.is_empty() else index_frame.to_dicts(),
+            activities=_store_dict(activities_frame),
+            metrics=_store_dict(metrics_frame),
+        )
+
+    def save_sync_snapshot(
+        self, state: SyncState, *, last_sync: datetime, analysis_version: str
+    ) -> None:
+        """Atomically rewrite the whole cache from the sync working set.
+
+        Prunes store rows without an active "ok" index row (removed or
+        re-specified files, historical orphans) so activities, aggregates
+        and the index stay consistent, rebuilds daily/weekly aggregates
+        from the surviving rows and stamps ``metadata.json``.
+        """
+        ok_ids = {
+            str(row["activity_id"])
+            for row in state.index_rows
+            if row.get("status") == schemas.STATUS_OK and row.get("activity_id") is not None
+        }
+        activities = {key: row for key, row in state.activities.items() if key in ok_ids}
+        metrics = {key: row for key, row in state.metrics.items() if key in ok_ids}
+        analyzed = [
+            _analyzed_from_rows(
+                activities[str(row["activity_id"])], metrics[str(row["activity_id"])]
+            )
+            for row in state.index_rows
+            if row.get("status") == schemas.STATUS_OK
+            and row.get("activity_id") is not None
+            and str(row["activity_id"]) in activities
+            and str(row["activity_id"]) in metrics
+        ]
+        daily_rows = summarize_daily(analyzed, self.tz)
+        weekly_rows = daily_to_weekly(daily_rows)
+
+        parquet.write_parquet_atomic(
+            _frame(activities, schemas.ACTIVITY_SCHEMA), self.cache_dir / schemas.ACTIVITIES_FILE
+        )
+        parquet.write_parquet_atomic(
+            _frame(metrics, schemas.ACTIVITY_METRICS_SCHEMA),
+            self.cache_dir / schemas.ACTIVITY_METRICS_FILE,
+        )
+        parquet.write_parquet_atomic(
+            pl.DataFrame(_daily_records(daily_rows), schema=schemas.DAILY_SCHEMA),
+            self.cache_dir / schemas.DAILY_FILE,
+        )
+        parquet.write_parquet_atomic(
+            pl.DataFrame(_weekly_records(weekly_rows), schema=schemas.WEEKLY_SCHEMA),
+            self.cache_dir / schemas.WEEKLY_FILE,
+        )
+        parquet.write_parquet_atomic(
+            _index_frame(state.index_rows), self.cache_dir / schemas.SOURCE_INDEX_FILE
+        )
+        parquet.write_json_atomic(
+            {
+                "last_sync": last_sync.isoformat(),
+                "analysis_version": analysis_version,
+                "activity_count": len(activities),
+                "failed_file_count": sum(
+                    1 for row in state.index_rows if row.get("status") == schemas.STATUS_FAILED
+                ),
+            },
+            self.cache_dir / schemas.METADATA_FILE,
+        )
+
+    def last_sync_stamp(self) -> datetime | None:
+        """Persisted ``last_sync`` from ``metadata.json`` (cross-process throttle)."""
+        metadata = parquet.read_json(self.cache_dir / schemas.METADATA_FILE)
+        last_sync = metadata.get("last_sync") if metadata else None
+        if not isinstance(last_sync, str):
+            return None
+        try:
+            stamp = datetime.fromisoformat(last_sync)
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        return stamp
+
     # -- helpers -----------------------------------------------------------
 
     def _activities_with_load(self) -> pl.DataFrame:
@@ -409,6 +522,67 @@ def _details_row(row: dict[str, object], tz: ZoneInfo) -> ActivityDetails:
         paused_time_s=optional_float(row.get("paused_time_s")),
         repair_flags=flags_from_json(row.get("repair_flags_json")),
     )
+
+
+def _store_dict(frame: pl.DataFrame) -> dict[str, dict[str, object]]:
+    if frame.is_empty():
+        return {}
+    return {str(row["activity_id"]): row for row in frame.to_dicts()}
+
+
+def _analyzed_from_rows(
+    activity_row: dict[str, object], metrics_row: dict[str, object]
+) -> AnalyzedActivity:
+    """Hydrate an ``AnalyzedActivity`` from stored activity + metrics rows."""
+    start_time = activity_row["start_time"]
+    if not isinstance(start_time, datetime):
+        msg = "activity start_time has unexpected type"
+        raise CacheError(msg)
+    parsed = ParsedActivity(
+        activity_id=str(activity_row["activity_id"]),
+        start_time=start_time,
+        sport=str(activity_row["sport"]),
+        sub_sport=optional_str(activity_row.get("sub_sport")),
+        duration_s=optional_float(activity_row.get("duration_s")),
+        moving_time_s=optional_float(activity_row.get("moving_time_s")),
+        distance_m=optional_float(activity_row.get("distance_m")),
+        elevation_gain_m=optional_float(activity_row.get("elevation_gain_m")),
+        avg_hr=optional_float(activity_row.get("avg_hr")),
+        max_hr=optional_float(activity_row.get("max_hr")),
+        avg_speed_mps=optional_float(activity_row.get("avg_speed_mps")),
+        max_speed_mps=optional_float(activity_row.get("max_speed_mps")),
+        calories=optional_float(activity_row.get("calories")),
+        records=empty_records(),
+        source_path=str(activity_row["source_path"]),
+        source_hash="",
+        paused_time_s=optional_float(activity_row.get("paused_time_s")),
+        segment_index=optional_int(activity_row.get("segment_index")) or 0,
+        segment_count=optional_int(activity_row.get("segment_count")) or 1,
+        repair_flags=flags_from_json(activity_row.get("repair_flags_json")),
+    )
+    metric_values = ActivityMetrics(
+        activity_id=str(metrics_row["activity_id"]),
+        hr_zone_1_s=required_float(metrics_row.get("hr_zone_1_s")),
+        hr_zone_2_s=required_float(metrics_row.get("hr_zone_2_s")),
+        hr_zone_3_s=required_float(metrics_row.get("hr_zone_3_s")),
+        hr_zone_4_s=required_float(metrics_row.get("hr_zone_4_s")),
+        hr_zone_5_s=required_float(metrics_row.get("hr_zone_5_s")),
+        hr_coverage_ratio=required_float(metrics_row.get("hr_coverage_ratio")),
+        hr_histogram_s=histogram_from_json(metrics_row.get("hr_histogram_json")),
+        hr_10min_averages=buckets_from_json(metrics_row.get("hr_10min_json")),
+        hr_drift_bpm_per_hour=optional_float(metrics_row.get("hr_drift_bpm_per_hour")),
+        load_value=optional_float(metrics_row.get("load_value")),
+        load_method=optional_str(metrics_row.get("load_method")),
+        load_confidence=optional_str(metrics_row.get("load_confidence")),
+        data_completeness=required_float(metrics_row.get("data_completeness")),
+        analysis_version=str(metrics_row[schemas.ANALYSIS_VERSION]),
+        ef_first_half=optional_float(metrics_row.get("ef_first_half")),
+        ef_second_half=optional_float(metrics_row.get("ef_second_half")),
+        aerobic_decoupling_pct=optional_float(metrics_row.get("aerobic_decoupling_pct")),
+        decoupling_confidence=optional_str(metrics_row.get("decoupling_confidence"))
+        or "insufficient_duration",
+    )
+    return AnalyzedActivity(activity=parsed, metrics=metric_values)
 
 
 def _daily_row(row: dict[str, object]) -> DailySummaryRow:
@@ -561,3 +735,66 @@ def _mean(frame: pl.DataFrame, column: str) -> float | None:
     if series.len() == 0:
         return None
     return float(series.mean())  # type: ignore[arg-type]
+
+
+def _frame(rows: dict[str, dict[str, object]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame(schema=schema)
+    return pl.DataFrame(list(rows.values()), schema=schema)
+
+
+def _index_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
+    if not rows:
+        return pl.DataFrame(schema=schemas.SOURCE_INDEX_SCHEMA)
+    return pl.DataFrame(rows, schema=schemas.SOURCE_INDEX_SCHEMA)
+
+
+def _daily_records(rows: list[DailySummaryRow]) -> list[dict[str, object]]:
+    return [
+        {
+            "date": row.date,
+            "sport": row.sport,
+            "activity_count": row.activity_count,
+            "duration_s": row.duration_s,
+            "distance_m": row.distance_m,
+            "elevation_gain_m": row.elevation_gain_m,
+            "hr_zone_1_s": row.hr_zone_1_s,
+            "hr_zone_2_s": row.hr_zone_2_s,
+            "hr_zone_3_s": row.hr_zone_3_s,
+            "hr_zone_4_s": row.hr_zone_4_s,
+            "hr_zone_5_s": row.hr_zone_5_s,
+            "load_value": row.load_value,
+            "hard_activity_count": row.hard_activity_count,
+            "longest_activity_s": row.longest_activity_s,
+            "longest_activity_id": row.longest_activity_id,
+        }
+        for row in rows
+    ]
+
+
+def _weekly_records(rows: list[WeeklySummaryRow]) -> list[dict[str, object]]:
+    return [
+        {
+            "iso_year": row.iso_year,
+            "iso_week": row.iso_week,
+            "week_start": row.week_start,
+            "sport": row.sport,
+            "activity_count": row.activity_count,
+            "duration_s": row.duration_s,
+            "distance_m": row.distance_m,
+            "elevation_gain_m": row.elevation_gain_m,
+            "hr_zone_1_s": row.hr_zone_1_s,
+            "hr_zone_2_s": row.hr_zone_2_s,
+            "hr_zone_3_s": row.hr_zone_3_s,
+            "hr_zone_4_s": row.hr_zone_4_s,
+            "hr_zone_5_s": row.hr_zone_5_s,
+            "load_value": row.load_value,
+            "hard_activity_count": row.hard_activity_count,
+            "longest_activity_s": row.longest_activity_s,
+            "longest_activity_id": row.longest_activity_id,
+            "load_value_prev": row.load_value_prev,
+            "duration_s_prev": row.duration_s_prev,
+            "distance_m_prev": row.distance_m_prev,
+        }
+        for row in rows
+    ]
