@@ -33,9 +33,7 @@ def build_overview(
     recent = repository.list_activities(
         start_date=start_date, end_date=end_date, sport=sport, limit=5
     )
-    weekly = repository.weekly_summary(
-        start_date=start_date, end_date=end_date, weeks=4, sport=sport
-    )
+    weekly = repository.weekly_summary(weeks=4, sport=sport)
     daily_rows = repository.daily_summary(start_date=start_date, end_date=end_date, sport=sport)
     quality = repository.data_quality()
     latest = _latest_activity(repository, sport)

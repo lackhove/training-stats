@@ -19,16 +19,12 @@ from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
 from .errors import TrainingStatsError
 from .fit.parser import FitDecodeParser, FitParser
-from .models import SyncResult
+from .models import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS, SyncResult
 from .sources.base import ActivitySource
 from .sources.local import LocalDirectorySource
 from .sources.webdav import WebDAVSource
 
 logger = logging.getLogger(__name__)
-
-_MAX_LIMIT = 500
-_MAX_WEEKS = 104
-_MAX_DAYS = 3650
 
 
 class TrainingCoachServer:
@@ -125,7 +121,7 @@ class TrainingCoachServer:
         """List compact activity summaries, newest first."""
         if sync_first:
             self.sync_if_due()
-        _validate_int_range("limit", limit, 1, _MAX_LIMIT)
+        _validate_int_range("limit", limit, 1, MAX_LIST_LIMIT)
         activities = self.repository.list_activities(
             start_date=start_date, end_date=end_date, sport=sport, limit=limit
         )
@@ -150,7 +146,7 @@ class TrainingCoachServer:
         """Weekly training totals with previous-week comparisons."""
         if sync_first:
             self.sync_if_due()
-        _validate_int_range("weeks", weeks, 1, _MAX_WEEKS)
+        _validate_int_range("weeks", weeks, 1, MAX_WEEKS)
         rows = self.repository.weekly_summary(
             start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
         )
@@ -166,7 +162,7 @@ class TrainingCoachServer:
         """
         if sync_first:
             self.sync_if_due()
-        _validate_int_range("days", days, 1, _MAX_DAYS)
+        _validate_int_range("days", days, 1, MAX_DAYS)
         return self.repository.overview(days=days, sport=sport).to_dict()
 
 
@@ -212,6 +208,7 @@ def create_server(config: AppConfig) -> TrainingCoachServer:
         cache_dir=config.cache.directory,
         timezone=config.application.zoneinfo,
         athlete=config.athlete,
+        lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
     return TrainingCoachServer(
         config=config,

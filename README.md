@@ -31,10 +31,6 @@ uv sync
 # 1. Create a configuration
 cp config.example.toml config.toml   # edit paths and athlete values
 
-# 2. Use the CLI; `list` synchronizes your sources automatically
-uv run training-stats list --limit 10
-```
-
 # 2. Use the CLI; queries synchronize your sources automatically
 uv run training-stats list --limit 10
 ```
@@ -97,7 +93,7 @@ No environment variables are required for local sources.
 
    ```bash
    export NEXTCLOUD_USERNAME="your-user"
-   NEXTCLOUD_APP_PASSWORD="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
+   export NEXTCLOUD_APP_PASSWORD="xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
    ```
 
 4. Set `type = "webdav"` in the source block.

@@ -21,5 +21,10 @@ VOLUME ["/app/config", "/app/data"]
 
 EXPOSE 8000
 
+# Non-root runtime user; /app is chowned so uv can write bytecode/cache under it.
+RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+USER app
+
 # WebDAV credentials are injected via environment variables.
 CMD ["uv", "run", "--no-dev", "training-stats", "server"]

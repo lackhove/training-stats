@@ -67,6 +67,7 @@ def _ensure_parent(path: Path) -> None:
 
 def _write_tmp(path: Path, writer: Callable[[Path], None]) -> Path:
     """Write via a temporary file in the target directory and return its path."""
+    tmp_path: Path | None = None
     try:
         descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         os.close(descriptor)
@@ -74,10 +75,13 @@ def _write_tmp(path: Path, writer: Callable[[Path], None]) -> Path:
         writer(tmp_path)
         _fsync_file(tmp_path)
     except OSError as exc:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
         msg = f"cannot write cache file {path}: {exc}"
         raise CacheError(msg) from exc
     except Exception as exc:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
         msg = f"cannot write cache file {path}: {type(exc).__name__}"
         raise CacheError(msg) from exc
     return tmp_path

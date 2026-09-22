@@ -21,9 +21,9 @@ from cyclopts import App, Parameter
 from cyclopts.exceptions import CycloptsError
 from rich.console import Console
 
-from . import __version__, cli_output
+from . import __version__, cli_output, converters
 from .config import CONFIG_ENV_VAR, AppConfig, config_path_from_env, load_config
-from .errors import ConfigurationError
+from .errors import ConfigurationError, TrainingStatsError
 from .logging_config import setup_logging
 from .server import TrainingCoachServer, create_server
 
@@ -153,7 +153,7 @@ def _launcher(
 
 
 def _int_value(value: object) -> int:
-    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
+    return converters.int_value(value)
 
 
 def _print_sync_summary(result: dict[str, object]) -> None:
@@ -349,6 +349,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigurationError as exc:
         _fail(f"configuration error: {exc}", use_rich)
         return 2
+    except TrainingStatsError as exc:
+        _fail(f"error: {exc}", use_rich)
+        return 1
     except (LookupError, ValueError) as exc:
         if use_rich:
             cli_output.print_error(str(exc), Console(stderr=True))

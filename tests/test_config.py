@@ -73,7 +73,6 @@ class TestValidConfigs:
         assert config.application.log_level == "INFO"
         assert config.server.host == "127.0.0.1"
         assert config.server.port == 8000
-        assert config.cache.retain_time_series is False
         assert config.quality.moving_speed_threshold_mps == 1.0
         assert config.quality.decoupling_min_duration_s == 1200.0
         assert config.quality.decoupling_min_coverage == 0.80

@@ -17,7 +17,6 @@ sync_min_interval_seconds = 10
 # High-frequency FIT record data is never persisted; retained only in memory
 # during processing. Coarse derived aggregates (5-bpm HR histogram,
 # 10-minute weighted HR averages) are stored in activity_metrics.parquet.
-retain_time_series = false
 
 [athlete]
 max_heart_rate = 180

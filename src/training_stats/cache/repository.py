@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
@@ -20,6 +20,13 @@ from ..analytics.fitness import (
 )
 from ..analytics.weekly import WeeklySummaryRow
 from ..config import AthleteConfig
+from ..converters import (
+    buckets_as_dicts,
+    flags_from_json,
+    histogram_from_json,
+    optional_float,
+    optional_str,
+)
 from ..errors import CacheError
 from ..models import (
     ActivityDetails,
@@ -29,6 +36,7 @@ from ..models import (
     TrainingFormResult,
 )
 from . import parquet, schemas
+from .locking import read_lock
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +76,20 @@ class TrainingRepository(Protocol):
 class ParquetTrainingRepository:
     """Parquet-backed repository. All filtering/aggregation lives here."""
 
-    def __init__(self, cache_dir: Path, timezone: ZoneInfo, athlete: AthleteConfig) -> None:
+    def __init__(
+        self,
+        cache_dir: Path,
+        timezone: ZoneInfo,
+        athlete: AthleteConfig,
+        lock_timeout_seconds: float = 30.0,
+    ) -> None:
         self.cache_dir = cache_dir
         self.tz = timezone
         self.athlete = athlete
+        self.lock_timeout_seconds = lock_timeout_seconds
+
+    def _read_lock(self) -> AbstractContextManager[None]:
+        return read_lock(self.cache_dir / schemas.LOCK_FILE, self.lock_timeout_seconds)
 
     # -- activities -------------------------------------------------------
 
@@ -82,6 +100,16 @@ class ParquetTrainingRepository:
         sport: str | None = None,
         limit: int = 50,
     ) -> list[ActivitySummary]:
+        with self._read_lock():
+            return self._list_activities(start_date, end_date, sport, limit)
+
+    def _list_activities(
+        self,
+        start_date: date | None,
+        end_date: date | None,
+        sport: str | None,
+        limit: int,
+    ) -> list[ActivitySummary]:
         frame = self._activities_with_load()
         if frame.is_empty():
             return []
@@ -91,37 +119,39 @@ class ParquetTrainingRepository:
         return [_summary_row(row, self.tz) for row in frame.to_dicts()]
 
     def get_activity(self, activity_id: str) -> ActivityDetails | None:
-        activities = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
-        metrics = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        if activities.is_empty() or metrics.is_empty():
-            return None
-        joined = activities.join(metrics, on="activity_id", how="inner")
-        selected = joined.filter(pl.col("activity_id") == activity_id)
-        if selected.is_empty():
-            return None
-        return _details_row(selected.to_dicts()[0], self.tz)
+        with self._read_lock():
+            activities = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
+            metrics = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
+            if activities.is_empty() or metrics.is_empty():
+                return None
+            joined = activities.join(metrics, on="activity_id", how="inner")
+            selected = joined.filter(pl.col("activity_id") == activity_id)
+            if selected.is_empty():
+                return None
+            return _details_row(selected.to_dicts()[0], self.tz)
 
     # -- aggregations -----------------------------------------------------
 
     def daily_summary(
         self, start_date: date | None = None, end_date: date | None = None, sport: str | None = None
     ) -> list[DailySummaryRow]:
-        frame = parquet.read_parquet(self.cache_dir / schemas.DAILY_FILE)
-        if frame.is_empty():
-            return []
-        rows = frame.to_dicts()
-        filtered = [
-            row
-            for row in rows
-            if _date_in_range(date.fromisoformat(str(row["date"])), start_date, end_date)
-            and (sport is None or str(row["sport"]).lower() == sport.lower())
-        ]
-        if sport is None:
-            filtered = _aggregate_daily(filtered)
-        return [
-            _daily_row(row)
-            for row in sorted(filtered, key=lambda row: (str(row["date"]), str(row["sport"])))
-        ]
+        with self._read_lock():
+            frame = parquet.read_parquet(self.cache_dir / schemas.DAILY_FILE)
+            if frame.is_empty():
+                return []
+            rows = frame.to_dicts()
+            filtered = [
+                row
+                for row in rows
+                if _date_in_range(date.fromisoformat(str(row["date"])), start_date, end_date)
+                and (sport is None or str(row["sport"]).lower() == sport.lower())
+            ]
+            if sport is None:
+                filtered = _aggregate_daily(filtered)
+            return [
+                _daily_row(row)
+                for row in sorted(filtered, key=lambda row: (str(row["date"]), str(row["sport"])))
+            ]
 
     def weekly_summary(
         self,
@@ -129,6 +159,16 @@ class ParquetTrainingRepository:
         end_date: date | None = None,
         weeks: int = 8,
         sport: str | None = None,
+    ) -> list[WeeklySummaryRow]:
+        with self._read_lock():
+            return self._weekly_summary(start_date, end_date, weeks, sport)
+
+    def _weekly_summary(
+        self,
+        start_date: date | None,
+        end_date: date | None,
+        weeks: int,
+        sport: str | None,
     ) -> list[WeeklySummaryRow]:
         frame = parquet.read_parquet(self.cache_dir / schemas.WEEKLY_FILE)
         if frame.is_empty():
@@ -149,119 +189,126 @@ class ParquetTrainingRepository:
         return [_weekly_row(row) for row in filtered]
 
     def training_form(self, days: int = 42, sport: str | None = None) -> TrainingFormResult:
-        today = datetime.now(self.tz).date()
+        with self._read_lock():
+            today = datetime.now(self.tz).date()
 
-        # 1. Daily loads and distances
-        daily_frame = parquet.read_parquet(self.cache_dir / schemas.DAILY_FILE)
-        daily_loads: dict[date, float] = {}
-        daily_distances: dict[date, float] = {}
+            # 1. Daily loads and distances
+            daily_frame = parquet.read_parquet(self.cache_dir / schemas.DAILY_FILE)
+            daily_loads: dict[date, float] = {}
+            daily_distances: dict[date, float] = {}
 
-        if not daily_frame.is_empty():
-            rows = daily_frame.to_dicts()
-            if sport is not None:
-                rows = [r for r in rows if str(r["sport"]).lower() == sport.lower()]
-            for r in rows:
-                d = date.fromisoformat(str(r["date"]))
-                load = _float(r.get("load_value"))
-                dist = _float(r.get("distance_m"))
-                daily_loads[d] = daily_loads.get(d, 0.0) + load
-                daily_distances[d] = daily_distances.get(d, 0.0) + dist
+            if not daily_frame.is_empty():
+                rows = daily_frame.to_dicts()
+                if sport is not None:
+                    rows = [r for r in rows if str(r["sport"]).lower() == sport.lower()]
+                for r in rows:
+                    d = date.fromisoformat(str(r["date"]))
+                    load = _float(r.get("load_value"))
+                    dist = _float(r.get("distance_m"))
+                    daily_loads[d] = daily_loads.get(d, 0.0) + load
+                    daily_distances[d] = daily_distances.get(d, 0.0) + dist
 
-        # 2. Rolling distances (meters -> km)
-        dist_7d_m = compute_rolling_distance(daily_distances, today, 7)
-        dist_28d_m = compute_rolling_distance(daily_distances, today, 28)
-        dist_7d_km = round(dist_7d_m / 1000.0, 2)
-        dist_28d_km = round(dist_28d_m / 1000.0, 2)
+            # 2. Rolling distances (meters -> km)
+            dist_7d_m = compute_rolling_distance(daily_distances, today, 7)
+            dist_28d_m = compute_rolling_distance(daily_distances, today, 28)
+            dist_7d_km = round(dist_7d_m / 1000.0, 2)
+            dist_28d_km = round(dist_28d_m / 1000.0, 2)
 
-        # 3. Days since 60+ km ride
-        activities_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
-        days_since_60k: int | None = None
-        if not activities_frame.is_empty():
-            act_rows = activities_frame.to_dicts()
-            if sport is not None:
-                act_rows = [r for r in act_rows if str(r["sport"]).lower() == sport.lower()]
-            qualifying: list[tuple[date, float]] = []
-            for r in act_rows:
-                start_time = r["start_time"]
-                dist = _float(r.get("distance_m"))
-                if isinstance(start_time, datetime) and dist >= 60_000.0:
-                    local_d = start_time.astimezone(self.tz).date()
-                    qualifying.append((local_d, dist))
-            days_since_60k = compute_days_since_60k(qualifying, today)
+            # 3. Days since 60+ km ride
+            activities_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
+            days_since_60k: int | None = None
+            if not activities_frame.is_empty():
+                act_rows = activities_frame.to_dicts()
+                if sport is not None:
+                    act_rows = [r for r in act_rows if str(r["sport"]).lower() == sport.lower()]
+                qualifying: list[tuple[date, float]] = []
+                for r in act_rows:
+                    start_time = r["start_time"]
+                    dist = _float(r.get("distance_m"))
+                    if isinstance(start_time, datetime) and dist >= 60_000.0:
+                        local_d = start_time.astimezone(self.tz).date()
+                        qualifying.append((local_d, dist))
+                days_since_60k = compute_days_since_60k(qualifying, today)
 
-        # 4. Load confidence ratio
-        metrics_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        load_conf_ratio = 1.0
-        if not metrics_frame.is_empty():
-            m_rows = metrics_frame.to_dicts()
-            if sport is not None and not activities_frame.is_empty():
-                sport_act_ids = {
-                    str(r["activity_id"])
-                    for r in activities_frame.to_dicts()
-                    if str(r.get("sport", "")).lower() == sport.lower()
-                }
-                m_rows = [r for r in m_rows if str(r["activity_id"]) in sport_act_ids]
+            # 4. Load confidence ratio
+            metrics_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
+            load_conf_ratio = 1.0
+            if not metrics_frame.is_empty():
+                m_rows = metrics_frame.to_dicts()
+                if sport is not None and not activities_frame.is_empty():
+                    sport_act_ids = {
+                        str(r["activity_id"])
+                        for r in activities_frame.to_dicts()
+                        if str(r.get("sport", "")).lower() == sport.lower()
+                    }
+                    m_rows = [r for r in m_rows if str(r["activity_id"]) in sport_act_ids]
 
-            total_load = sum(_float(r.get("load_value")) for r in m_rows if r.get("load_value"))
-            high_conf_load = sum(
-                _float(r.get("load_value"))
-                for r in m_rows
-                if r.get("load_value") and r.get("load_confidence") == "high"
+                total_load = 0.0
+                high_conf_load = 0.0
+                for r in m_rows:
+                    row_load = optional_float(r.get("load_value"))
+                    if row_load is None:
+                        continue
+                    total_load += row_load
+                    if r.get("load_confidence") == "high":
+                        high_conf_load += row_load
+                if total_load > 0:
+                    load_conf_ratio = round(high_conf_load / total_load, 4)
+
+            return compute_training_form(
+                daily_loads=daily_loads,
+                today=today,
+                days=days,
+                rolling_7d_distance_km=dist_7d_km,
+                rolling_28d_distance_km=dist_28d_km,
+                days_since_60k_ride=days_since_60k,
+                load_confidence_ratio=load_conf_ratio,
             )
-            if total_load > 0:
-                load_conf_ratio = round(high_conf_load / total_load, 4)
-
-        return compute_training_form(
-            daily_loads=daily_loads,
-            today=today,
-            days=days,
-            rolling_7d_distance_km=dist_7d_km,
-            rolling_28d_distance_km=dist_28d_km,
-            days_since_60k_ride=days_since_60k,
-            load_confidence_ratio=load_conf_ratio,
-        )
 
     # -- quality and context ----------------------------------------------
 
     def data_quality(self) -> DataQuality:
-        metrics = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        index = parquet.read_parquet(self.cache_dir / schemas.SOURCE_INDEX_FILE)
-        activity_count = metrics.height
-        mean_coverage = _mean(metrics, "hr_coverage_ratio") if not metrics.is_empty() else None
-        mean_completeness = _mean(metrics, "data_completeness") if not metrics.is_empty() else None
-        failed = 0
-        duplicates = 0
-        repaired_files = 0
-        discarded_segments = 0
-        if not index.is_empty():
-            rows = index.to_dicts()
-            files: dict[tuple[str, str], tuple[bool, int]] = {}
-            for row in rows:
-                status = str(row.get("status"))
-                if status == "failed":
-                    failed += 1
-                elif status == "duplicate":
-                    duplicates += 1
-                key = (str(row.get("source_name")), str(row.get("source_path")))
-                repaired = str(row.get("status")) == "ok" and bool(
-                    _flags(row.get("repair_flags_json"))
-                )
-                previous = files.get(key, (False, 0))
-                files[key] = (
-                    previous[0] or repaired,
-                    _int(row.get("discarded_segment_count")),
-                )
-            repaired_files = sum(1 for repaired, _discarded in files.values() if repaired)
-            discarded_segments = sum(discarded for _repaired, discarded in files.values())
-        return DataQuality(
-            activity_count=activity_count,
-            mean_hr_coverage_ratio=mean_coverage,
-            mean_data_completeness=mean_completeness,
-            failed_file_count=failed,
-            repaired_file_count=repaired_files,
-            discarded_segment_count=discarded_segments,
-            duplicate_activity_count=duplicates,
-        )
+        with self._read_lock():
+            metrics = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
+            index = parquet.read_parquet(self.cache_dir / schemas.SOURCE_INDEX_FILE)
+            activity_count = metrics.height
+            mean_coverage = _mean(metrics, "hr_coverage_ratio") if not metrics.is_empty() else None
+            mean_completeness = (
+                _mean(metrics, "data_completeness") if not metrics.is_empty() else None
+            )
+            failed = 0
+            duplicates = 0
+            repaired_files = 0
+            discarded_segments = 0
+            if not index.is_empty():
+                rows = index.to_dicts()
+                files: dict[tuple[str, str], tuple[bool, int]] = {}
+                for row in rows:
+                    status = str(row.get("status"))
+                    if status == "failed":
+                        failed += 1
+                    elif status == "duplicate":
+                        duplicates += 1
+                    key = (str(row.get("source_name")), str(row.get("source_path")))
+                    repaired = str(row.get("status")) == "ok" and bool(
+                        flags_from_json(row.get("repair_flags_json"))
+                    )
+                    previous = files.get(key, (False, 0))
+                    files[key] = (
+                        previous[0] or repaired,
+                        _int(row.get("discarded_segment_count")),
+                    )
+                repaired_files = sum(1 for repaired, _discarded in files.values() if repaired)
+                discarded_segments = sum(discarded for _repaired, discarded in files.values())
+            return DataQuality(
+                activity_count=activity_count,
+                mean_hr_coverage_ratio=mean_coverage,
+                mean_data_completeness=mean_completeness,
+                failed_file_count=failed,
+                repaired_file_count=repaired_files,
+                discarded_segment_count=discarded_segments,
+                duplicate_activity_count=duplicates,
+            )
 
     def overview(self, days: int = 28, sport: str | None = None) -> Overview:
         from ..coach.overview import build_overview
@@ -309,15 +356,15 @@ def _summary_row(row: dict[str, object], tz: ZoneInfo) -> ActivitySummary:
         activity_id=str(row["activity_id"]),
         start_time=start_time,
         sport=str(row["sport"]),
-        sub_sport=_optional_str(row.get("sub_sport")),
-        duration_s=_optional_float(row.get("duration_s")),
-        distance_m=_optional_float(row.get("distance_m")),
-        elevation_gain_m=_optional_float(row.get("elevation_gain_m")),
-        avg_hr=_optional_float(row.get("avg_hr")),
-        max_hr=_optional_float(row.get("max_hr")),
-        calories=_optional_float(row.get("calories")),
-        load_value=_optional_float(row.get("load_value")),
-        moving_time_s=_optional_float(row.get("moving_time_s")),
+        sub_sport=optional_str(row.get("sub_sport")),
+        duration_s=optional_float(row.get("duration_s")),
+        distance_m=optional_float(row.get("distance_m")),
+        elevation_gain_m=optional_float(row.get("elevation_gain_m")),
+        avg_hr=optional_float(row.get("avg_hr")),
+        max_hr=optional_float(row.get("max_hr")),
+        calories=optional_float(row.get("calories")),
+        load_value=optional_float(row.get("load_value")),
+        moving_time_s=optional_float(row.get("moving_time_s")),
         local_start_time=start_time.astimezone(tz).isoformat(),
     )
 
@@ -335,8 +382,8 @@ def _details_row(row: dict[str, object], tz: ZoneInfo) -> ActivityDetails:
         elevation_gain_m=summary.elevation_gain_m,
         avg_hr=summary.avg_hr,
         max_hr=summary.max_hr,
-        avg_speed_mps=_optional_float(row.get("avg_speed_mps")),
-        max_speed_mps=_optional_float(row.get("max_speed_mps")),
+        avg_speed_mps=optional_float(row.get("avg_speed_mps")),
+        max_speed_mps=optional_float(row.get("max_speed_mps")),
         calories=summary.calories,
         hr_zone_1_s=_float(row.get("hr_zone_1_s")),
         hr_zone_2_s=_float(row.get("hr_zone_2_s")),
@@ -344,63 +391,24 @@ def _details_row(row: dict[str, object], tz: ZoneInfo) -> ActivityDetails:
         hr_zone_4_s=_float(row.get("hr_zone_4_s")),
         hr_zone_5_s=_float(row.get("hr_zone_5_s")),
         hr_coverage_ratio=_float(row.get("hr_coverage_ratio")),
-        hr_histogram_s=_histogram(row.get("hr_histogram_json")),
-        hr_10min_averages=_buckets(row.get("hr_10min_json")),
-        hr_drift_bpm_per_hour=_optional_float(row.get("hr_drift_bpm_per_hour")),
+        hr_histogram_s=histogram_from_json(row.get("hr_histogram_json")),
+        hr_10min_averages=buckets_as_dicts(row.get("hr_10min_json")),
+        hr_drift_bpm_per_hour=optional_float(row.get("hr_drift_bpm_per_hour")),
         load_value=summary.load_value,
-        load_method=_optional_str(row.get("load_method")),
-        load_confidence=_optional_str(row.get("load_confidence")),
+        load_method=optional_str(row.get("load_method")),
+        load_confidence=optional_str(row.get("load_confidence")),
         data_completeness=_float(row.get("data_completeness")),
         analysis_version=str(row.get(schemas.ANALYSIS_VERSION, "")),
         source_name=str(row.get("source_name", "")),
         source_path=str(row.get("source_path", "")),
-        ef_first_half=_optional_float(row.get("ef_first_half")),
-        ef_second_half=_optional_float(row.get("ef_second_half")),
-        aerobic_decoupling_pct=_optional_float(row.get("aerobic_decoupling_pct")),
-        decoupling_confidence=_optional_str(row.get("decoupling_confidence")),
+        ef_first_half=optional_float(row.get("ef_first_half")),
+        ef_second_half=optional_float(row.get("ef_second_half")),
+        aerobic_decoupling_pct=optional_float(row.get("aerobic_decoupling_pct")),
+        decoupling_confidence=optional_str(row.get("decoupling_confidence")),
         local_start_time=summary.local_start_time,
-        paused_time_s=_optional_float(row.get("paused_time_s")),
-        repair_flags=_flags(row.get("repair_flags_json")),
+        paused_time_s=optional_float(row.get("paused_time_s")),
+        repair_flags=flags_from_json(row.get("repair_flags_json")),
     )
-
-
-def _flags(value: object) -> tuple[str, ...]:
-    """Parse the serialized repair flags; invalid input yields ``()``."""
-    if not isinstance(value, str) or not value:
-        return ()
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(raw, list):
-        return ()
-    return tuple(str(flag) for flag in raw)
-
-
-def _histogram(value: object) -> dict[str, float]:
-    """Parse the serialized 5-bpm histogram; invalid input yields ``{}``."""
-    if not isinstance(value, str) or not value:
-        return {}
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(key): _float(seconds) for key, seconds in raw.items()}
-
-
-def _buckets(value: object) -> tuple[dict[str, object], ...]:
-    """Parse the serialized 10-minute averages; invalid input yields ``()``."""
-    if not isinstance(value, str) or not value:
-        return ()
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(raw, list):
-        return ()
-    return tuple(dict(entry) for entry in raw if isinstance(entry, dict))
 
 
 def _daily_row(row: dict[str, object]) -> DailySummaryRow:
@@ -529,13 +537,11 @@ def _date_in_range(value: date, start_date: date | None, end_date: date | None) 
 
 
 def _optional_str(value: object) -> str | None:
-    return str(value) if value is not None else None
+    return optional_str(value)
 
 
 def _optional_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
+    return optional_float(value)
 
 
 def _float(value: object) -> float:

@@ -27,11 +27,3 @@ def zone_descriptions(athlete: AthleteConfig) -> list[dict[str, object]]:
         {"zone": zone, "min_bpm": low, "max_bpm": high}
         for zone, low, high in athlete.heart_rate_zones.as_bounds()
     ]
-
-
-def load_basis(athlete: AthleteConfig) -> dict[str, object]:
-    """Document which configuration values drive the estimated load."""
-    return {
-        "max_heart_rate": athlete.max_heart_rate,
-        "resting_heart_rate": athlete.resting_heart_rate,
-    }

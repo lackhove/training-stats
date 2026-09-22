@@ -1,7 +1,7 @@
 """Parquet cache: schemas, atomic I/O, locking, repository and sync."""
 
-from .locking import sync_lock
-from .parquet import read_parquet, write_json_atomic, write_parquet_atomic
+from .locking import read_lock, sync_lock
+from .parquet import read_json, read_parquet, write_json_atomic, write_parquet_atomic
 from .repository import ParquetTrainingRepository, TrainingRepository
 from .schemas import (
     ACTIVITIES_FILE,
@@ -31,6 +31,8 @@ __all__ = [
     "ParquetTrainingRepository",
     "SyncService",
     "TrainingRepository",
+    "read_json",
+    "read_lock",
     "read_parquet",
     "sync_lock",
     "write_json_atomic",

@@ -9,7 +9,6 @@ version changed are reprocessed.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
@@ -19,9 +18,20 @@ import polars as pl
 
 from ..analytics.activities import ActivityMetrics, AnalyzedActivity, compute_activity_metrics
 from ..analytics.daily import DailySummaryRow, summarize_daily
-from ..analytics.heart_rate import HrBucketAvg
 from ..analytics.weekly import WeeklySummaryRow, daily_to_weekly
 from ..config import AthleteConfig, QualityConfig
+from ..converters import (
+    buckets_from_json,
+    buckets_to_json,
+    flags_from_json,
+    flags_to_json,
+    histogram_from_json,
+    histogram_to_json,
+    optional_float,
+    optional_int,
+    optional_str,
+    required_float,
+)
 from ..errors import FitParseError, SourceError
 from ..fit.parser import FitParser
 from ..fit.types import ParsedActivity, empty_records
@@ -250,7 +260,7 @@ class SyncService:
             base_row["error_message"] = str(exc)
             return _empty_outcome([base_row])
 
-        file_flags_json = _flags_to_json(parsed_file.repair_flags)
+        file_flags_json = flags_to_json(parsed_file.repair_flags)
         index_rows: list[dict[str, object]] = []
         ok_activity_rows: list[dict[str, object]] = []
         ok_metrics_rows: list[dict[str, object]] = []
@@ -475,44 +485,44 @@ class SyncService:
             activity_id=str(activity_row["activity_id"]),
             start_time=start_time,
             sport=str(activity_row["sport"]),
-            sub_sport=_optional_str(activity_row.get("sub_sport")),
-            duration_s=_optional_float(activity_row.get("duration_s")),
-            moving_time_s=_optional_float(activity_row.get("moving_time_s")),
-            distance_m=_optional_float(activity_row.get("distance_m")),
-            elevation_gain_m=_optional_float(activity_row.get("elevation_gain_m")),
-            avg_hr=_optional_float(activity_row.get("avg_hr")),
-            max_hr=_optional_float(activity_row.get("max_hr")),
-            avg_speed_mps=_optional_float(activity_row.get("avg_speed_mps")),
-            max_speed_mps=_optional_float(activity_row.get("max_speed_mps")),
-            calories=_optional_float(activity_row.get("calories")),
+            sub_sport=optional_str(activity_row.get("sub_sport")),
+            duration_s=optional_float(activity_row.get("duration_s")),
+            moving_time_s=optional_float(activity_row.get("moving_time_s")),
+            distance_m=optional_float(activity_row.get("distance_m")),
+            elevation_gain_m=optional_float(activity_row.get("elevation_gain_m")),
+            avg_hr=optional_float(activity_row.get("avg_hr")),
+            max_hr=optional_float(activity_row.get("max_hr")),
+            avg_speed_mps=optional_float(activity_row.get("avg_speed_mps")),
+            max_speed_mps=optional_float(activity_row.get("max_speed_mps")),
+            calories=optional_float(activity_row.get("calories")),
             records=empty_records(),
             source_path=str(activity_row["source_path"]),
             source_hash="",
-            paused_time_s=_optional_float(activity_row.get("paused_time_s")),
-            segment_index=_optional_int(activity_row.get("segment_index")) or 0,
-            segment_count=_optional_int(activity_row.get("segment_count")) or 1,
-            repair_flags=_flags_from_json(activity_row.get("repair_flags_json")),
+            paused_time_s=optional_float(activity_row.get("paused_time_s")),
+            segment_index=optional_int(activity_row.get("segment_index")) or 0,
+            segment_count=optional_int(activity_row.get("segment_count")) or 1,
+            repair_flags=flags_from_json(activity_row.get("repair_flags_json")),
         )
         metric_values = ActivityMetrics(
             activity_id=str(metrics_row["activity_id"]),
-            hr_zone_1_s=_required_float(metrics_row.get("hr_zone_1_s")),
-            hr_zone_2_s=_required_float(metrics_row.get("hr_zone_2_s")),
-            hr_zone_3_s=_required_float(metrics_row.get("hr_zone_3_s")),
-            hr_zone_4_s=_required_float(metrics_row.get("hr_zone_4_s")),
-            hr_zone_5_s=_required_float(metrics_row.get("hr_zone_5_s")),
-            hr_coverage_ratio=_required_float(metrics_row.get("hr_coverage_ratio")),
-            hr_histogram_s=_histogram_from_json(metrics_row.get("hr_histogram_json")),
-            hr_10min_averages=_buckets_from_json(metrics_row.get("hr_10min_json")),
-            hr_drift_bpm_per_hour=_optional_float(metrics_row.get("hr_drift_bpm_per_hour")),
-            load_value=_optional_float(metrics_row.get("load_value")),
-            load_method=_optional_str(metrics_row.get("load_method")),
-            load_confidence=_optional_str(metrics_row.get("load_confidence")),
-            data_completeness=_required_float(metrics_row.get("data_completeness")),
+            hr_zone_1_s=required_float(metrics_row.get("hr_zone_1_s")),
+            hr_zone_2_s=required_float(metrics_row.get("hr_zone_2_s")),
+            hr_zone_3_s=required_float(metrics_row.get("hr_zone_3_s")),
+            hr_zone_4_s=required_float(metrics_row.get("hr_zone_4_s")),
+            hr_zone_5_s=required_float(metrics_row.get("hr_zone_5_s")),
+            hr_coverage_ratio=required_float(metrics_row.get("hr_coverage_ratio")),
+            hr_histogram_s=histogram_from_json(metrics_row.get("hr_histogram_json")),
+            hr_10min_averages=buckets_from_json(metrics_row.get("hr_10min_json")),
+            hr_drift_bpm_per_hour=optional_float(metrics_row.get("hr_drift_bpm_per_hour")),
+            load_value=optional_float(metrics_row.get("load_value")),
+            load_method=optional_str(metrics_row.get("load_method")),
+            load_confidence=optional_str(metrics_row.get("load_confidence")),
+            data_completeness=required_float(metrics_row.get("data_completeness")),
             analysis_version=str(metrics_row[schemas.ANALYSIS_VERSION]),
-            ef_first_half=_optional_float(metrics_row.get("ef_first_half")),
-            ef_second_half=_optional_float(metrics_row.get("ef_second_half")),
-            aerobic_decoupling_pct=_optional_float(metrics_row.get("aerobic_decoupling_pct")),
-            decoupling_confidence=_optional_str(metrics_row.get("decoupling_confidence"))
+            ef_first_half=optional_float(metrics_row.get("ef_first_half")),
+            ef_second_half=optional_float(metrics_row.get("ef_second_half")),
+            aerobic_decoupling_pct=optional_float(metrics_row.get("aerobic_decoupling_pct")),
+            decoupling_confidence=optional_str(metrics_row.get("decoupling_confidence"))
             or "insufficient_duration",
         )
         return AnalyzedActivity(activity=parsed, metrics=metric_values)
@@ -537,7 +547,7 @@ class SyncService:
             "calories": activity.calories,
             "segment_index": activity.segment_index,
             "segment_count": activity.segment_count,
-            "repair_flags_json": _flags_to_json(activity.repair_flags),
+            "repair_flags_json": flags_to_json(activity.repair_flags),
             "source_name": source_name,
             "source_path": activity.source_path,
         }
@@ -553,8 +563,8 @@ class SyncService:
             "hr_zone_4_s": metric_values.hr_zone_4_s,
             "hr_zone_5_s": metric_values.hr_zone_5_s,
             "hr_coverage_ratio": metric_values.hr_coverage_ratio,
-            "hr_histogram_json": _histogram_to_json(metric_values.hr_histogram_s),
-            "hr_10min_json": _buckets_to_json(metric_values.hr_10min_averages),
+            "hr_histogram_json": histogram_to_json(metric_values.hr_histogram_s),
+            "hr_10min_json": buckets_to_json(metric_values.hr_10min_averages),
             "hr_drift_bpm_per_hour": metric_values.hr_drift_bpm_per_hour,
             "load_value": metric_values.load_value,
             "load_method": metric_values.load_method,
@@ -572,55 +582,6 @@ def _frame(rows: dict[str, dict[str, object]], schema: dict[str, pl.DataType]) -
     if not rows:
         return pl.DataFrame(schema=schema)
     return pl.DataFrame(list(rows.values()), schema=schema)
-
-
-def _histogram_to_json(histogram: dict[str, float]) -> str:
-    return json.dumps({bin_key: round(seconds, 3) for bin_key, seconds in histogram.items()})
-
-
-def _buckets_to_json(buckets: tuple[HrBucketAvg, ...]) -> str:
-    return json.dumps([bucket.to_dict() for bucket in buckets])
-
-
-def _histogram_from_json(value: object) -> dict[str, float]:
-    if not isinstance(value, str) or not value:
-        return {}
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(key): _required_float(seconds) for key, seconds in raw.items()}
-
-
-def _buckets_from_json(value: object) -> tuple[HrBucketAvg, ...]:
-    if not isinstance(value, str) or not value:
-        return ()
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(raw, list):
-        return ()
-    buckets: list[HrBucketAvg] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        buckets.append(
-            HrBucketAvg(
-                start_min=_int_value(entry.get("start_min")),
-                avg_hr=_required_float(entry.get("avg_hr")),
-                hr_time_s=_required_float(entry.get("hr_time_s")),
-            )
-        )
-    return tuple(buckets)
-
-
-def _int_value(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0
-    return int(value)
 
 
 def _index_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
@@ -678,42 +639,6 @@ def _weekly_records(rows: list[WeeklySummaryRow]) -> list[dict[str, object]]:
         }
         for row in rows
     ]
-
-
-def _optional_str(value: object) -> str | None:
-    return str(value) if value is not None else None
-
-
-def _optional_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return int(value)
-
-
-def _flags_to_json(flags: tuple[str, ...]) -> str | None:
-    return json.dumps(list(flags)) if flags else None
-
-
-def _flags_from_json(value: object) -> tuple[str, ...]:
-    if not isinstance(value, str) or not value:
-        return ()
-    try:
-        raw = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(raw, list):
-        return ()
-    return tuple(str(flag) for flag in raw)
-
-
-def _optional_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
-
-
-def _required_float(value: object) -> float:
-    return _optional_float(value) or 0.0
 
 
 def _ensure_utc(value: datetime) -> datetime:

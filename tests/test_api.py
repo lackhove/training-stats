@@ -181,12 +181,12 @@ class TestOpenApi:
         assert set(schema["paths"]) == EXPECTED_PATHS
         schemas = schema["components"]["schemas"]
         assert {
-            "ActivitySummaryModel",
-            "ActivityDetailsModel",
-            "WeeklyRowModel",
-            "OverviewModel",
+            "ActivitySummaryDict",
+            "ActivityDetailsDict",
+            "WeeklyRowDict",
+            "OverviewDict",
         } <= set(schemas)
         # Typed response payloads instead of loose objects.
-        details = schemas["ActivityDetailsModel"]["properties"]
-        assert details["hr_zones_s"]["$ref"].endswith("HrZonesModel")
-        assert details["load"]["$ref"].endswith("LoadModel")
+        details = schemas["ActivityDetailsDict"]["properties"]
+        assert details["hr_zones_s"]["$ref"].endswith("HrZonesDict")
+        assert details["load"]["$ref"].endswith("LoadDict")

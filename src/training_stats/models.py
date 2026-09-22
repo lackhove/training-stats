@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+# Request caps shared by the API query constraints and the service validators.
+MAX_LIST_LIMIT = 500
+MAX_WEEKS = 104
+MAX_DAYS = 3650
+
 
 @dataclass(frozen=True, slots=True)
 class SourceFile:
@@ -18,14 +23,6 @@ class SourceFile:
     path: str
     size: int | None = None
     modified_at: datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class FileContent:
-    """Binary content of a :class:`SourceFile`."""
-
-    source_file: SourceFile
-    content: bytes
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,7 @@ or error messages.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from itertools import pairwise
 from pathlib import Path
@@ -189,7 +190,6 @@ class CacheConfig(BaseModel):
 
     directory: Path = Path("./data/cache")
     lock_timeout_seconds: float = Field(default=30.0, gt=0)
-    retain_time_series: bool = False
     sync_min_interval_seconds: float = Field(default=10.0, ge=0)
 
 
@@ -260,8 +260,6 @@ def resolve_webdav_credentials(config: AppConfig) -> dict[str, WebDAVCredentials
     Raises :class:`ConfigurationError` if a referenced environment variable is
     unset or empty. Error messages contain variable names, never values.
     """
-    import os
-
     resolved: dict[str, WebDAVCredentials] = {}
     for source in config.sources:
         if isinstance(source, WebDAVSourceConfig):
@@ -289,10 +287,8 @@ def resolve_auth_token(config: AppConfig) -> SecretStr | None:
     """Resolve the bearer auth token from the environment, if auth is enabled.
 
     Raises :class:`ConfigurationError` if the referenced environment variable
-    is unset or empty. Error messages contain the variable name, never values.
+    is unset or empty. Error messages contain variable names, never values.
     """
-    import os
-
     auth = config.server.auth
     if auth is None:
         return None
@@ -305,8 +301,6 @@ def resolve_auth_token(config: AppConfig) -> SecretStr | None:
 
 def config_path_from_env() -> Path | None:
     """Return the configuration path from ``TRAINING_STATS_CONFIG`` if set."""
-    import os
-
     value = os.environ.get(CONFIG_ENV_VAR)
     return Path(value) if value else None
 

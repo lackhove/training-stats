@@ -27,7 +27,3 @@ class FitParseError(TrainingStatsError):
 
 class CacheError(TrainingStatsError):
     """Raised when the Parquet cache cannot be read or written."""
-
-
-class AnalysisError(TrainingStatsError):
-    """Raised when analytics computation fails unexpectedly."""
