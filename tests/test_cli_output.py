@@ -12,8 +12,6 @@ from training_stats.cli_output import (
     format_distance,
     format_duration,
     format_start,
-    print_sync_feedback,
-    print_sync_summary,
     render_list,
     render_overview,
     render_show,
@@ -251,41 +249,3 @@ class TestOverviewRendering:
         assert "Zone distribution" in out
         assert "Data quality" in out
         assert "Latest activity" in out
-
-
-class TestSyncDiagnostics:
-    def test_summary_and_extras(self) -> None:
-        result: dict[str, object] = {
-            "files_discovered": 12,
-            "files_processed": 2,
-            "files_skipped": 10,
-            "files_failed": 0,
-            "files_repaired": 1,
-            "segments_discarded": 3,
-            "duplicates_detected": 1,
-            "source_errors": ["nextcloud: connection refused"],
-        }
-        out = _render(print_sync_summary, result)
-        assert "syncing sources..." in out
-        assert "sync: 12 found, 2 new, 10 unchanged, 0 failed" in out
-        assert "sync: 1 repaired, 3 segments discarded, 1 duplicate" in out
-        assert "sync source error: nextcloud: connection refused" in out
-
-    def test_clean_summary_has_no_extras(self) -> None:
-        result: dict[str, object] = {
-            "files_discovered": 4,
-            "files_processed": 0,
-            "files_skipped": 4,
-            "files_failed": 0,
-            "files_repaired": 0,
-            "segments_discarded": 0,
-            "duplicates_detected": 0,
-            "source_errors": [],
-        }
-        lines = _render(print_sync_summary, result).splitlines()
-        assert len(lines) == 2
-        assert all("repaired" not in line for line in lines)
-
-    def test_throttled_feedback(self) -> None:
-        out = _render(print_sync_feedback, {"throttled": True, "seconds_since_last_sync": 3.2})
-        assert "sync: skipped (last sync 3.2s ago)" in out

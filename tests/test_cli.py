@@ -266,7 +266,7 @@ def interactive(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend stdout is attached to a terminal."""
     from training_stats import cli
 
-    monkeypatch.setattr(cli, "_stdout_interactive", lambda: True)
+    monkeypatch.setattr(cli, "_use_rich", lambda force_json: not force_json)
 
 
 class TestInteractiveOutput:
@@ -309,7 +309,7 @@ class TestInteractiveOutput:
         assert main(["-c", str(config_path), "list", "--json"]) == 0
         assert len(json.loads(capsys.readouterr().out)) == 2
 
-    def test_error_is_styled_not_json(
+    def test_domain_error_is_json_even_interactive(
         self,
         config_path: Path,
         capsys: pytest.CaptureFixture[str],
@@ -318,8 +318,7 @@ class TestInteractiveOutput:
         assert main(["-c", str(config_path), "show", "does-not-exist"]) == 1
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert "activity not found" in captured.err
-        assert not captured.err.lstrip().startswith("{")
+        assert json.loads(captured.err)["detail"].startswith("activity not found")
 
     def test_domain_error_stays_json_with_json_flag(
         self,
