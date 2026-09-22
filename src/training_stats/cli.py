@@ -102,12 +102,9 @@ def _load_config(config_path: Path | None) -> AppConfig:
 
 
 def _service(config_path: Path | None) -> TrainingCoachServer:
-    return create_server(_load_config(config_path))
-
-
-def _use_rich(force_json: bool) -> bool:
-    """Render Rich output unless --json was given or stdout is not a TTY."""
-    return not force_json and sys.stdout.isatty()
+    config = _load_config(config_path)
+    setup_logging(config.application.log_level)
+    return create_server(config)
 
 
 def _emit(
@@ -116,8 +113,8 @@ def _emit(
     *,
     force_json: bool,
 ) -> None:
-    """Render a payload as a Rich view interactively, else as JSON."""
-    if _use_rich(force_json):
+    """Render a payload as a Rich view when stdout is a TTY, else as JSON."""
+    if not force_json and sys.stdout.isatty():
         renderer(payload, Console())
     else:
         print(json.dumps(payload, indent=2))
@@ -143,10 +140,6 @@ def _launcher(
     )
 
 
-def _int_value(value: object) -> int:
-    return converters.int_value(value)
-
-
 def _print_sync_summary(result: dict[str, object]) -> None:
     """Print one sync progress/summary line plus error details to stderr.
 
@@ -155,16 +148,16 @@ def _print_sync_summary(result: dict[str, object]) -> None:
     print("syncing sources...", file=sys.stderr)
     print(
         "sync: "
-        f"{_int_value(result['files_discovered'])} found, "
-        f"{_int_value(result['files_processed'])} new, "
-        f"{_int_value(result['files_skipped'])} unchanged, "
-        f"{_int_value(result['files_failed'])} failed",
+        f"{converters.int_value(result['files_discovered'])} found, "
+        f"{converters.int_value(result['files_processed'])} new, "
+        f"{converters.int_value(result['files_skipped'])} unchanged, "
+        f"{converters.int_value(result['files_failed'])} failed",
         file=sys.stderr,
     )
     extras: list[str] = []
-    repaired = _int_value(result["files_repaired"])
-    discarded = _int_value(result["segments_discarded"])
-    duplicates = _int_value(result["duplicates_detected"])
+    repaired = converters.int_value(result["files_repaired"])
+    discarded = converters.int_value(result["segments_discarded"])
+    duplicates = converters.int_value(result["duplicates_detected"])
     if repaired:
         extras.append(f"{repaired} repaired")
     if discarded:
@@ -304,10 +297,9 @@ def server(
 
     from .api import build_app
 
-    app_config = _load_config(config)
-    setup_logging(app_config.application.log_level)
+    service = _service(config)
+    app_config = service.config
     logger.info("starting %s with config %s", app_config.application.name, config or "config.toml")
-    service = create_server(app_config)
     _startup_sync(service)
     bind_host = host if host is not None else app_config.server.host
     _warn_unauthenticated_bind(bind_host, app_config.server.auth is not None)

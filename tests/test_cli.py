@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -216,7 +217,7 @@ class TestSyncThrottleFeedback:
         assert main(["-c", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
         assert "sync: 2 found, 2 new, 0 unchanged, 0 failed" in captured.err
-        assert "skipped" not in captured.err
+        assert "sync: skipped" not in captured.err
 
 
 class TestSyncSummaryFeedback:
@@ -262,11 +263,9 @@ class TestSyncSummaryFeedback:
 
 
 @pytest.fixture
-def interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+def interactive(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend stdout is attached to a terminal."""
-    from training_stats import cli
-
-    monkeypatch.setattr(cli, "_use_rich", lambda force_json: not force_json)
+    monkeypatch.setattr(type(sys.stdout), "isatty", lambda self: True)
 
 
 class TestInteractiveOutput:

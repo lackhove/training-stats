@@ -38,11 +38,6 @@ def _opt_int(value: object) -> int | None:
     return value
 
 
-def _int_value(value: object) -> int:
-    number = _opt_int(value)
-    return number if number is not None else 0
-
-
 def _str(value: object) -> str:
     return value if isinstance(value, str) else ""
 
