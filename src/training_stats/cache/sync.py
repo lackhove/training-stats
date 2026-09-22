@@ -3,71 +3,44 @@
 Change detection is two-tier: files whose stored size and modification time
 match the previous sync are skipped without being read at all; downloaded
 candidates are then SHA-256 hashed, and only files whose hash or analysis
-version changed are reprocessed.
+version changed are reprocessed. Parsing and metric computation are delegated
+to the injected :class:`~training_stats.ingest.FileProcessor`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 
-from ..analytics.activities import ActivityMetrics, AnalyzedActivity, compute_activity_metrics
+from ..analytics.activities import ActivityMetrics, AnalyzedActivity
 from ..analytics.daily import DailySummaryRow, summarize_daily
 from ..analytics.weekly import WeeklySummaryRow, daily_to_weekly
-from ..config import AthleteConfig, QualityConfig
 from ..converters import (
     buckets_from_json,
-    buckets_to_json,
     flags_from_json,
-    flags_to_json,
     histogram_from_json,
-    histogram_to_json,
     optional_float,
     optional_int,
     optional_str,
     required_float,
 )
-from ..errors import FitParseError, SourceError
-from ..fit.parser import FitParser
+from ..errors import SourceError
 from ..fit.types import ParsedActivity, empty_records
 from ..models import SourceFile, SyncResult
 from ..sources.base import ActivitySource
 from . import parquet, schemas
 from .locking import sync_lock
 
+if TYPE_CHECKING:
+    # Runtime import would cycle: ingest -> cache.schemas -> this module.
+    from ..ingest import FileProcessor
+
 logger = logging.getLogger(__name__)
-
-_STATUS_OK = "ok"
-_STATUS_FAILED = "failed"
-_STATUS_DUPLICATE = "duplicate"
-
-
-@dataclass(frozen=True, slots=True)
-class _Outcome:
-    """Result of processing one file during a sync."""
-
-    index_rows: list[dict[str, object]]
-    ok_activity_rows: list[dict[str, object]]
-    ok_metrics_rows: list[dict[str, object]]
-    duplicates: int
-    repaired: bool
-    discarded_segments: int
-
-
-def _empty_outcome(index_rows: list[dict[str, object]]) -> _Outcome:
-    return _Outcome(
-        index_rows=index_rows,
-        ok_activity_rows=[],
-        ok_metrics_rows=[],
-        duplicates=0,
-        repaired=False,
-        discarded_segments=0,
-    )
 
 
 class SyncService:
@@ -77,21 +50,17 @@ class SyncService:
         self,
         *,
         sources: list[ActivitySource],
-        parser: FitParser,
+        processor: FileProcessor,
         cache_dir: Path,
-        athlete: AthleteConfig,
         timezone: tzinfo,
         analysis_version: str,
-        quality: QualityConfig | None = None,
         lock_timeout_seconds: float = 30.0,
     ) -> None:
         self.sources = sources
-        self.parser = parser
+        self.processor = processor
         self.cache_dir = cache_dir
-        self.athlete = athlete
         self.tz = timezone
         self.analysis_version = analysis_version
-        self.quality = quality or QualityConfig()
         self.lock_timeout_seconds = lock_timeout_seconds
 
     def sync(self, force: bool = False, source_name: str | None = None) -> SyncResult:
@@ -170,7 +139,7 @@ class SyncService:
                     skipped += 1
                     continue
                 self._purge_previous(previous_rows, activities, metrics)
-                outcome = self._process_file(
+                outcome = self.processor.process(
                     source_file, content, file_hash, set(activities), started_at
                 )
                 kept_index.extend(outcome.index_rows)
@@ -229,80 +198,6 @@ class SyncService:
             duplicates_detected=duplicates_detected,
         )
 
-    def _process_file(
-        self,
-        source_file: SourceFile,
-        content: bytes,
-        file_hash: str,
-        existing_ids: set[str],
-        processed_at: datetime,
-    ) -> _Outcome:
-        base_row: dict[str, object] = {
-            "source_name": source_file.source_name,
-            "source_path": source_file.path,
-            "source_hash": file_hash,
-            "file_size": source_file.size,
-            "modified_at": source_file.modified_at,
-            "activity_id": None,
-            "segment_index": 0,
-            "segment_count": 0,
-            "repair_flags_json": None,
-            "discarded_segment_count": 0,
-            schemas.PROCESSED_AT: processed_at,
-            schemas.ANALYSIS_VERSION: self.analysis_version,
-            "status": _STATUS_FAILED,
-            "error_message": None,
-        }
-        try:
-            parsed_file = self.parser.parse(content, source_file)
-        except FitParseError as exc:
-            logger.error("cannot parse %s/%s: %s", source_file.source_name, source_file.path, exc)
-            base_row["error_message"] = str(exc)
-            return _empty_outcome([base_row])
-
-        file_flags_json = flags_to_json(parsed_file.repair_flags)
-        index_rows: list[dict[str, object]] = []
-        ok_activity_rows: list[dict[str, object]] = []
-        ok_metrics_rows: list[dict[str, object]] = []
-        duplicates = 0
-        for activity in parsed_file.activities:
-            analyzed = AnalyzedActivity(
-                activity=activity,
-                metrics=compute_activity_metrics(
-                    activity, self.athlete, self.analysis_version, self.quality
-                ),
-            )
-            row = dict(base_row)
-            row["activity_id"] = activity.activity_id
-            row["segment_index"] = activity.segment_index
-            row["segment_count"] = activity.segment_count
-            row["repair_flags_json"] = file_flags_json
-            row["discarded_segment_count"] = parsed_file.discarded_segment_count
-            if activity.activity_id in existing_ids:
-                row["status"] = _STATUS_DUPLICATE
-                row["error_message"] = "duplicate activity id"
-                duplicates += 1
-                logger.info(
-                    "duplicate %s/%s: activity %s already cached",
-                    source_file.source_name,
-                    source_file.path,
-                    activity.activity_id,
-                )
-            else:
-                row["status"] = _STATUS_OK
-                existing_ids.add(activity.activity_id)
-                ok_activity_rows.append(self._activity_row(analyzed, source_file.source_name))
-                ok_metrics_rows.append(self._metrics_row(analyzed))
-            index_rows.append(row)
-        return _Outcome(
-            index_rows=index_rows,
-            ok_activity_rows=ok_activity_rows,
-            ok_metrics_rows=ok_metrics_rows,
-            duplicates=duplicates,
-            repaired=bool(parsed_file.repair_flags),
-            discarded_segments=parsed_file.discarded_segment_count,
-        )
-
     def _failure_row(
         self, source_file: SourceFile, processed_at: datetime, message: str, file_hash: str | None
     ) -> dict[str, object]:
@@ -319,7 +214,7 @@ class SyncService:
             "discarded_segment_count": 0,
             schemas.PROCESSED_AT: processed_at,
             schemas.ANALYSIS_VERSION: self.analysis_version,
-            "status": _STATUS_FAILED,
+            "status": schemas.STATUS_FAILED,
             "error_message": message,
         }
 
@@ -427,7 +322,7 @@ class SyncService:
         ok_ids = {
             str(row["activity_id"])
             for row in index_rows
-            if row.get("status") == _STATUS_OK and row.get("activity_id") is not None
+            if row.get("status") == schemas.STATUS_OK and row.get("activity_id") is not None
         }
         activities = {key: row for key, row in activities.items() if key in ok_ids}
         metrics = {key: row for key, row in metrics.items() if key in ok_ids}
@@ -436,7 +331,7 @@ class SyncService:
                 activities[str(row["activity_id"])], metrics[str(row["activity_id"])]
             )
             for row in index_rows
-            if row.get("status") == _STATUS_OK
+            if row.get("status") == schemas.STATUS_OK
             and row.get("activity_id") is not None
             and str(row["activity_id"]) in activities
             and str(row["activity_id"]) in metrics
@@ -468,7 +363,7 @@ class SyncService:
                 "analysis_version": self.analysis_version,
                 "activity_count": len(activities),
                 "failed_file_count": sum(
-                    1 for row in index_rows if row.get("status") == _STATUS_FAILED
+                    1 for row in index_rows if row.get("status") == schemas.STATUS_FAILED
                 ),
             },
             self.cache_dir / schemas.METADATA_FILE,
@@ -526,56 +421,6 @@ class SyncService:
             or "insufficient_duration",
         )
         return AnalyzedActivity(activity=parsed, metrics=metric_values)
-
-    @staticmethod
-    def _activity_row(item: AnalyzedActivity, source_name: str) -> dict[str, object]:
-        activity = item.activity
-        return {
-            "activity_id": activity.activity_id,
-            "start_time": _ensure_utc(activity.start_time),
-            "sport": activity.sport,
-            "sub_sport": activity.sub_sport,
-            "duration_s": activity.duration_s,
-            "moving_time_s": activity.moving_time_s,
-            "paused_time_s": activity.paused_time_s,
-            "distance_m": activity.distance_m,
-            "elevation_gain_m": activity.elevation_gain_m,
-            "avg_hr": activity.avg_hr,
-            "max_hr": activity.max_hr,
-            "avg_speed_mps": activity.avg_speed_mps,
-            "max_speed_mps": activity.max_speed_mps,
-            "calories": activity.calories,
-            "segment_index": activity.segment_index,
-            "segment_count": activity.segment_count,
-            "repair_flags_json": flags_to_json(activity.repair_flags),
-            "source_name": source_name,
-            "source_path": activity.source_path,
-        }
-
-    @staticmethod
-    def _metrics_row(item: AnalyzedActivity) -> dict[str, object]:
-        metric_values = item.metrics
-        return {
-            "activity_id": metric_values.activity_id,
-            "hr_zone_1_s": metric_values.hr_zone_1_s,
-            "hr_zone_2_s": metric_values.hr_zone_2_s,
-            "hr_zone_3_s": metric_values.hr_zone_3_s,
-            "hr_zone_4_s": metric_values.hr_zone_4_s,
-            "hr_zone_5_s": metric_values.hr_zone_5_s,
-            "hr_coverage_ratio": metric_values.hr_coverage_ratio,
-            "hr_histogram_json": histogram_to_json(metric_values.hr_histogram_s),
-            "hr_10min_json": buckets_to_json(metric_values.hr_10min_averages),
-            "hr_drift_bpm_per_hour": metric_values.hr_drift_bpm_per_hour,
-            "load_value": metric_values.load_value,
-            "load_method": metric_values.load_method,
-            "load_confidence": metric_values.load_confidence,
-            "data_completeness": metric_values.data_completeness,
-            "ef_first_half": metric_values.ef_first_half,
-            "ef_second_half": metric_values.ef_second_half,
-            "aerobic_decoupling_pct": metric_values.aerobic_decoupling_pct,
-            "decoupling_confidence": metric_values.decoupling_confidence,
-            schemas.ANALYSIS_VERSION: metric_values.analysis_version,
-        }
 
 
 def _frame(rows: dict[str, dict[str, object]], schema: dict[str, pl.DataType]) -> pl.DataFrame:
@@ -639,7 +484,3 @@ def _weekly_records(rows: list[WeeklySummaryRow]) -> list[dict[str, object]]:
         }
         for row in rows
     ]
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

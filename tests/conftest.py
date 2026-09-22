@@ -17,10 +17,13 @@ from training_stats.config import (
     CacheConfig,
     HeartRateZonesConfig,
     LocalSourceConfig,
+    QualityConfig,
     ServerConfig,
 )
 from training_stats.errors import FitParseError, SourceError
+from training_stats.fit.parser import FitParser
 from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
+from training_stats.ingest import FileProcessor
 from training_stats.models import SourceFile
 from training_stats.sources.base import ActivitySource
 
@@ -65,6 +68,22 @@ def make_app_config(
         athlete=athlete or make_athlete(),
         sources=[LocalSourceConfig(name="local", path=source_dir)],
         server=ServerConfig(),
+    )
+
+
+def make_processor(
+    *,
+    athlete: AthleteConfig,
+    analysis_version: str,
+    parser: FitParser | None = None,
+    quality: QualityConfig | None = None,
+) -> FileProcessor:
+    """FileProcessor wired with the deterministic StubParser for cache tests."""
+    return FileProcessor(
+        parser=parser or StubParser(),
+        athlete=athlete,
+        quality=quality or QualityConfig(),
+        analysis_version=analysis_version,
     )
 
 

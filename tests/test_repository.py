@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.cache.repository import ParquetTrainingRepository
 from training_stats.cache.sync import SyncService
 
@@ -19,9 +19,8 @@ def build_repository(tmp_path: Path, files: dict[str, bytes]) -> ParquetTraining
     config = make_app_config(cache_dir, tmp_path / "src")
     service = SyncService(
         sources=[source],
-        parser=StubParser(),
+        processor=make_processor(athlete=config.athlete, analysis_version="1"),
         cache_dir=cache_dir,
-        athlete=config.athlete,
         timezone=config.application.zoneinfo,
         analysis_version="1",
     )

@@ -10,7 +10,13 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from tests.conftest import (
+    StubParser,
+    StubSource,
+    make_app_config,
+    make_processor,
+    stub_activity_content,
+)
 from training_stats.cache import parquet, schemas
 from training_stats.cache.locking import sync_lock
 from training_stats.cache.sync import SyncService
@@ -32,9 +38,8 @@ def make_sync(
     config = make_app_config(cache_dir, tmp_path / "src")
     service = SyncService(
         sources=[source],
-        parser=StubParser(),
+        processor=make_processor(athlete=config.athlete, analysis_version=analysis_version),
         cache_dir=cache_dir,
-        athlete=config.athlete,
         timezone=config.application.zoneinfo,
         analysis_version=analysis_version,
     )
@@ -282,9 +287,11 @@ class TestCacheProtection:
 
         broken = SyncService(
             sources=[FailingSource(name="stub", files=source.files)],
-            parser=StubParser(),
+            processor=make_processor(
+                athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
+                analysis_version="1",
+            ),
             cache_dir=cache_dir,
-            athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
             timezone=make_app_config(cache_dir, tmp_path / "src").application.zoneinfo,
             analysis_version="1",
         )
@@ -302,9 +309,8 @@ class TestCacheProtection:
         config = make_app_config(cache_dir, tmp_path / "src")
         empty = SyncService(
             sources=[],
-            parser=StubParser(),
+            processor=make_processor(athlete=config.athlete, analysis_version="1"),
             cache_dir=cache_dir,
-            athlete=config.athlete,
             timezone=config.application.zoneinfo,
             analysis_version="1",
         )
@@ -377,9 +383,8 @@ class TestFailureHandling:
         config = make_app_config(cache_dir, tmp_path / "src")
         service = SyncService(
             sources=[source_b, source_a],
-            parser=StubParser(),
+            processor=make_processor(athlete=config.athlete, analysis_version="1"),
             cache_dir=cache_dir,
-            athlete=config.athlete,
             timezone=config.application.zoneinfo,
             analysis_version="1",
         )
@@ -460,9 +465,10 @@ class TestSegmentSync:
         config = make_app_config(cache_dir, tmp_path / "src")
         service = SyncService(
             sources=[source],
-            parser=FlagParser(),
+            processor=make_processor(
+                athlete=config.athlete, analysis_version="1", parser=FlagParser()
+            ),
             cache_dir=cache_dir,
-            athlete=config.athlete,
             timezone=config.application.zoneinfo,
             analysis_version="1",
         )

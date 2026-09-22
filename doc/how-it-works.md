@@ -14,7 +14,7 @@ steps and all metric definitions.
 ## 1. Architecture & Data Flow
 
 ```
-sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.repository -> services -> (wire -> api, cli)
+sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.repository -> services -> (wire -> api, cli)
 ```
 
 | Package | Responsibility |
@@ -22,6 +22,7 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
 | `sources/` | `ActivitySource` ABC; `LocalDirectorySource` (filesystem walk) and `WebDAVSource` (httpx + env-resolved secrets) |
 | `fit/` | `FitParser` protocol returning a `ParsedFile`; `FitDecodeParser` (fitdecode boundary); `repair.py` (timeline repair, segmentation, moving time); `normalize.py` (coercion helpers); `types.py` (`RECORD_SCHEMA`, `ParsedActivity`, `ParsedFile`) |
 | `analytics/` | Per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`) |
+| `ingest.py` | `FileProcessor`: parse one FIT file, compute metrics, build the index/activity/metrics row dicts (domain half of sync; injected into `cache.sync`) |
 | `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), flock locking (`locking.py`), incremental sync (`sync.py`), read-side repository (`repository.py`) |
 | `coach/` | Athlete profile from TOML, overview assembly |
 | `services.py` | Service layer returning domain models; methods on `TrainingStatsService` are directly testable |
@@ -180,15 +181,16 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 
 ## 4. Processing: Sync & Cache
 
-### 4.1 Sync Flow (`cache/sync.py`)
+### 4.1 Sync Flow (`cache/sync.py` + `ingest.py`)
 
 1. Load source index + activity/metrics stores (in memory).
 2. List all files from all enabled sources.
 3. Skip files matching size + mtime + version from the previous sync
    (no read); read + hash the rest and skip those whose hash + version
    also match.
-4. On change: **purge all cached rows of that file** (every segment), parse,
-   repair, compute metrics, index one row per segment.
+4. On change: **purge all cached rows of that file** (every segment), then
+   delegate to `ingest.FileProcessor` — parse, repair, compute metrics,
+   index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` with no store rows.
 6. Rebuild daily/weekly aggregates **strictly from `status == "ok"` rows**.
 7. Write all Parquet files + `metadata.json` atomically under `sync.lock`.

@@ -56,6 +56,8 @@ fit/       FitParser protocol (returns ParsedFile), FitDecodeParser,
            RECORD_SCHEMA (records as transient Polars frame)
 analytics/ activities, heart_rate (vectorized zones), load (hr_trimp),
            daily, weekly
+ingest.py  FileProcessor: parse one file, compute metrics, build Parquet
+           row dicts (domain half of sync, injected into cache/sync.py)
 cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync, repository
 coach/     athlete profile (from TOML), overview assembly
 services.py  service layer returning domain models; methods on
@@ -67,14 +69,14 @@ api.py     FastAPI application with wire response models (OpenAPI schema)
 cli.py     cyclopts CLI (TTY detection, global --config/--json); maps domain
            → wire, dispatches to cli_output (Rich) or plain JSON
 cli_output.py  Rich renderers taking wire dicts (model_dump) + injected
-              Console (the only module with rendering logic)
+               Console (the only module with rendering logic)
 config.py  Pydantic TOML models, env-based secret resolution
 models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries,
            deep Overview, ThrottledSync, ...)
 errors.py  typed exception hierarchy (TrainingStatsError base)
 ```
 
-Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> services -> (wire -> api, cli)`.
+Data flow: `sources -> ingest (fit.parser + analytics) -> cache.sync -> cache.repository -> services -> (wire -> api, cli)`.
 
 **Serialization convention:** services return domain models; serialize only
 at the edges. `api.py` and `cli.py` map domain → `wire.py` Pydantic models

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.cache import schemas
 from training_stats.models import SyncResult, ThrottledSync
 from training_stats.services import TrainingStatsService, create_service
@@ -38,7 +38,9 @@ def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsServic
     server = create_service(config)
     # Swap in the deterministic stub source/parser for cache independence.
     server.sync_service.sources = [StubSource(files=files)]
-    server.sync_service.parser = StubParser()
+    server.sync_service.processor = make_processor(
+        athlete=config.athlete, analysis_version=server.sync_service.analysis_version
+    )
     return server
 
 

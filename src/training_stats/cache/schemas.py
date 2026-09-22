@@ -14,6 +14,11 @@ ANALYSIS_VERSION = "analysis_version"
 # every file (hash-based change detection alone would serve stale rows).
 ANALYSIS_VERSION_VALUE = "4"
 PROCESSED_AT = "processed_at"
+# source_index.parquet status values, shared by ingest (row creation) and
+# sync (aggregate filtering, metadata counts).
+STATUS_OK = "ok"
+STATUS_FAILED = "failed"
+STATUS_DUPLICATE = "duplicate"
 
 ACTIVITY_SCHEMA: dict[str, pl.DataType] = {
     "activity_id": pl.String(),

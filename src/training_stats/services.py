@@ -1,9 +1,9 @@
 """Service layer exposing the training analytics domain operations.
 
 Methods are thin, validating adapters over the repository and sync service;
-all business logic lives in the analytics, cache and coach layers. They
-return domain models — serialization to HTTP/CLI JSON happens only at the
-edges via :mod:`training_stats.wire`. The FastAPI application
+all business logic lives in the analytics, ingest, cache and coach layers.
+They return domain models — serialization to HTTP/CLI JSON happens only at
+the edges via :mod:`training_stats.wire`. The FastAPI application
 (:mod:`training_stats.api`) and the CLI (:mod:`training_stats.cli`) are both
 wired over this class.
 """
@@ -22,6 +22,7 @@ from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
 from .errors import TrainingStatsError
 from .fit.parser import FitDecodeParser, FitParser
+from .ingest import FileProcessor
 from .models import (
     MAX_DAYS,
     MAX_LIST_LIMIT,
@@ -204,14 +205,18 @@ def create_service(config: AppConfig) -> TrainingStatsService:
             raise TrainingStatsError(msg)
 
     parser: FitParser = FitDecodeParser(quality=config.quality)
+    processor = FileProcessor(
+        parser=parser,
+        athlete=config.athlete,
+        quality=config.quality,
+        analysis_version=schemas.ANALYSIS_VERSION_VALUE,
+    )
     sync_service = SyncService(
         sources=sources,
-        parser=parser,
+        processor=processor,
         cache_dir=config.cache.directory,
-        athlete=config.athlete,
         timezone=config.application.zoneinfo,
         analysis_version=schemas.ANALYSIS_VERSION_VALUE,
-        quality=config.quality,
         lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
     repository = ParquetTrainingRepository(

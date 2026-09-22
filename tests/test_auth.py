@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.api import build_app
 from training_stats.auth import BearerGuard
 from training_stats.config import (
@@ -83,7 +83,9 @@ def _make_server(tmp_path: Path, with_auth: bool) -> TrainingStatsService:
             }
         )
     ]
-    server.sync_service.parser = StubParser()
+    server.sync_service.processor = make_processor(
+        athlete=config.athlete, analysis_version=server.sync_service.analysis_version
+    )
     return server
 
 

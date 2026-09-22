@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
+from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.api import build_app
 from training_stats.services import TrainingStatsService, create_service
 
@@ -31,7 +31,9 @@ def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsServic
     config.cache.sync_min_interval_seconds = 0.0
     server = create_service(config)
     server.sync_service.sources = [StubSource(files=files)]
-    server.sync_service.parser = StubParser()
+    server.sync_service.processor = make_processor(
+        athlete=config.athlete, analysis_version=server.sync_service.analysis_version
+    )
     return server
 
 
