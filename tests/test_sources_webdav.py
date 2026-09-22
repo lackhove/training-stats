@@ -217,6 +217,28 @@ def test_unexpected_status() -> None:
         source.list_files()
 
 
+def test_unlisted_status_is_covered_by_raise_for_status() -> None:
+    """Any 4xx/5xx (e.g. 403) maps to a domain error without a dedicated branch."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    source = make_source(handler)
+    with pytest.raises(RemoteFileError, match="403"):
+        source.list_files()
+
+
+def test_download_unlisted_status_is_covered_by_raise_for_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PROPFIND":
+            return httpx.Response(207, text=PROPFIND_RESPONSE)
+        return httpx.Response(403)
+
+    source = make_source(handler)
+    with pytest.raises(RemoteFileError, match="403"):
+        source.read_file(source.list_files()[0])
+
+
 def test_non_recursive_uses_depth_1() -> None:
     seen: list[str] = []
 
