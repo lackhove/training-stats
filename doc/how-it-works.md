@@ -6,7 +6,8 @@ steps and all metric definitions.
 - Sources: local directories and Nextcloud via WebDAV (read FIT files only)
 - Language: Python 3.12+, everything managed through `uv`
 - Cache: Polars DataFrames persisted as Parquet (aggregates only, never raw time series)
-- Interface: verb-based CLI (JSON output) and FastAPI REST API with OpenAPI schema
+- Interface: verb-based CLI (Rich tables on a TTY, JSON when piped or via
+  `--json`) and FastAPI REST API with OpenAPI schema
 
 ---
 
@@ -25,7 +26,8 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
 | `coach/` | Athlete profile from TOML, overview assembly |
 | `server.py` | Service layer; methods on `TrainingCoachServer` are directly testable |
 | `api.py` | FastAPI application with Pydantic response models (OpenAPI schema) |
-| `cli.py` | cyclopts CLI (JSON output) |
+| `cli.py` | cyclopts CLI; TTY detection + global `--json`, dispatches to `cli_output` or plain JSON |
+| `cli_output.py` | Rich renderers (payload dicts + injected `Console`); diagnostics on stderr |
 | `config.py` | Pydantic TOML models; WebDAV secrets only via environment variables |
 | `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, …) |
 | `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
@@ -367,7 +369,8 @@ repair outcomes so the LLM can reason about data trustworthiness.
 
 ## 9. CLI Commands & REST Endpoints
 
-**CLI** (`training-stats`, JSON output; `training-stats server` runs the REST API)
+**CLI** (`training-stats`, Rich tables on a TTY / JSON when piped or via
+`--json`; `training-stats server` runs the REST API)
 
 | Command | Purpose |
 |---|---|

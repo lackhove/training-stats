@@ -11,7 +11,8 @@ Guidance for AI coding agents working in this repository.
 3. Parses FIT sessions and records via `fitdecode`
 4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries)
 5. Caches aggregates as Parquet files (never time-series data)
-6. Exposes verb-based CLI commands (JSON output) and a typed REST API with
+6. Exposes verb-based CLI commands (Rich tables on a TTY, JSON otherwise)
+   and a typed REST API with
    OpenAPI schema (consumable as an Open WebUI external OpenAPI tool server)
 
 Architecture details and design decisions are captured below; user-facing
@@ -26,7 +27,7 @@ any task; the code is only complete when all of them pass):
 uv run ruff format --check .   # formatting (run `uv run ruff format .` to fix)
 uv run ruff check .            # linting (run with `--fix` to auto-fix)
 uv run mypy --strict src       # static typing (src only, not tests)
-uv run pytest                  # tests (~224 tests, <15 s)
+uv run pytest                  # tests (~288 tests, <15 s)
 ```
 
 Combined one-liner:
@@ -59,7 +60,10 @@ cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync, reposi
 coach/     athlete profile (from TOML), overview assembly
 server.py  service layer; methods on TrainingCoachServer are directly testable
 api.py     FastAPI application with Pydantic response models (OpenAPI schema)
-cli.py     cyclopts CLI (JSON output); app.meta.default consumes global --config
+cli.py     cyclopts CLI (TTY detection, global --config/--json); dispatches
+           payloads to cli_output (Rich) or plain JSON
+cli_output.py  Rich renderers taking payload dicts + injected Console
+              (the only module with rendering logic)
 config.py  Pydantic TOML models, env-based secret resolution
 models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries, Overview, ...)
 errors.py  typed exception hierarchy (TrainingStatsError base)

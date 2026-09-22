@@ -259,3 +259,74 @@ class TestSyncSummaryFeedback:
         err = capsys.readouterr().err.splitlines()
         assert len(err) == 2  # progress + summary, no extras/source lines
         assert all("repaired" not in line for line in err)
+
+
+@pytest.fixture
+def interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend stdout is attached to a terminal."""
+    from training_stats import cli
+
+    monkeypatch.setattr(cli, "_stdout_interactive", lambda: True)
+
+
+class TestInteractiveOutput:
+    def test_list_renders_table(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "list"]) == 0
+        captured = capsys.readouterr()
+        assert "Start" in captured.out
+        assert "cycling" in captured.out
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(captured.out)
+        assert "sync: 2 found" in captured.err
+
+    def test_overview_renders_panels(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
+        out = capsys.readouterr().out
+        assert "Training overview" in out
+        assert "Recent activities" in out
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(out)
+
+    def test_json_flag_before_and_after_command(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "--json", "list"]) == 0
+        assert len(json.loads(capsys.readouterr().out)) == 2
+
+        assert main(["-c", str(config_path), "list", "--json"]) == 0
+        assert len(json.loads(capsys.readouterr().out)) == 2
+
+    def test_error_is_styled_not_json(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "show", "does-not-exist"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "activity not found" in captured.err
+        assert not captured.err.lstrip().startswith("{")
+
+    def test_domain_error_stays_json_with_json_flag(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "--json", "show", "does-not-exist"]) == 1
+        captured = capsys.readouterr()
+        assert json.loads(captured.err)["detail"].startswith("activity not found")

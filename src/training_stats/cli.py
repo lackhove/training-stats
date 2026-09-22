@@ -1,8 +1,10 @@
-"""Coach command line interface (JSON-only output).
+"""Coach command line interface.
 
-Every verb prints the service payload as JSON on stdout and nothing else;
-log output goes to stderr. Exit codes: 0 success, 1 domain error (unknown
-activity, invalid range), 2 configuration or usage error.
+Interactive terminals (stdout is a TTY) get Rich tables and panels; piped or
+redirected output — or an explicit ``--json`` — prints the service payload as
+JSON on stdout and nothing else. Diagnostics (sync feedback, errors) go to
+stderr. Exit codes: 0 success, 1 domain error (unknown activity, invalid
+range), 2 configuration or usage error.
 """
 
 from __future__ import annotations
@@ -10,15 +12,16 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Annotated
 
 from cyclopts import App, Parameter
 from cyclopts.exceptions import CycloptsError
+from rich.console import Console
 
-from . import __version__
+from . import __version__, cli_output
 from .config import CONFIG_ENV_VAR, AppConfig, config_path_from_env, load_config
 from .errors import ConfigurationError
 from .logging_config import setup_logging
@@ -28,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 app = App(
     name="training-stats",
-    help="Training stats for FIT activity data. All output is JSON.",
+    help="Training stats for FIT activity data. Pretty tables on a TTY; JSON otherwise.",
     version=__version__,
     result_action="return_none",
 )
@@ -72,6 +75,21 @@ GlobalConfigArg = Annotated[
         ),
     ),
 ]
+JsonFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--json"],
+        show=False,
+        help="Print the payload as JSON on stdout even when attached to a terminal.",
+    ),
+]
+GlobalJsonFlag = Annotated[
+    bool,
+    Parameter(
+        name=["--json"],
+        help="Print payloads as JSON on stdout even when attached to a terminal.",
+    ),
+]
 
 
 def _load_config(config_path: Path | None) -> AppConfig:
@@ -87,19 +105,45 @@ def _service(config_path: Path | None) -> TrainingCoachServer:
     return create_server(_load_config(config_path))
 
 
+def _stdout_interactive() -> bool:
+    """True when stdout is attached to a terminal."""
+    return sys.stdout.isatty()
+
+
+def _use_rich(force_json: bool) -> bool:
+    """Render Rich output unless --json was given or stdout is not a TTY."""
+    return not force_json and _stdout_interactive()
+
+
 def _print(payload: object) -> None:
     print(json.dumps(payload, indent=2))
+
+
+def _emit(
+    payload: object,
+    renderer: Callable[[object, Console], None],
+    *,
+    force_json: bool,
+) -> None:
+    """Render a payload as a Rich view interactively, else as JSON."""
+    if _use_rich(force_json):
+        renderer(payload, Console())
+    else:
+        _print(payload)
 
 
 @app.meta.default
 def _launcher(
     *tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)],
     config: GlobalConfigArg = None,
+    json_output: GlobalJsonFlag = False,
 ) -> None:
     """Consume global options so they may appear before the command."""
     forwarded: list[str] = []
     if config is not None:
         forwarded += ["--config", str(config)]
+    if json_output:
+        forwarded += ["--json"]
     app(
         list(tokens) + forwarded,
         exit_on_error=False,
@@ -144,8 +188,11 @@ def _print_sync_summary(result: dict[str, object]) -> None:
             print(f"sync source error: {error}", file=sys.stderr)
 
 
-def _print_sync_feedback(result: dict[str, object]) -> None:
+def _print_sync_feedback(result: dict[str, object], *, force_json: bool = False) -> None:
     """Report the outcome of a (possibly throttled) sync on stderr."""
+    if _use_rich(force_json):
+        cli_output.print_sync_feedback(result, Console(stderr=True))
+        return
     if result.get("throttled"):
         seconds = result["seconds_since_last_sync"]
         print(f"sync: skipped (last sync {seconds}s ago)", file=sys.stderr)
@@ -161,22 +208,29 @@ def list_activities(
     sport: SportArg = None,
     limit: LimitArg = 50,
     sync_first: SyncFlag = True,
+    json_output: JsonFlag = False,
 ) -> None:
     """List compact activity summaries, newest first."""
     service = _service(config)
     if sync_first:
-        _print_sync_feedback(service.sync_if_due())
-    _print(
+        _print_sync_feedback(service.sync_if_due(), force_json=json_output)
+    _emit(
         service.list_activities(
             start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
-        )
+        ),
+        cli_output.render_list,
+        force_json=json_output,
     )
 
 
 @app.command
-def show(activity_id: str, config: ConfigArg = None) -> None:
+def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
     """Show one activity with metrics, zones, load and data quality."""
-    _print(_service(config).get_activity(activity_id))
+    _emit(
+        _service(config).get_activity(activity_id),
+        cli_output.render_show,
+        force_json=json_output,
+    )
 
 
 @app.command
@@ -187,15 +241,18 @@ def weekly(
     start: StartArg = None,
     end: EndArg = None,
     sync_first: SyncFlag = True,
+    json_output: JsonFlag = False,
 ) -> None:
     """Show weekly training totals with previous-week comparisons."""
     service = _service(config)
     if sync_first:
-        _print_sync_feedback(service.sync_if_due())
-    _print(
+        _print_sync_feedback(service.sync_if_due(), force_json=json_output)
+    _emit(
         service.weekly_summary(
             start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
-        )
+        ),
+        cli_output.render_weekly,
+        force_json=json_output,
     )
 
 
@@ -205,12 +262,17 @@ def overview(
     days: Annotated[int, Parameter(help="Length of the period ending today.")] = 28,
     sport: SportArg = None,
     sync_first: SyncFlag = True,
+    json_output: JsonFlag = False,
 ) -> None:
     """Show the coaching overview: profile, daily series, form, quality."""
     service = _service(config)
     if sync_first:
-        _print_sync_feedback(service.sync_if_due())
-    _print(service.overview(days=days, sport=sport, sync_first=False))
+        _print_sync_feedback(service.sync_if_due(), force_json=json_output)
+    _emit(
+        service.overview(days=days, sport=sport, sync_first=False),
+        cli_output.render_overview,
+        force_json=json_output,
+    )
 
 
 def _startup_sync(service: TrainingCoachServer) -> dict[str, object]:
@@ -268,18 +330,30 @@ def server(
     )
 
 
+def _fail(message: str, use_rich: bool) -> None:
+    if use_rich:
+        cli_output.print_error(message, Console(stderr=True))
+    else:
+        print(message, file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the training-stats CLI; returns the process exit code."""
+    args = list(argv) if argv is not None else sys.argv[1:]
+    use_rich = _use_rich("--json" in args)
     try:
-        app.meta(argv, exit_on_error=False, print_error=False, result_action="return_none")
+        app.meta(args, exit_on_error=False, print_error=False, result_action="return_none")
     except CycloptsError as exc:
-        print(f"usage error: {exc}", file=sys.stderr)
+        _fail(f"usage error: {exc}", use_rich)
         return 2
     except ConfigurationError as exc:
-        print(f"configuration error: {exc}", file=sys.stderr)
+        _fail(f"configuration error: {exc}", use_rich)
         return 2
     except (LookupError, ValueError) as exc:
-        print(json.dumps({"detail": str(exc)}), file=sys.stderr)
+        if use_rich:
+            cli_output.print_error(str(exc), Console(stderr=True))
+        else:
+            print(json.dumps({"detail": str(exc)}), file=sys.stderr)
         return 1
     return 0
 

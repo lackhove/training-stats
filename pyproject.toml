@@ -12,6 +12,7 @@ dependencies = [
     "polars>=1.0",
     "pyarrow>=17.0",
     "pydantic>=2.0",
+    "rich>=13",
     "uvicorn>=0.32",
 ]
 

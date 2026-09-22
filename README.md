@@ -44,10 +44,11 @@ Synchronization runs automatically at server startup and before every query
 throttled: a real sync runs at most once per
 `cache.sync_min_interval_seconds` (default 10 s), so bursts of commands or
 API requests contact your sources only once — set the interval to `0` to
-always synchronize, `--no-sync` to never synchronize for one call. All
-commands print JSON on stdout and nothing else; progress and diagnostics
-(sync summary, source errors) go to stderr, so piping stays clean:
-`training-stats list | jq '.[].sport'`.
+always synchronize, `--no-sync` to never synchronize for one call. On an
+interactive terminal commands render Rich tables and panels; when stdout is
+piped or redirected — or `--json` is given — they print JSON on stdout and
+nothing else, while progress and diagnostics (sync summary, source errors)
+go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
 
 ## Commands
 
@@ -59,7 +60,8 @@ commands print JSON on stdout and nothing else; progress and diagnostics
 | `training-stats overview [--days --sport --no-sync]` | Compact bundle: profile, daily series, weekly summaries, form, quality (synchronizes if due) |
 | `training-stats server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
 
-Global options: `--config/-c` (before or after the verb), `--help`, `--version`.
+Global options: `--config/-c` and `--json` (before or after the verb),
+`--help`, `--version`.
 The overview's daily series carries per-(date, sport) totals for every metric,
 so any metric trend is a simple filter and projection over it.
 
