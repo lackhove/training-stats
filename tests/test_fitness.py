@@ -6,6 +6,7 @@ import math
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import polars as pl
 import pytest
 
 from training_stats.analytics.fitness import (
@@ -20,7 +21,37 @@ from training_stats.analytics.fitness import (
     compute_form_curves,
     compute_rolling_distance,
     compute_training_form,
+    training_form_from,
 )
+
+FORM_FRAME_SCHEMA: dict[str, pl.DataType] = {
+    "start_time": pl.Datetime("us", "UTC"),
+    "sport": pl.String(),
+    "distance_m": pl.Float64(),
+    "load_value": pl.Float64(),
+    "load_confidence": pl.String(),
+}
+
+
+def _form_frame(rows: list[dict[str, object]]) -> pl.LazyFrame:
+    return pl.DataFrame(rows, schema=FORM_FRAME_SCHEMA).lazy()
+
+
+def _form_row(
+    start: datetime,
+    *,
+    sport: str = "cycling",
+    distance_m: float | None = 0.0,
+    load_value: float | None = None,
+    load_confidence: str | None = None,
+) -> dict[str, object]:
+    return {
+        "start_time": start,
+        "sport": sport,
+        "distance_m": distance_m,
+        "load_value": load_value,
+        "load_confidence": load_confidence,
+    }
 
 
 class TestTrainingFormRecursion:
@@ -92,6 +123,98 @@ class TestTrainingFormRecursion:
         assert result.is_warmup is True
         assert result.history_days == 0
         assert result.trend_points == ()
+
+
+class TestTrainingFormFrom:
+    """The frame-based composition entry point."""
+
+    TZ = ZoneInfo("Europe/Berlin")
+
+    def test_ctl_atl_and_rolling_distance(self) -> None:
+        today = date(2026, 6, 10)
+        frame = _form_frame(
+            [
+                # 20 km + load today, 30 km + load 5 days ago
+                _form_row(
+                    datetime(2026, 6, 10, 10, tzinfo=UTC),
+                    load_value=80.0,
+                    load_confidence="high",
+                    distance_m=20_000.0,
+                ),
+                _form_row(
+                    datetime(2026, 6, 5, 10, tzinfo=UTC),
+                    load_value=60.0,
+                    load_confidence="high",
+                    distance_m=30_000.0,
+                ),
+                # 50 km ride 10 days ago, outside the 7-day window
+                _form_row(
+                    datetime(2026, 5, 31, 10, tzinfo=UTC), load_value=None, distance_m=50_000.0
+                ),
+            ]
+        )
+        result = training_form_from(frame, tz=self.TZ, today=today)
+        assert result.current_ctl > 0.0
+        assert result.current_atl > 0.0
+        assert result.rolling_7d_distance_km == 50.0
+        assert result.rolling_28d_distance_km == 100.0
+        assert result.days_since_60k_ride is None
+        assert result.load_confidence_ratio == 1.0
+
+    def test_days_since_60k(self) -> None:
+        today = date(2026, 6, 10)
+        frame = _form_frame(
+            [_form_row(datetime(2026, 6, 7, 10, tzinfo=UTC), distance_m=65_000.0, load_value=100.0)]
+        )
+        result = training_form_from(frame, tz=self.TZ, today=today)
+        assert result.days_since_60k_ride == 3
+
+    def test_load_confidence_ratio(self) -> None:
+        today = date(2026, 6, 10)
+        frame = _form_frame(
+            [
+                _form_row(
+                    datetime(2026, 6, 9, 10, tzinfo=UTC), load_value=200.0, load_confidence="high"
+                ),
+                _form_row(
+                    datetime(2026, 6, 8, 10, tzinfo=UTC), load_value=100.0, load_confidence="low"
+                ),
+            ]
+        )
+        result = training_form_from(frame, tz=self.TZ, today=today)
+        assert result.load_confidence_ratio == pytest.approx(0.6667)  # rounded to 4 decimals
+
+    def test_sport_filter(self) -> None:
+        today = date(2026, 6, 10)
+        frame = _form_frame(
+            [
+                _form_row(
+                    datetime(2026, 6, 9, 10, tzinfo=UTC),
+                    load_value=100.0,
+                    load_confidence="high",
+                    distance_m=70_000.0,
+                ),
+                _form_row(
+                    datetime(2026, 6, 8, 10, tzinfo=UTC),
+                    sport="running",
+                    load_value=50.0,
+                    load_confidence="high",
+                    distance_m=10_000.0,
+                ),
+            ]
+        )
+        result = training_form_from(frame, tz=self.TZ, today=today, sport="running")
+        # Cycling's 70 km ride must not count toward running readiness.
+        assert result.days_since_60k_ride is None
+        assert result.rolling_7d_distance_km == 10.0
+
+    def test_empty(self) -> None:
+        result = training_form_from(_form_frame([]), tz=self.TZ, today=date(2026, 6, 10))
+        assert result.current_ctl == 0.0
+        assert result.is_warmup is True
+        assert result.history_days == 0
+        assert result.days_since_60k_ride is None
+        assert result.load_confidence_ratio == 1.0
 
 
 class TestClassificationBands:

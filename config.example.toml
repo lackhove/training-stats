@@ -9,6 +9,9 @@ timezone = "Europe/Berlin"
 
 [cache]
 directory = "./data/cache"
+# Wait budget for the app-wide cache lock: exactly one process (the server
+# or one CLI command) may operate on the cache; while the server runs, CLI
+# commands fail after this timeout — use the REST API instead.
 lock_timeout_seconds = 30
 # Throttle for automatic syncs: a real sync runs at most once per interval
 # (anchored at the last_sync timestamp in metadata.json). 0 always
@@ -16,7 +19,8 @@ lock_timeout_seconds = 30
 sync_min_interval_seconds = 10
 # High-frequency FIT record data is never persisted; retained only in memory
 # during processing. Coarse derived aggregates (5-bpm HR histogram,
-# 10-minute weighted HR averages) are stored in activity_metrics.parquet.
+# 10-minute weighted HR averages) are stored in activities.parquet. Daily/
+# weekly summaries and training form are derived on read, not stored.
 
 [athlete]
 max_heart_rate = 180

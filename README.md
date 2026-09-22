@@ -208,15 +208,17 @@ network.
 
 ```text
 data/cache/
-├── activities.parquet          # one row per activity
-├── activity_metrics.parquet    # derived metrics (zones, load, quality)
-├── daily_metrics.parquet       # one row per local date and sport
-├── weekly_metrics.parquet      # one row per ISO week and sport
+├── activities.parquet          # one row per activity: session facts + derived metrics
 ├── source_index.parquet        # per-file hash, status, error diagnostics
 └── metadata.json               # last sync, counts, analysis version
 ```
 
-All writes are atomic (temporary file + rename) and guarded by a lock file.
+All writes are atomic (temporary file + rename). Daily/weekly summaries and
+the training-form curve are derived on read from the activity table, so they
+are never stored. Exactly one process may operate on the cache at a time:
+the running server or one CLI command holds an exclusive lock
+(`cache.lock`); while the server runs, CLI commands fail after
+`cache.lock_timeout_seconds` — use the REST API instead.
 Synchronization runs at server startup and before every query command or
 endpoint (`show`/`GET /activities/{id}` serve the cache as-is), throttled
 by `cache.sync_min_interval_seconds` (default 10 s, anchored at the

@@ -7,8 +7,11 @@ loads in local calendar days, plus rolling endurance volume and recency metrics.
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 
+import polars as pl
+
+from ..converters import optional_float
 from ..models import TrainingFormPoint, TrainingFormResult
 
 CTL_TIME_CONSTANT = 42
@@ -113,6 +116,71 @@ def compute_days_since_60k(
         return None
     latest_date = max(qualifying_dates)
     return (today - latest_date).days
+
+
+def training_form_from(
+    activities: pl.LazyFrame,
+    *,
+    tz: tzinfo,
+    days: int = 42,
+    sport: str | None = None,
+    today: date | None = None,
+) -> TrainingFormResult:
+    """Compute training form and tour readiness from an activity frame.
+
+    One projected collect gathers the per-activity fields; the daily
+    load/distance folds mirror the calendar-day semantics of the EWMA
+    recursion (full history, never a date-windowed subset). ``today``
+    defaults to the current local date; pass it explicitly in tests.
+    """
+    if today is None:
+        today = datetime.now(tz).date()
+    rows = (
+        activities.select("start_time", "sport", "distance_m", "load_value", "load_confidence")
+        .collect()
+        .to_dicts()
+    )
+    if sport is not None:
+        wanted = sport.lower()
+        rows = [row for row in rows if str(row["sport"]).lower() == wanted]
+
+    daily_loads: dict[date, float] = {}
+    daily_distances: dict[date, float] = {}
+    qualifying: list[tuple[date, float]] = []
+    total_load = 0.0
+    high_confidence_load = 0.0
+    for row in rows:
+        start_time = row["start_time"]
+        if not isinstance(start_time, datetime):
+            continue
+        local_day = start_time.astimezone(tz).date()
+        load = optional_float(row.get("load_value"))
+        if load is not None:
+            daily_loads[local_day] = daily_loads.get(local_day, 0.0) + load
+            total_load += load
+            if row.get("load_confidence") == "high":
+                high_confidence_load = high_confidence_load + load
+        distance = optional_float(row.get("distance_m"))
+        if distance is not None:
+            daily_distances[local_day] = daily_distances.get(local_day, 0.0) + distance
+            if distance >= MIN_LONG_RIDE_DISTANCE_M:
+                qualifying.append((local_day, distance))
+
+    return compute_training_form(
+        daily_loads=daily_loads,
+        today=today,
+        days=days,
+        rolling_7d_distance_km=round(
+            compute_rolling_distance(daily_distances, today, 7) / 1000.0, 2
+        ),
+        rolling_28d_distance_km=round(
+            compute_rolling_distance(daily_distances, today, 28) / 1000.0, 2
+        ),
+        days_since_60k_ride=compute_days_since_60k(qualifying, today),
+        load_confidence_ratio=(
+            round(high_confidence_load / total_load, 4) if total_load > 0 else 1.0
+        ),
+    )
 
 
 def compute_training_form(

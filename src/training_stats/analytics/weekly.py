@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -97,10 +98,11 @@ class _Aggregator:
 
 
 def daily_to_weekly(daily_rows: list[DailySummaryRow]) -> list[WeeklySummaryRow]:
-    """Aggregate stored daily rows into weekly rows, sorted by ISO week.
+    """Aggregate daily rows into weekly rows, sorted by ISO week.
 
-    Weekly rows are derived from daily rows so that cache regeneration is
-    deterministic and incremental syncs stay simple.
+    Weekly rows are derived from daily rows so that regeneration is
+    deterministic and incremental syncs stay simple. Previous-week
+    comparisons resolve against the full input set — pass unfiltered rows.
     """
     buckets: dict[tuple[int, int, str], _Aggregator] = {}
     week_starts: dict[tuple[int, int], date] = {}
@@ -143,3 +145,74 @@ def daily_to_weekly(daily_rows: list[DailySummaryRow]) -> list[WeeklySummaryRow]
             )
         )
     return rows
+
+
+def select_weekly(
+    rows: list[WeeklySummaryRow],
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    weeks: int = 8,
+    sport: str | None = None,
+) -> list[WeeklySummaryRow]:
+    """Filter weekly rows, merge sports when unfiltered, newest first.
+
+    The ``weeks`` truncation only applies when no explicit date range is
+    given (matching the API semantics).
+    """
+    filtered = [
+        row
+        for row in rows
+        if (sport is None or row.sport.lower() == sport.lower())
+        and (start_date is None or date.fromisoformat(row.week_start) >= start_date)
+        and (end_date is None or date.fromisoformat(row.week_start) <= end_date)
+    ]
+    if sport is None:
+        filtered = aggregate_weekly(filtered)
+    filtered.sort(key=lambda row: (row.iso_year, row.iso_week), reverse=True)
+    if start_date is None and end_date is None:
+        filtered = filtered[:weeks]
+    return filtered
+
+
+def aggregate_weekly(rows: list[WeeklySummaryRow]) -> list[WeeklySummaryRow]:
+    """Aggregate per-(week, sport) rows into per-week totals."""
+    by_week: dict[tuple[int, int], list[WeeklySummaryRow]] = {}
+    for row in rows:
+        by_week.setdefault((row.iso_year, row.iso_week), []).append(row)
+    return [
+        WeeklySummaryRow(
+            iso_year=year,
+            iso_week=week,
+            week_start=min(row.week_start for row in group),
+            sport="all",
+            activity_count=sum(row.activity_count for row in group),
+            duration_s=sum(row.duration_s for row in group),
+            distance_m=sum(row.distance_m for row in group),
+            elevation_gain_m=sum(row.elevation_gain_m for row in group),
+            hr_zone_1_s=sum(row.hr_zone_1_s for row in group),
+            hr_zone_2_s=sum(row.hr_zone_2_s for row in group),
+            hr_zone_3_s=sum(row.hr_zone_3_s for row in group),
+            hr_zone_4_s=sum(row.hr_zone_4_s for row in group),
+            hr_zone_5_s=sum(row.hr_zone_5_s for row in group),
+            load_value=sum(row.load_value for row in group),
+            hard_activity_count=sum(row.hard_activity_count for row in group),
+            longest_activity_s=max(row.longest_activity_s for row in group),
+            longest_activity_id=max(
+                group, key=lambda row: row.longest_activity_s
+            ).longest_activity_id,
+            load_value_prev=_sum_optional(row.load_value_prev for row in group),
+            duration_s_prev=_sum_optional(row.duration_s_prev for row in group),
+            distance_m_prev=_sum_optional(row.distance_m_prev for row in group),
+        )
+        for (year, week), group in sorted(by_week.items())
+    ]
+
+
+def _sum_optional(values: Iterable[object]) -> float | None:
+    present = [
+        float(value)
+        for value in values
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    ]
+    return sum(present) if present else None

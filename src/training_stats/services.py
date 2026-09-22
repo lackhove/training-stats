@@ -1,20 +1,24 @@
 """Service layer exposing the training analytics domain operations.
 
-Methods are thin, validating adapters over the repository and sync service;
-all business logic lives in the analytics, ingest, cache and coach layers.
-They return domain models — serialization to HTTP/CLI JSON happens only at
-the edges via :mod:`training_stats.wire`. The FastAPI application
-(:mod:`training_stats.api`) and the CLI (:mod:`training_stats.cli`) are both
-wired over this class.
+Methods are thin, validating adapters that orchestrate the repository and
+the pure analytics functions: the repository provides storage reads (and the
+lazy activity frame), analytics provides all aggregation and training-form
+mathematics. They return domain models — serialization to HTTP/CLI JSON
+happens only at the edges via :mod:`training_stats.wire`. The FastAPI
+application (:mod:`training_stats.api`) and the CLI (:mod:`training_stats.cli`)
+are both wired over this class.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
-from .analytics.weekly import WeeklySummaryRow
+from .analytics.daily import select_daily, summarize_daily
+from .analytics.fitness import training_form_from
+from .analytics.overview import build_overview
+from .analytics.weekly import WeeklySummaryRow, daily_to_weekly, select_weekly
 from .cache import schemas
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
 from .cache.sync import SyncService
@@ -38,6 +42,9 @@ from .sources.webdav import WebDAVSource
 
 logger = logging.getLogger(__name__)
 
+OVERVIEW_WEEKS = 4
+OVERVIEW_RECENT_LIMIT = 5
+
 
 class TrainingStatsService:
     """Domain-facing service; testable without HTTP or CLI wiring."""
@@ -55,6 +62,7 @@ class TrainingStatsService:
         self.parser = parser
         self.sync_service = sync_service
         self.repository = repository
+        self.tz = config.application.zoneinfo
         self._last_sync_monotonic: float | None = None
 
     # -- service operations (directly testable) ----------------------------
@@ -151,8 +159,13 @@ class TrainingStatsService:
         if sync_first:
             self.sync_if_due()
         _validate_int_range("weeks", weeks, 1, MAX_WEEKS)
-        return self.repository.weekly_summary(
-            start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
+        daily = summarize_daily(self.repository.activities_scan(), self.tz)
+        return select_weekly(
+            daily_to_weekly(daily),
+            start_date=start_date,
+            end_date=end_date,
+            weeks=weeks,
+            sport=sport,
         )
 
     def overview(
@@ -161,12 +174,42 @@ class TrainingStatsService:
         """Compact overview: profile, daily series, weekly summaries and form.
 
         The daily series carries per-(date, sport) totals for every metric,
-        so any metric trend is a filter and projection over it.
+        so any metric trend is a filter and projection over it. All pieces
+        are computed here; :func:`~training_stats.analytics.overview.
+        build_overview` is a pure assembler over them.
         """
         if sync_first:
             self.sync_if_due()
         _validate_int_range("days", days, 1, MAX_DAYS)
-        return self.repository.overview(days=days, sport=sport)
+        today = datetime.now(self.tz).date()
+        period_start = today - timedelta(days=max(days, 1) - 1)
+
+        activities = self.repository.activities_scan()
+        daily_all = summarize_daily(activities, self.tz)
+        recent = self.repository.list_activities(
+            start_date=period_start, end_date=today, sport=sport, limit=OVERVIEW_RECENT_LIMIT
+        )
+        latest_rows = self.repository.list_activities(sport=sport, limit=1)
+        latest_details = (
+            self.repository.get_activity(latest_rows[0].activity_id) if latest_rows else None
+        )
+        return build_overview(
+            athlete=self.config.athlete,
+            period_start=period_start,
+            period_end=today,
+            sport=sport,
+            recent=recent,
+            weekly=select_weekly(daily_to_weekly(daily_all), weeks=OVERVIEW_WEEKS, sport=sport),
+            daily_rows=select_daily(
+                daily_all, start_date=period_start, end_date=today, sport=sport
+            ),
+            form_result=training_form_from(
+                activities, tz=self.tz, days=days, sport=sport, today=today
+            ),
+            quality=self.repository.data_quality(),
+            latest_summary=latest_rows[0] if latest_rows else None,
+            latest_details=latest_details,
+        )
 
 
 def create_service(config: AppConfig) -> TrainingStatsService:
@@ -206,16 +249,12 @@ def create_service(config: AppConfig) -> TrainingStatsService:
     repository = ParquetTrainingRepository(
         cache_dir=config.cache.directory,
         timezone=config.application.zoneinfo,
-        athlete=config.athlete,
-        lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
     sync_service = SyncService(
         sources=sources,
         processor=processor,
         repository=repository,
-        cache_dir=config.cache.directory,
         analysis_version=schemas.ANALYSIS_VERSION_VALUE,
-        lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
     return TrainingStatsService(
         config=config,

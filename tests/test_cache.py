@@ -1,4 +1,4 @@
-"""Tests for the Parquet cache: atomic writes, locking and sync behavior."""
+"""Tests for the Parquet cache: atomic writes, app locking and sync behavior."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
@@ -17,8 +18,10 @@ from tests.conftest import (
     make_processor,
     stub_activity_content,
 )
+from training_stats.analytics.daily import summarize_daily
+from training_stats.analytics.weekly import daily_to_weekly
 from training_stats.cache import parquet, schemas
-from training_stats.cache.locking import sync_lock
+from training_stats.cache.locking import acquire_app_lock
 from training_stats.cache.repository import ParquetTrainingRepository
 from training_stats.cache.sync import SyncService
 from training_stats.errors import CacheError, SourceError
@@ -26,6 +29,7 @@ from training_stats.fit.types import ParsedFile
 from training_stats.models import SourceFile
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+TZ = ZoneInfo("Europe/Berlin")
 
 
 def make_sync(
@@ -38,16 +42,19 @@ def make_sync(
     cache_dir = tmp_path / "cache"
     config = make_app_config(cache_dir, tmp_path / "src")
     repository = ParquetTrainingRepository(
-        cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+        cache_dir=cache_dir, timezone=config.application.zoneinfo
     )
     service = SyncService(
         sources=[source],
         processor=make_processor(athlete=config.athlete, analysis_version=analysis_version),
         repository=repository,
-        cache_dir=cache_dir,
         analysis_version=analysis_version,
     )
     return service, source, cache_dir
+
+
+def _repo(cache_dir: Path) -> ParquetTrainingRepository:
+    return ParquetTrainingRepository(cache_dir=cache_dir, timezone=TZ)
 
 
 class _CountingSource(StubSource):
@@ -110,27 +117,30 @@ class TestParquetHelpers:
             parquet.read_parquet(target)
 
 
-class TestSyncLock:
-    def test_lock_is_reentrant_across_processes(self, tmp_path: Path) -> None:
-        lock_path = tmp_path / "sync.lock"
-        with sync_lock(lock_path, 1.0):
-            pass  # released properly
-        with sync_lock(lock_path, 1.0):
-            pass
+class TestAppLock:
+    """One exclusive lock per cache directory, held until process exit."""
+
+    def test_acquire_is_idempotent_within_process(self, tmp_path: Path) -> None:
+        acquire_app_lock(tmp_path, 1.0)
+        acquire_app_lock(tmp_path, 1.0)  # repeated calls are no-ops
 
     def test_lock_conflict_raises(self, tmp_path: Path) -> None:
         import fcntl
         import os
 
-        lock_path = tmp_path / "sync.lock"
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        lock_path = cache_dir / schemas.LOCK_FILE
         handle = os.open(lock_path, os.O_CREAT | os.O_RDWR)
         try:
             fcntl.flock(handle, fcntl.LOCK_EX)
-            with pytest.raises(CacheError, match="sync lock"), sync_lock(lock_path, 0.2):
-                pass
+            with pytest.raises(CacheError, match="another instance"):
+                acquire_app_lock(cache_dir, 0.2)
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
+        # Once the other instance releases, acquisition succeeds again.
+        acquire_app_lock(cache_dir, 1.0)
 
 
 class TestIncrementalSync:
@@ -142,8 +152,11 @@ class TestIncrementalSync:
         assert result.files_skipped == 0
         assert result.files_failed == 0
         assert (cache_dir / schemas.ACTIVITIES_FILE).exists()
-        assert (cache_dir / schemas.DAILY_FILE).exists()
-        assert (cache_dir / schemas.WEEKLY_FILE).exists()
+        # Derived data is no longer persisted: only activities, index and
+        # metadata remain in the cache directory.
+        assert not (cache_dir / "activity_metrics.parquet").exists()
+        assert not (cache_dir / "daily_metrics.parquet").exists()
+        assert not (cache_dir / "weekly_metrics.parquet").exists()
         metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
         assert metadata["activity_count"] == 1
 
@@ -229,15 +242,15 @@ class TestIncrementalSync:
         new_service, _unused, _dir = make_sync(tmp_path, source.files, analysis_version="2")
         result = new_service.sync()
         assert result.files_processed == 1
-        metrics = parquet.read_parquet(cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        assert metrics["analysis_version"].to_list() == ["2:1"]
+        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        assert activities["analysis_version"].to_list() == ["2:1"]
 
     def test_histogram_and_buckets_round_trip(self, tmp_path: Path) -> None:
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0, heart_rates=[130] * 30)
         service, _source, cache_dir = make_sync(tmp_path, {"a.fit": content}, analysis_version="2")
         service.sync()
-        metrics = parquet.read_parquet(cache_dir / schemas.ACTIVITY_METRICS_FILE)
-        row = metrics.to_dicts()[0]
+        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        row = activities.to_dicts()[0]
         assert row["hr_histogram_json"] is not None
         histogram = json.loads(str(row["hr_histogram_json"]))
         assert histogram == {"130-134": 870.0}  # 29 intervals x 30 s cap
@@ -252,11 +265,11 @@ class TestIncrementalSync:
         assert abs(float(row["hr_drift_bpm_per_hour"])) < 1e-9  # constant HR
 
     def test_removed_files_dropped_from_index(self, tmp_path: Path) -> None:
-        service, source, _cache_dir = make_sync(tmp_path, one_file())
+        service, source, cache_dir = make_sync(tmp_path, one_file())
         service.sync()
         source.files.clear()
         service.sync()
-        index = parquet.read_parquet(service.cache_dir / schemas.SOURCE_INDEX_FILE)
+        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
         assert index.is_empty()
 
     def test_sync_logs_summary_and_duplicates(
@@ -297,9 +310,7 @@ class TestCacheProtection:
             repository=ParquetTrainingRepository(
                 cache_dir=cache_dir,
                 timezone=make_app_config(cache_dir, tmp_path / "src").application.zoneinfo,
-                athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
             ),
-            cache_dir=cache_dir,
             analysis_version="1",
         )
         result = broken.sync()
@@ -318,9 +329,8 @@ class TestCacheProtection:
             sources=[],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
             repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+                cache_dir=cache_dir, timezone=config.application.zoneinfo
             ),
-            cache_dir=cache_dir,
             analysis_version="1",
         )
         result = empty.sync()
@@ -394,9 +404,8 @@ class TestFailureHandling:
             sources=[source_b, source_a],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
             repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+                cache_dir=cache_dir, timezone=config.application.zoneinfo
             ),
-            cache_dir=cache_dir,
             analysis_version="1",
         )
         result = service.sync()
@@ -424,8 +433,8 @@ class TestSegmentSync:
         rows = index.to_dicts()
         assert len(rows) == 2
         assert sorted(str(row["status"]) for row in rows) == ["ok", "ok"]
-        daily = parquet.read_parquet(cache_dir / schemas.DAILY_FILE)
-        assert daily["activity_count"].to_list() == [2]
+        daily = summarize_daily(_repo(cache_dir).activities_scan(), TZ)
+        assert [row.activity_count for row in daily] == [2]
 
     def test_multi_segment_file_skipped_when_unchanged(self, tmp_path: Path) -> None:
         service, _source, cache_dir = make_sync(tmp_path, {"ride.fit": self._two_segments()})
@@ -446,18 +455,18 @@ class TestSegmentSync:
         assert activities.height == 1
         index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
         assert index.height == 1
-        daily = parquet.read_parquet(cache_dir / schemas.DAILY_FILE)
-        assert daily["activity_count"].to_list() == [1]
+        daily = summarize_daily(_repo(cache_dir).activities_scan(), TZ)
+        assert [row.activity_count for row in daily] == [1]
 
     def test_duplicate_rows_excluded_from_aggregates(self, tmp_path: Path) -> None:
-        """Regression: duplicate-status index rows must not double-count daily/weekly."""
+        """Regression: duplicate-status index rows must not feed the stores."""
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
         service, _source, cache_dir = make_sync(tmp_path, {"one.fit": content, "two.fit": content})
         service.sync()
-        daily = parquet.read_parquet(cache_dir / schemas.DAILY_FILE)
-        assert daily["activity_count"].to_list() == [1]
-        weekly = parquet.read_parquet(cache_dir / schemas.WEEKLY_FILE)
-        assert weekly["activity_count"].to_list() == [1]
+        daily = summarize_daily(_repo(cache_dir).activities_scan(), TZ)
+        assert [row.activity_count for row in daily] == [1]
+        weekly = daily_to_weekly(daily)
+        assert [row.activity_count for row in weekly] == [1]
 
     def test_repair_counters_in_sync_result(self, tmp_path: Path) -> None:
         from dataclasses import replace
@@ -480,9 +489,8 @@ class TestSegmentSync:
                 athlete=config.athlete, analysis_version="1", parser=FlagParser()
             ),
             repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo, athlete=config.athlete
+                cache_dir=cache_dir, timezone=config.application.zoneinfo
             ),
-            cache_dir=cache_dir,
             analysis_version="1",
         )
         result = service.sync()

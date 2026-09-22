@@ -1,5 +1,11 @@
 # Plan: Move Direct Parquet Access Out of `sync.py` Into the Repository Layer
 
+> Status: implemented and overtaken by later work — the write side
+> (`SyncState`/`load_sync_state`/`save_sync_snapshot`) lives in
+> `cache/repository.py` today, derived tables were dropped, and the
+> layering moved further (lazy-frame analytics, coach merged into
+> analytics, app-wide lock). See `AGENTS.md` for the current architecture.
+
 ## Goal
 
 `cache/sync.py` should contain orchestration only (source iteration, change

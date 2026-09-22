@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from rich.console import Console
 
 from . import __version__, cli_output, wire
+from .cache.locking import acquire_app_lock
 from .config import CONFIG_ENV_VAR, AppConfig, config_path_from_env, load_config
 from .errors import ConfigurationError, TrainingStatsError
 from .logging_config import setup_logging
@@ -106,6 +107,9 @@ def _load_config(config_path: Path | None) -> AppConfig:
 def _service(config_path: Path | None) -> TrainingStatsService:
     config = _load_config(config_path)
     setup_logging(config.application.log_level)
+    # One instance operates on the cache: the exclusive lock is held until
+    # the process exits (a CLI command ends, the server keeps serving).
+    acquire_app_lock(config.cache.directory, config.cache.lock_timeout_seconds)
     return create_service(config)
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,15 +23,11 @@ def build_repository(tmp_path: Path, files: dict[str, bytes]) -> ParquetTraining
         repository=ParquetTrainingRepository(
             cache_dir=cache_dir,
             timezone=config.application.zoneinfo,
-            athlete=config.athlete,
         ),
-        cache_dir=cache_dir,
         analysis_version="1",
     )
     service.sync()
-    return ParquetTrainingRepository(
-        cache_dir=cache_dir, timezone=ZoneInfo("Europe/Berlin"), athlete=config.athlete
-    )
+    return ParquetTrainingRepository(cache_dir=cache_dir, timezone=ZoneInfo("Europe/Berlin"))
 
 
 def two_files() -> dict[str, bytes]:
@@ -48,15 +44,29 @@ class TestEmptyCache:
         repository = build_repository(tmp_path, {})
         assert repository.list_activities() == []
         assert repository.get_activity("nope") is None
-        assert repository.daily_summary() == []
-        assert repository.weekly_summary() == []
-        form = repository.training_form()
-        assert form.current_ctl == 0.0
-        assert form.days_since_60k_ride is None
+        assert repository.activities_scan().collect().is_empty()
         quality = repository.data_quality()
         assert quality.activity_count == 0
-        overview = repository.overview()
-        assert overview.daily_series == ()
+        assert quality.mean_hr_coverage_ratio is None
+
+
+class TestActivitiesScan:
+    def test_scan_has_merged_columns(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        frame = repository.activities_scan().collect()
+        assert frame.height == 2
+        # The merged table carries session facts and derived metrics side by
+        # side: no join is needed to read load or zones.
+        assert "load_value" in frame.columns
+        assert "hr_zone_1_s" in frame.columns
+        assert "analysis_version" in frame.columns
+
+    def test_load_values_present(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        rows = repository.activities_scan().select("sport", "load_value").collect().to_dicts()
+        loads = {str(row["sport"]): row["load_value"] for row in rows}
+        assert loads["cycling"] is not None
+        assert loads["running"] is not None
 
 
 class TestListActivities:
@@ -77,7 +87,8 @@ class TestListActivities:
     def test_date_filtering(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
         activities = repository.list_activities(
-            start_date=date(2026, 6, 3), end_date=date(2026, 6, 3)
+            start_date=datetime(2026, 6, 3, tzinfo=UTC).date(),
+            end_date=datetime(2026, 6, 3, tzinfo=UTC).date(),
         )
         assert [item.sport for item in activities] == ["running"]
 
@@ -103,31 +114,6 @@ class TestGetActivity:
         assert repository.get_activity("deadbeef") is None
 
 
-class TestSummaries:
-    def test_daily_rows(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        rows = repository.daily_summary()
-        assert len(rows) == 2  # two different days
-        assert rows[0].date == "2026-06-01"
-        assert rows[0].activity_count == 1
-
-    def test_daily_sport_filter(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        rows = repository.daily_summary(sport="cycling")
-        assert [row.sport for row in rows] == ["cycling"]
-
-    def test_weekly_rows(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        rows = repository.weekly_summary()
-        assert rows[0].iso_year == 2026
-        assert rows[0].iso_week == 23
-
-    def test_weekly_sport_filter(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        rows = repository.weekly_summary(sport="cycling")
-        assert [row.sport for row in rows] == ["cycling"]
-
-
 class TestDataQuality:
     def test_values(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
@@ -145,38 +131,6 @@ class TestDataQuality:
         quality = repository.data_quality()
         assert quality.duplicate_activity_count == 1
         assert quality.activity_count == 1
-
-
-class TestTrainingForm:
-    def test_form_values_and_readiness(self, tmp_path: Path) -> None:
-        today = datetime.now(ZoneInfo("Europe/Berlin")).date()
-        days_back = (today - date(2026, 6, 1)).days
-        files = two_files()
-        # Add a 65 km ride
-        files["long_ride.fit"] = stub_activity_content(
-            T0 + timedelta(days=1), "cycling", 7200.0, 65000.0, heart_rates=[130] * 120
-        )
-        repository = build_repository(tmp_path, files)
-
-        form = repository.training_form(days=days_back + 2)
-        assert form.current_ctl > 0.0
-        assert form.current_atl > 0.0
-        assert form.form_classification in (
-            "fresh",
-            "optimal",
-            "high_fatigue",
-            "overtraining_risk",
-        )
-        assert form.days_since_60k_ride is not None
-        # Activity was on 2026-06-02
-        expected_days_since = (today - date(2026, 6, 2)).days
-        assert form.days_since_60k_ride == expected_days_since
-
-    def test_sport_filter(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        form_run = repository.training_form(sport="running")
-        assert form_run.current_ctl > 0.0
-        assert form_run.days_since_60k_ride is None
 
 
 def test_t0_is_utc() -> None:

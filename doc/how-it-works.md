@@ -5,7 +5,8 @@ steps and all metric definitions.
 
 - Sources: local directories and Nextcloud via WebDAV (read FIT files only)
 - Language: Python 3.12+, everything managed through `uv`
-- Cache: Polars DataFrames persisted as Parquet (aggregates only, never raw time series)
+- Cache: Polars frames persisted as Parquet (per-activity facts + derived
+  metrics, never raw time series; period aggregates derived on read)
 - Interface: verb-based CLI (Rich tables on a TTY, JSON when piped or via
   `--json`) and FastAPI REST API with OpenAPI schema
 
@@ -14,18 +15,18 @@ steps and all metric definitions.
 ## 1. Architecture & Data Flow
 
 ```
-sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.repository -> services -> (wire -> api, cli)
+sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.repository
+        -> services (analytics over the lazy activity frame) -> (wire -> api, cli)
 ```
 
 | Package | Responsibility |
 |---|---|
 | `sources/` | `ActivitySource` ABC; `LocalDirectorySource` (filesystem walk) and `WebDAVSource` (httpx + env-resolved secrets) |
 | `fit/` | `FitParser` protocol returning a `ParsedFile`; `FitDecodeParser` (fitdecode boundary); `repair.py` (timeline repair, segmentation, moving time); `normalize.py` (coercion helpers); `types.py` (`RECORD_SCHEMA`, `ParsedActivity`, `ParsedFile`) |
-| `analytics/` | Per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`) |
-| `ingest.py` | `FileProcessor`: parse one FIT file, compute metrics, build the index/activity/metrics row dicts (domain half of sync; injected into `cache.sync`) |
-| `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), flock locking (`locking.py`), incremental sync (`sync.py`), read-side repository (`repository.py`) |
-| `coach/` | Athlete profile from TOML, overview assembly |
-| `services.py` | Service layer returning domain models; methods on `TrainingStatsService` are directly testable |
+| `analytics/` | Pure functions: per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`), overview + athlete profile assembly (`overview`, `profile`) |
+| `ingest.py` | `FileProcessor`: parse one FIT file, compute metrics, build the merged index/activity row dicts (domain half of sync; injected into `cache.sync`) |
+| `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), app-wide cache lock (`locking.py`), incremental sync (`sync.py`), storage repository (`repository.py`: lazy `activities_scan` + row mapping + sync-state load/save) |
+| `services.py` | Service layer orchestrating repository reads and pure analytics calls; returns domain models. Methods on `TrainingStatsService` are directly testable |
 | `wire.py` | Pydantic wire/response models + domain→wire mappers, shared by `api.py` and `cli.py` |
 | `api.py` | FastAPI application with wire response models (OpenAPI schema) |
 | `cli.py` | cyclopts CLI; TTY detection + global `--json`, maps domain → wire, dispatches to `cli_output` or plain JSON |
@@ -41,8 +42,12 @@ sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.r
 2. No raw time-series persistence — record samples live in a transient
    Polars frame during processing and are discarded. Only coarse derived
    aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages).
+   Period aggregates (daily/weekly, training form) are **never persisted**;
+   they are derived on read by `analytics/` over the lazy activity frame.
 3. Secrets only from environment variables (`SecretStr`, never logged).
-4. Atomic cache writes only (tmp file + fsync + `os.replace` under flock).
+4. Atomic cache writes only (tmp file + fsync + `os.replace`); exactly one
+   process operates on the cache at a time via the app-wide flock
+   (`cache/locking.py`), held for the process lifetime.
 5. Incremental sync: size + mtime skip re-reads; downloaded candidates are
    reprocessed (FIT files are only ever added, deleted or rewritten, and a
    rewrite changes size or mtime).
@@ -174,7 +179,7 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 - **Exact duplicate detection:** when two files produce the same
   `activity_id` (typical: the same ride exported by both watch and app),
   the later file is marked `duplicate` in the source index and its rows are
-  excluded from activities, metrics, daily/weekly aggregates and API
+  excluded from the activity store and API
   responses. Fuzzy near-duplicate detection (different clocks producing
   slightly different IDs) is explicitly out of scope.
 
@@ -194,9 +199,10 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
    index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` with no store rows.
 6. `repository.save_sync_snapshot()` prunes orphan store rows (no `ok`
-   index row), rebuilds daily/weekly aggregates **strictly from
-   `status == "ok"` rows** and writes all Parquet files + `metadata.json`
-   atomically under `sync.lock`.
+   index row) and writes the merged activity table, the source index and
+   `metadata.json` atomically under the app-wide cache lock. Daily/weekly
+   aggregates are **never written**: they are derived on read (§6) strictly
+   from `status == "ok"` rows.
 
 Failure isolation: an unreadable/unparseable file gets a `failed` index row
 with the error message; the sync continues. A failing *source* (e.g. WebDAV
@@ -206,12 +212,15 @@ down) is reported in `source_errors` without aborting other sources.
 
 | File | Content |
 |---|---|
-| `activities.parquet` | One row per segment activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, calories, segment fields, repair flags |
-| `activity_metrics.parquet` | Derived per-activity analytics (§5): zone seconds, coverage, histogram JSON, 10-min buckets JSON, drift, load (+method/confidence), decoupling, completeness, analysis version |
-| `daily_metrics.parquet` | Per local-date & sport totals |
-| `weekly_metrics.parquet` | Per ISO week & sport totals + previous-week comparison |
+| `activities.parquet` | One merged row per segment activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, calories, segment fields, repair flags — plus the derived metrics (§5): zone seconds, coverage, histogram JSON, 10-min buckets JSON, drift, load (+method/confidence), decoupling, completeness, analysis version |
 | `source_index.parquet` | File ↔ activity mapping, hashes, statuses, segment fields, per-file repair flags |
 | `metadata.json` | last sync time, analysis version, activity/failed counts |
+
+Daily and weekly summaries and the training-form curve are **not stored**:
+`analytics/daily.py` groups the lazy activity frame on read, `analytics/
+weekly.py` rolls up daily rows, `analytics/fitness.py` folds the form curve
+(§6–7). The repository exposes `activities_scan()`; the service layer is the
+only caller of analytics.
 
 Statuses: `ok`, `duplicate`, `failed`. Index key: `(source_name, source_path, segment_index)`.
 
@@ -303,10 +312,12 @@ time, distance, elevation gain, avg HR, max HR, avg speed, calories.
 
 ### 6.1 Daily (`daily.py`)
 
-Grouped by **local calendar date** (configured timezone) × sport. Totals:
-activity count, duration, distance, elevation, zone seconds, load,
-`hard_activity_count` (load ≥ 150.0), longest activity (duration + id).
-The repository can aggregate across sports on request (`sport="all"`).
+`summarize_daily` consumes the **lazy activity frame** and pushes the
+group-by down to Polars: grouped by **local calendar date** (configured
+timezone) × sport. Totals: activity count, duration, distance, elevation,
+zone seconds, load, `hard_activity_count` (load ≥ 150.0), longest activity
+(duration + id). `select_daily` filters by date/sport and merges across
+sports on request (`sport="all"`).
 
 ### 6.2 Weekly (`weekly.py`)
 
@@ -416,9 +427,12 @@ contain raw time-series data.
 
 ## 10. Cache Schemas & Versioning Notes
 
-- All Parquet writes are atomic; reads of missing files return empty frames.
-- Old cache files missing newly added columns are filled with nulls on
-  read/rewrite (schema evolution), so upgrades don't crash mid-sync.
+- All Parquet writes are atomic; reads of missing files return empty frames
+  (lazy scans return an empty frame with the full schema).
+- The cache layout changed to a single merged activity table; there is no
+  automatic migration — delete stale `activity_metrics.parquet`,
+  `daily_metrics.parquet`, `weekly_metrics.parquet` (and the old
+  `sync.lock`) and re-sync.
 - Bumping the internal `ANALYSIS_VERSION_VALUE` in `cache/schemas.py`
   (currently `"4"`) forces full reprocessing on the next sync; activity IDs
   are re-derived deterministically.

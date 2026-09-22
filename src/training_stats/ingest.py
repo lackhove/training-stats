@@ -29,7 +29,6 @@ class Outcome:
 
     index_rows: list[dict[str, object]]
     ok_activity_rows: list[dict[str, object]]
-    ok_metrics_rows: list[dict[str, object]]
     duplicates: int
     repaired: bool
     discarded_segments: int
@@ -39,7 +38,6 @@ def _empty_outcome(index_rows: list[dict[str, object]]) -> Outcome:
     return Outcome(
         index_rows=index_rows,
         ok_activity_rows=[],
-        ok_metrics_rows=[],
         duplicates=0,
         repaired=False,
         discarded_segments=0,
@@ -97,7 +95,6 @@ class FileProcessor:
         file_flags_json = flags_to_json(parsed_file.repair_flags)
         index_rows: list[dict[str, object]] = []
         ok_activity_rows: list[dict[str, object]] = []
-        ok_metrics_rows: list[dict[str, object]] = []
         duplicates = 0
         for activity in parsed_file.activities:
             analyzed = AnalyzedActivity(
@@ -126,12 +123,10 @@ class FileProcessor:
                 row["status"] = schemas.STATUS_OK
                 existing_ids.add(activity.activity_id)
                 ok_activity_rows.append(_activity_row(analyzed, source_file.source_name))
-                ok_metrics_rows.append(_metrics_row(analyzed))
             index_rows.append(row)
         return Outcome(
             index_rows=index_rows,
             ok_activity_rows=ok_activity_rows,
-            ok_metrics_rows=ok_metrics_rows,
             duplicates=duplicates,
             repaired=bool(parsed_file.repair_flags),
             discarded_segments=parsed_file.discarded_segment_count,
@@ -139,7 +134,9 @@ class FileProcessor:
 
 
 def _activity_row(item: AnalyzedActivity, source_name: str) -> dict[str, object]:
+    """Build one merged activity row: session facts plus derived metrics."""
     activity = item.activity
+    metric_values = item.metrics
     return {
         "activity_id": activity.activity_id,
         "start_time": _ensure_utc(activity.start_time),
@@ -160,13 +157,6 @@ def _activity_row(item: AnalyzedActivity, source_name: str) -> dict[str, object]
         "repair_flags_json": flags_to_json(activity.repair_flags),
         "source_name": source_name,
         "source_path": activity.source_path,
-    }
-
-
-def _metrics_row(item: AnalyzedActivity) -> dict[str, object]:
-    metric_values = item.metrics
-    return {
-        "activity_id": metric_values.activity_id,
         "hr_zone_1_s": metric_values.hr_zone_1_s,
         "hr_zone_2_s": metric_values.hr_zone_2_s,
         "hr_zone_3_s": metric_values.hr_zone_3_s,

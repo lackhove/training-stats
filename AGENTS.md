@@ -10,7 +10,8 @@ Guidance for AI coding agents working in this repository.
 2. Detects new/changed files incrementally (file size + modification time)
 3. Parses FIT sessions and records via `fitdecode`
 4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries)
-5. Caches aggregates as Parquet files (never time-series data)
+5. Caches per-activity facts + derived metrics as Parquet (never time-series
+   data; period aggregates are derived on read, not persisted)
 6. Exposes verb-based CLI commands (Rich tables on a TTY, JSON otherwise)
    and a typed REST API with
    OpenAPI schema (consumable as an Open WebUI external OpenAPI tool server)
@@ -54,16 +55,18 @@ sources/   ActivitySource ABC -> LocalDirectorySource, WebDAVSource (httpx)
 fit/       FitParser protocol (returns ParsedFile), FitDecodeParser,
            repair (clock shifts + segment splits), normalize helpers,
            RECORD_SCHEMA (records as transient Polars frame)
-analytics/ activities, heart_rate (vectorized zones), load (hr_trimp),
-           daily, weekly
-ingest.py  FileProcessor: parse one file, compute metrics, build Parquet
-           row dicts (domain half of sync, injected into cache/sync.py)
-cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync,
-           repository (storage boundary: read-side queries + sync state
+analytics/ activities (metrics from records), heart_rate (vectorized zones),
+           load (hr_trimp), endurance, daily (frame group-by + row selection),
+           weekly, fitness (training form), overview + profile (pure
+           Overview assembly — the former coach/ package)
+ingest.py  FileProcessor: parse one file, compute metrics, build merged
+           Parquet row dicts (domain half of sync, injected into cache/sync.py)
+cache/     schemas (Polars), parquet (atomic I/O), locking (app-wide flock),
+           sync (orchestration + change detection), repository (storage
+           boundary: lazy activities_scan + row mapping + sync state
            load/save; the only module touching Parquet directly)
-coach/     athlete profile (from TOML), overview assembly
-services.py  service layer returning domain models; methods on
-             TrainingStatsService are directly testable
+services.py  service layer orchestrating repository reads and pure analytics
+             calls; methods on TrainingStatsService are directly testable
 wire.py    Pydantic wire/response models + domain→wire mappers, shared by
            api.py (response_model) and cli.py (--json) so REST and CLI JSON
            stay identical (anti-corruption layer at the edges)
@@ -78,7 +81,12 @@ models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries,
 errors.py  typed exception hierarchy (TrainingStatsError base)
 ```
 
-Data flow: `sources -> ingest (fit.parser + analytics) -> cache.sync -> cache.repository -> services -> (wire -> api, cli)`.
+Data flow: `sources -> ingest (fit.parser + analytics) -> cache.sync -> cache.repository -> services (analytics over activities_scan) -> (wire -> api, cli)`.
+
+The read boundary: the repository exposes `activities_scan() -> pl.LazyFrame`
+plus row-mapped queries; **all** aggregation lives in `analytics/`, which the
+service layer is the only module allowed to call. Analytics functions are
+pure (`LazyFrame → dataclass rows` / `rows → rows`) — no I/O, no locking.
 
 **Serialization convention:** services return domain models; serialize only
 at the edges. `api.py` and `cli.py` map domain → `wire.py` Pydantic models
@@ -99,15 +107,23 @@ These are core design decisions — do not violate them casually:
   frame (`fit/types.py` `RECORD_SCHEMA`) during processing and is discarded.
   Raw records must never appear in Parquet files, REST/CLI responses, or logs.
   Coarse derived aggregates (5-bpm HR histogram, 10-minute weighted HR
-  averages) are allowed in `activity_metrics.parquet` and API responses.
+  averages) are allowed in `activities.parquet` and API responses.
   Schemas in `cache/schemas.py` enforce this.
+- **No stored period aggregates.** Daily/weekly summaries and training form
+  are derived on read by `analytics/` over the lazy activity frame. Only
+  per-activity rows (`activities.parquet`) and the source index are
+  persisted; `metadata.json` holds the sync throttle stamp.
 - **Secrets only from environment variables.** The TOML file stores the
   *names* of env vars (`username_env`/`password_env`). Values are wrapped in
   `SecretStr`/`WebDAVCredentials` and must never leak into logs, `repr`,
   exceptions, or cache files.
 - **Atomic cache writes only.** All Parquet/JSON writes go through
-  `cache/parquet.py` (tmp file + fsync + `os.replace`). Sync runs under
-  `cache/locking.py`'s flock. Don't write cache files directly.
+  `cache/parquet.py` (tmp file + fsync + `os.replace`). Exactly one process
+  may operate on the cache: `cache/locking.py`'s app-wide exclusive flock is
+  acquired once per process at the CLI entry point (`cli._service`) and held
+  until process exit. Repository, sync, analytics and services code never
+  locks; within a process, atomic `os.replace` makes every read see one
+  consistent file version. Don't write cache files directly.
 - **Incremental sync via file metadata.** Unchanged files are skipped
   without being read when `file_size` + `modified_at` match the previous
   sync and a content hash is stored (the prior read succeeded; stored in
@@ -145,8 +161,8 @@ These are core design decisions — do not violate them casually:
 - WebDAV tests use `httpx.MockTransport` — never a live server.
 - Trend/current-week tests must anchor fixture dates relative to
   `datetime.now()` so time-window tools stay valid over time.
-- Cache tests create isolated `tmp_path` directories; the flock test
-  requires a POSIX OS.
+- Cache tests create isolated `tmp_path` directories; the app-lock conflict
+  test requires a POSIX OS.
 - Query operations synchronize "if due": a real sync runs only when the
   last successful one is older than `cache.sync_min_interval_seconds`
   (default 10 s; two-layer stamp: in-memory monotonic + persisted
@@ -169,10 +185,12 @@ These are core design decisions — do not violate them casually:
   uvicorn ship type information, no override needed).
 - Polars is used both for transient record frames (`fit/types.py`) and for
   cache/storage (`cache/`); it is intentional that `fit/` and `analytics/`
-  depend on it for record data.
-- Polars `to_dicts()` returns `dict[str, object]`; use the module-level
-  `_optional_float`/`_int`/`_str` converter helpers in `cache/repository.py`
-  when reading values back. Same pattern for
+  depend on it. Aggregation entry points take `pl.LazyFrame` so consumers
+  decide column projection; the repository returns lazy scans.
+- Polars `to_dicts()` returns `dict[str, object]`; use the converters
+  (`optional_float`, `optional_str`, `histogram_from_json`, …) and the
+  module-level `_float`/`_int` helpers in `cache/repository.py` and
+  `analytics/daily.py` when reading values back. Same pattern for
   `Series.sum()`/`min()`/`max()` results — guard with `isinstance` checks
   (see `analytics/heart_rate.py`).
 

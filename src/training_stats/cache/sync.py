@@ -7,6 +7,10 @@ deleted or rewritten, and a rewrite changes size or modification time.
 Parsing and metric computation are delegated to the injected
 :class:`~training_stats.ingest.FileProcessor`; all cache I/O goes through the
 injected :class:`SyncCacheRepository`.
+
+Locking is an entry-point concern: the process holds the application-wide
+cache lock (see :mod:`training_stats.cache.locking`) for its whole lifetime,
+so neither sync nor repository code takes locks of its own.
 """
 
 from __future__ import annotations
@@ -14,14 +18,12 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from ..errors import SourceError
 from ..models import SourceFile, SyncResult
 from ..sources.base import ActivitySource
 from . import schemas
-from .locking import sync_lock
 from .repository import SyncState
 
 if TYPE_CHECKING:
@@ -55,16 +57,12 @@ class SyncService:
         sources: list[ActivitySource],
         processor: FileProcessor,
         repository: SyncCacheRepository,
-        cache_dir: Path,
         analysis_version: str,
-        lock_timeout_seconds: float = 30.0,
     ) -> None:
         self.sources = sources
         self.processor = processor
         self.repository = repository
-        self.cache_dir = cache_dir
         self.analysis_version = analysis_version
-        self.lock_timeout_seconds = lock_timeout_seconds
 
     def sync(self) -> SyncResult:
         """Process new and changed files; skip unchanged ones.
@@ -73,9 +71,7 @@ class SyncService:
         sync: the error is reported in ``source_errors`` and other sources
         continue.
         """
-        lock_path = self.cache_dir / schemas.LOCK_FILE
-        with sync_lock(lock_path, self.lock_timeout_seconds):
-            return self._run_sync()
+        return self._run_sync()
 
     def _run_sync(self) -> SyncResult:
         started_at = datetime.now(UTC)
@@ -115,15 +111,13 @@ class SyncService:
                     kept_index.append(self._failure_row(source_file, started_at, str(exc), None))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(previous_rows, state.activities, state.metrics)
+                self._purge_previous(previous_rows, state.activities)
                 outcome = self.processor.process(
                     source_file, content, file_hash, set(state.activities), started_at
                 )
                 kept_index.extend(outcome.index_rows)
                 for activity_row in outcome.ok_activity_rows:
                     state.activities[str(activity_row["activity_id"])] = activity_row
-                for metrics_row in outcome.ok_metrics_rows:
-                    state.metrics[str(metrics_row["activity_id"])] = metrics_row
                 if outcome.ok_activity_rows or outcome.duplicates:
                     processed += 1
                 else:
@@ -143,9 +137,7 @@ class SyncService:
             )
         else:
             self.repository.save_sync_snapshot(
-                SyncState(
-                    index_rows=kept_index, activities=state.activities, metrics=state.metrics
-                ),
+                SyncState(index_rows=kept_index, activities=state.activities),
                 last_sync=started_at,
                 analysis_version=self.analysis_version,
             )
@@ -242,10 +234,8 @@ class SyncService:
     def _purge_previous(
         previous_rows: list[dict[str, object]],
         activities: dict[str, dict[str, object]],
-        metrics: dict[str, dict[str, object]],
     ) -> None:
         for row in previous_rows:
             activity_id = row.get("activity_id")
             if activity_id:
                 activities.pop(str(activity_id), None)
-                metrics.pop(str(activity_id), None)

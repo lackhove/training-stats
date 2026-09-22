@@ -40,10 +40,6 @@ ACTIVITY_SCHEMA: dict[str, pl.DataType] = {
     "repair_flags_json": pl.String(),
     "source_name": pl.String(),
     "source_path": pl.String(),
-}
-
-ACTIVITY_METRICS_SCHEMA: dict[str, pl.DataType] = {
-    "activity_id": pl.String(),
     "hr_zone_1_s": pl.Float64(),
     "hr_zone_2_s": pl.Float64(),
     "hr_zone_3_s": pl.Float64(),
@@ -64,47 +60,6 @@ ACTIVITY_METRICS_SCHEMA: dict[str, pl.DataType] = {
     ANALYSIS_VERSION: pl.String(),
 }
 
-DAILY_SCHEMA: dict[str, pl.DataType] = {
-    "date": pl.String(),
-    "sport": pl.String(),
-    "activity_count": pl.UInt32(),
-    "duration_s": pl.Float64(),
-    "distance_m": pl.Float64(),
-    "elevation_gain_m": pl.Float64(),
-    "hr_zone_1_s": pl.Float64(),
-    "hr_zone_2_s": pl.Float64(),
-    "hr_zone_3_s": pl.Float64(),
-    "hr_zone_4_s": pl.Float64(),
-    "hr_zone_5_s": pl.Float64(),
-    "load_value": pl.Float64(),
-    "hard_activity_count": pl.UInt32(),
-    "longest_activity_s": pl.Float64(),
-    "longest_activity_id": pl.String(),
-}
-
-WEEKLY_SCHEMA: dict[str, pl.DataType] = {
-    "iso_year": pl.Int32(),
-    "iso_week": pl.Int32(),
-    "week_start": pl.String(),
-    "sport": pl.String(),
-    "activity_count": pl.UInt32(),
-    "duration_s": pl.Float64(),
-    "distance_m": pl.Float64(),
-    "elevation_gain_m": pl.Float64(),
-    "hr_zone_1_s": pl.Float64(),
-    "hr_zone_2_s": pl.Float64(),
-    "hr_zone_3_s": pl.Float64(),
-    "hr_zone_4_s": pl.Float64(),
-    "hr_zone_5_s": pl.Float64(),
-    "load_value": pl.Float64(),
-    "hard_activity_count": pl.UInt32(),
-    "longest_activity_s": pl.Float64(),
-    "longest_activity_id": pl.String(),
-    "load_value_prev": pl.Float64(),
-    "duration_s_prev": pl.Float64(),
-    "distance_m_prev": pl.Float64(),
-}
-
 SOURCE_INDEX_SCHEMA: dict[str, pl.DataType] = {
     "source_name": pl.String(),
     "source_path": pl.String(),
@@ -123,9 +78,6 @@ SOURCE_INDEX_SCHEMA: dict[str, pl.DataType] = {
 }
 
 ACTIVITIES_FILE = "activities.parquet"
-ACTIVITY_METRICS_FILE = "activity_metrics.parquet"
-DAILY_FILE = "daily_metrics.parquet"
-WEEKLY_FILE = "weekly_metrics.parquet"
 SOURCE_INDEX_FILE = "source_index.parquet"
 METADATA_FILE = "metadata.json"
-LOCK_FILE = "sync.lock"
+LOCK_FILE = "cache.lock"
