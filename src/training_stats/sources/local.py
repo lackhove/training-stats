@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..errors import SourceError
 from ..models import SourceFile
-from .base import ActivitySource
+from .base import ActivitySource, is_fit_file
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class LocalDirectorySource(ActivitySource):
         return files
 
     def _maybe_add(self, root: Path, candidate: Path, files: list[SourceFile]) -> None:
-        if not self._is_fit_file(candidate.name):
+        if not is_fit_file(candidate.name):
             return
         if candidate.is_symlink() and not self.follow_symlinks:
             return

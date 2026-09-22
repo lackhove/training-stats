@@ -19,7 +19,7 @@ import httpx
 from ..config import WebDAVCredentials, WebDAVSourceConfig
 from ..errors import AuthenticationError, RemoteFileError, SourceError
 from ..models import SourceFile
-from .base import ActivitySource
+from .base import ActivitySource, is_fit_file
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class WebDAVSource(ActivitySource):
             )
             if collection is not None:
                 continue
-            if not self._is_fit_file(relative):
+            if not is_fit_file(relative):
                 continue
             files.append(
                 SourceFile(

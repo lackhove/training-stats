@@ -26,6 +26,7 @@ class ActivitySource(ABC):
     def read_file(self, source_file: SourceFile) -> bytes:
         """Return the binary content of ``source_file``."""
 
-    @staticmethod
-    def _is_fit_file(path: str) -> bool:
-        return path.lower().endswith(".fit")
+
+def is_fit_file(path: str) -> bool:
+    """Return whether ``path`` refers to a FIT file by extension."""
+    return path.lower().endswith(".fit")
