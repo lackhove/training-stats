@@ -43,9 +43,9 @@ sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.r
    aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages).
 3. Secrets only from environment variables (`SecretStr`, never logged).
 4. Atomic cache writes only (tmp file + fsync + `os.replace` under flock).
-5. Incremental sync: size + mtime skip re-reads; SHA-256 content hashes
-   decide for downloaded candidates (the hash, not the mtime, is the
-   source of truth for "changed").
+5. Incremental sync: size + mtime skip re-reads; downloaded candidates are
+   reprocessed (FIT files are only ever added, deleted or rewritten, and a
+   rewrite changes size or mtime).
 6. Load is an estimate (`hr_trimp`), stored with method, version and confidence.
 7. Deterministic analytics — HR zones and athlete values come from configuration.
 8. Typed errors; per-file FIT failures are recorded in the source index and
@@ -79,11 +79,12 @@ version is bumped and the next sync reprocesses every file (current: `"4"`).
    skipped unless `follow_symlinks`).
 2. Files whose `file_size` and `modified_at` match the previous sync are
    skipped without being read at all (metadata short-circuit).
-3. Remaining files are read and hashed with SHA-256; a file is
-   **skipped** when all of its cached segment rows match both
-   `source_hash` and `analysis_version` in `source_index.parquet`.
+3. Remaining files are read and reprocessed unconditionally; the SHA-256
+   content hash and `analysis_version` are recorded in
+   `source_index.parquet` (the hash marks successful reads).
 4. Files whose read previously failed (no stored hash) always retry.
-4. `rebuild_cache()` ignores cached derived data and reprocesses everything.
+5. Bumping the internal `ANALYSIS_VERSION_VALUE` (`cache/schemas.py`)
+   forces full reprocessing of every file.
 
 ### 3.2 Why Cleaning Is Necessary
 
@@ -186,8 +187,7 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 1. Load source index + activity/metrics stores (in memory).
 2. List all files from all enabled sources.
 3. Skip files matching size + mtime + version from the previous sync
-   (no read); read + hash the rest and skip those whose hash + version
-   also match.
+   (no read); read + reprocess the rest.
 4. On change: **purge all cached rows of that file** (every segment), then
    delegate to `ingest.FileProcessor` — parse, repair, compute metrics,
    index one row per segment.

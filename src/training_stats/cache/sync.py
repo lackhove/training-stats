@@ -1,10 +1,11 @@
 """Incremental synchronization from activity sources into the Parquet cache.
 
-Change detection is two-tier: files whose stored size and modification time
-match the previous sync are skipped without being read at all; downloaded
-candidates are then SHA-256 hashed, and only files whose hash or analysis
-version changed are reprocessed. Parsing and metric computation are delegated
-to the injected :class:`~training_stats.ingest.FileProcessor`.
+Change detection is metadata-only: files whose stored size and modification
+time match the previous sync are skipped without being read at all; downloaded
+candidates are reprocessed unconditionally. FIT files are only ever added,
+deleted or rewritten, and a rewrite changes size or modification time.
+Parsing and metric computation are delegated to the injected
+:class:`~training_stats.ingest.FileProcessor`.
 """
 
 from __future__ import annotations
@@ -63,38 +64,21 @@ class SyncService:
         self.analysis_version = analysis_version
         self.lock_timeout_seconds = lock_timeout_seconds
 
-    def sync(self, force: bool = False, source_name: str | None = None) -> SyncResult:
+    def sync(self) -> SyncResult:
         """Process new and changed files; skip unchanged ones.
 
         A failing source (e.g. WebDAV unreachable) does not abort the whole
         sync: the error is reported in ``source_errors`` and other sources
         continue.
         """
-        self._validate_source_filter(source_name)
         lock_path = self.cache_dir / schemas.LOCK_FILE
         with sync_lock(lock_path, self.lock_timeout_seconds):
-            return self._run_sync(force=force, source_name=source_name, reset=False)
+            return self._run_sync()
 
-    def rebuild_cache(self) -> SyncResult:
-        """Ignore existing derived data and reprocess all current files."""
-        lock_path = self.cache_dir / schemas.LOCK_FILE
-        with sync_lock(lock_path, self.lock_timeout_seconds):
-            return self._run_sync(force=True, source_name=None, reset=True)
-
-    def _validate_source_filter(self, source_name: str | None) -> None:
-        if source_name is None:
-            return
-        known = {source.name for source in self.sources}
-        if source_name not in known:
-            msg = f"unknown source {source_name!r}; configured sources: {sorted(known)}"
-            raise SourceError(msg)
-
-    def _run_sync(self, *, force: bool, source_name: str | None, reset: bool) -> SyncResult:
+    def _run_sync(self) -> SyncResult:
         started_at = datetime.now(UTC)
-        index_rows = self._load_index(reset)
-        activities, metrics = self._load_store(reset)
-
-        selected_sources = [s for s in self.sources if source_name is None or s.name == source_name]
+        index_rows = self._load_index()
+        activities, metrics = self._load_store()
 
         discovered = 0
         processed = 0
@@ -107,7 +91,7 @@ class SyncService:
         source_errors: list[str] = []
         kept_index: list[dict[str, object]] = []
 
-        for source in selected_sources:
+        for source in self.sources:
             try:
                 files = source.list_files()
             except SourceError as exc:
@@ -118,11 +102,7 @@ class SyncService:
             discovered += len(files)
             for source_file in files:
                 previous_rows = self._previous_rows(index_rows, source.name, source_file.path)
-                if (
-                    not force
-                    and previous_rows
-                    and self._metadata_unchanged(previous_rows, source_file)
-                ):
+                if previous_rows and self._metadata_unchanged(previous_rows, source_file):
                     kept_index.extend(previous_rows)
                     skipped += 1
                     continue
@@ -134,10 +114,6 @@ class SyncService:
                     kept_index.append(self._failure_row(source_file, started_at, str(exc), None))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                if not force and previous_rows and self._unchanged(previous_rows, file_hash):
-                    kept_index.extend(previous_rows)
-                    skipped += 1
-                    continue
                 self._purge_previous(previous_rows, activities, metrics)
                 outcome = self.processor.process(
                     source_file, content, file_hash, set(activities), started_at
@@ -155,6 +131,7 @@ class SyncService:
                 files_repaired += 1 if outcome.repaired else 0
                 segments_discarded += outcome.discarded_segments
 
+        cache_updated_at: datetime | None = None
         if sources_listed == 0:
             # No source produced a file listing (none enabled or all failed).
             # Rewriting the stores here would blank the cache on a transient
@@ -163,35 +140,26 @@ class SyncService:
                 "no source produced a file listing; cache left untouched (%d source errors)",
                 len(source_errors),
             )
-            return SyncResult(
-                files_discovered=discovered,
-                files_processed=processed,
-                files_skipped=skipped,
-                files_failed=failed,
-                source_errors=tuple(source_errors),
-                files_repaired=files_repaired,
-                segments_discarded=segments_discarded,
-                duplicates_detected=duplicates_detected,
+        else:
+            self._write_cache(activities, metrics, kept_index, started_at)
+            logger.info(
+                "sync complete: %d discovered, %d processed, %d skipped, %d failed, "
+                "%d duplicates, %d repaired files, %d discarded segments",
+                discovered,
+                processed,
+                skipped,
+                failed,
+                duplicates_detected,
+                files_repaired,
+                segments_discarded,
             )
-
-        self._write_cache(activities, metrics, kept_index, started_at)
-        logger.info(
-            "sync complete: %d discovered, %d processed, %d skipped, %d failed, "
-            "%d duplicates, %d repaired files, %d discarded segments",
-            discovered,
-            processed,
-            skipped,
-            failed,
-            duplicates_detected,
-            files_repaired,
-            segments_discarded,
-        )
+            cache_updated_at = started_at
         return SyncResult(
             files_discovered=discovered,
             files_processed=processed,
             files_skipped=skipped,
             files_failed=failed,
-            cache_updated_at=started_at,
+            cache_updated_at=cache_updated_at,
             source_errors=tuple(source_errors),
             files_repaired=files_repaired,
             segments_discarded=segments_discarded,
@@ -225,19 +193,13 @@ class SyncService:
         msg = f"source {source_file.source_name!r} is not configured"
         raise SourceError(msg)
 
-    def _load_index(self, reset: bool) -> list[dict[str, object]]:
-        if reset:
-            return []
+    def _load_index(self) -> list[dict[str, object]]:
         frame = parquet.read_parquet(self.cache_dir / schemas.SOURCE_INDEX_FILE)
         if frame.is_empty():
             return []
         return frame.to_dicts()
 
-    def _load_store(
-        self, reset: bool
-    ) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
-        if reset:
-            return {}, {}
+    def _load_store(self) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
         activities_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITIES_FILE)
         metrics_frame = parquet.read_parquet(self.cache_dir / schemas.ACTIVITY_METRICS_FILE)
         activities = (
@@ -261,13 +223,6 @@ class SyncService:
             if row.get("source_name") == source_name and row.get("source_path") == path
         ]
 
-    def _unchanged(self, previous_rows: list[dict[str, object]], file_hash: str) -> bool:
-        return all(
-            row.get("source_hash") == file_hash
-            and row.get(schemas.ANALYSIS_VERSION) == self.analysis_version
-            for row in previous_rows
-        )
-
     def _metadata_unchanged(
         self, previous_rows: list[dict[str, object]], source_file: SourceFile
     ) -> bool:
@@ -275,7 +230,7 @@ class SyncService:
 
         This avoids reading files at all. Rows without a stored hash (failed
         reads) or missing metadata never short-circuit, so they are re-read
-        and the SHA-256 hash decides.
+        and reprocessed.
         """
         if source_file.size is None or source_file.modified_at is None:
             return False

@@ -178,11 +178,10 @@ class TestIncrementalSync:
         service, _source, _cache_dir = make_sync(tmp_path, source=source)
         service.sync()
         result = service.sync()
-        # No metadata short-circuit: every sync re-reads the file, but the
-        # hash check still avoids reprocessing.
+        # No metadata short-circuit: every sync re-reads and reprocesses.
         assert source.read_count == 2
-        assert result.files_skipped == 1
-        assert result.files_processed == 0
+        assert result.files_skipped == 0
+        assert result.files_processed == 1
 
     def test_failed_read_retries_with_matching_metadata(self, tmp_path: Path) -> None:
         class _FailingReadSource(_CountingSource):
@@ -480,26 +479,3 @@ class TestSegmentSync:
             json.loads(str(row["repair_flags_json"])) == ["clock_corrected"]
             for row in index.to_dicts()
         )
-
-
-class TestRebuildCache:
-    def test_rebuild_reprocesses_everything(self, tmp_path: Path) -> None:
-        service, source, cache_dir = make_sync(tmp_path, one_file())
-        service.sync()
-        source.files["b.fit"] = stub_activity_content(
-            T0 + timedelta(days=1), "running", 900.0, 5000.0
-        )
-        result = service.rebuild_cache()
-        assert result.files_processed == 2
-        assert result.files_skipped == 0
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
-        assert activities.height == 2
-        metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
-        assert metadata["activity_count"] == 2
-
-
-class TestSourceFilter:
-    def test_unknown_source_rejected(self, tmp_path: Path) -> None:
-        service, _source, _cache_dir = make_sync(tmp_path, one_file())
-        with pytest.raises(SourceError, match="unknown source"):
-            service.sync(source_name="nope")

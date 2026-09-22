@@ -7,7 +7,7 @@ Guidance for AI coding agents working in this repository.
 `training-stats` is a Python CLI and FastAPI REST server that:
 
 1. Reads FIT activity files from local directories or Nextcloud via WebDAV
-2. Detects new/changed files incrementally (SHA-256 content hashes)
+2. Detects new/changed files incrementally (file size + modification time)
 3. Parses FIT sessions and records via `fitdecode`
 4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries)
 5. Caches aggregates as Parquet files (never time-series data)
@@ -27,7 +27,7 @@ any task; the code is only complete when all of them pass):
 uv run ruff format --check .   # formatting (run `uv run ruff format .` to fix)
 uv run ruff check .            # linting (run with `--fix` to auto-fix)
 uv run mypy --strict src       # static typing (src only, not tests)
-uv run pytest                  # tests (~288 tests, <15 s)
+uv run pytest                  # tests (~285 tests, <25 s)
 ```
 
 Combined one-liner:
@@ -106,13 +106,14 @@ These are core design decisions — do not violate them casually:
 - **Atomic cache writes only.** All Parquet/JSON writes go through
   `cache/parquet.py` (tmp file + fsync + `os.replace`). Sync runs under
   `cache/locking.py`'s flock. Don't write cache files directly.
-- **Incremental sync via metadata + hashes.** Unchanged files are skipped
+- **Incremental sync via file metadata.** Unchanged files are skipped
   without being read when `file_size` + `modified_at` match the previous
-  sync (stored in `source_index.parquet`); downloaded candidates are then
-  SHA-256 hashed, and the hash — not the modification time — is the source
-  of truth for "actually changed". Rows without a stored hash (failed
-  reads) always retry. Bumping the internal `ANALYSIS_VERSION_VALUE`
-  (`cache/schemas.py`) forces full reprocessing.
+  sync and a content hash is stored (the prior read succeeded; stored in
+  `source_index.parquet`); downloaded candidates are reprocessed
+  unconditionally — FIT files are only ever added, deleted or rewritten,
+  and a rewrite changes size or modification time. Rows without a stored
+  hash (failed reads) always retry. Bumping the internal
+  `ANALYSIS_VERSION_VALUE` (`cache/schemas.py`) forces full reprocessing.
 - **Load is an estimate, never "TSS".** The method is `hr_trimp` (Banister),
   stored with version and confidence. Don't rename it or drop the metadata.
 - **Deterministic analytics.** HR zones and athlete values come from

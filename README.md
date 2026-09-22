@@ -9,8 +9,8 @@ coaching overview.
 
 Key properties:
 
-- **Incremental sync** — new/changed files are detected via SHA-256 content
-  hashes; unchanged files are never reprocessed.
+- **Incremental sync** — new/changed files are detected via file size and
+  modification time; unchanged files are never re-read or reprocessed.
 - **No time-series retention** — high-frequency FIT records are used for
   analytics and then discarded; only aggregates are cached as Parquet files.
 - **Deterministic analytics** — HR zones and load are computed from TOML
