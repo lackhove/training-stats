@@ -1,9 +1,9 @@
 """Rich rendering for the training-stats CLI.
 
-This module owns all Rich rendering; the CLI passes it plain JSON-shaped
-dictionaries from the service layer and injects the target
-:class:`rich.console.Console`. Diagnostics (sync feedback, errors) render on
-stderr, payloads on stdout.
+This module owns all Rich rendering; the CLI passes it wire dictionaries
+(``model_dump(mode="json")`` of the models in :mod:`training_stats.wire`)
+and injects the target :class:`rich.console.Console`. Diagnostics (sync
+feedback, errors) render on stderr, payloads on stdout.
 """
 
 from __future__ import annotations

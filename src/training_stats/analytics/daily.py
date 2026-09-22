@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 
 from .activities import AnalyzedActivity
-from .load import LOAD_METHOD
 
 # An activity counts as "hard" when its estimated load reaches this value.
 HARD_LOAD_THRESHOLD = 150.0
@@ -44,20 +43,6 @@ class PeriodTotalsRow:
             "zone_5": self.hr_zone_5_s,
         }
 
-    def totals_dict(self) -> dict[str, object]:
-        return {
-            "activity_count": self.activity_count,
-            "duration_s": self.duration_s,
-            "distance_m": self.distance_m,
-            "elevation_gain_m": self.elevation_gain_m,
-            "hr_zones_s": self.zone_seconds(),
-            "load_value": self.load_value,
-            "load_method": LOAD_METHOD,
-            "hard_activity_count": self.hard_activity_count,
-            "longest_activity_s": self.longest_activity_s,
-            "longest_activity_id": self.longest_activity_id,
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class DailySummaryRow(PeriodTotalsRow):
@@ -65,9 +50,6 @@ class DailySummaryRow(PeriodTotalsRow):
 
     date: str = ""
     sport: str = ""
-
-    def to_dict(self) -> dict[str, object]:
-        return {"date": self.date, "sport": self.sport, **self.totals_dict()}
 
 
 class _Accumulator:

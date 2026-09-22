@@ -18,7 +18,7 @@ from training_stats.config import (
     resolve_auth_token,
 )
 from training_stats.errors import ConfigurationError
-from training_stats.server import TrainingCoachServer, create_server
+from training_stats.services import TrainingStatsService, create_service
 
 TOKEN_ENV = "TRAINING_STATS_AUTH_TOKEN"
 TOKEN = "test-token-0123456789abcdef"
@@ -67,11 +67,11 @@ class TestResolveAuthToken:
 # -- HTTP behavior --------------------------------------------------------------
 
 
-def _make_server(tmp_path: Path, with_auth: bool) -> TrainingCoachServer:
+def _make_server(tmp_path: Path, with_auth: bool) -> TrainingStatsService:
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
     if with_auth:
         config.server.auth = AuthConfig(token_env=TOKEN_ENV)
-    server = create_server(config)
+    server = create_service(config)
     server.sync_service.sources = [
         StubSource(
             files={

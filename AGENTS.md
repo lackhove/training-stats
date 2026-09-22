@@ -58,18 +58,28 @@ analytics/ activities, heart_rate (vectorized zones), load (hr_trimp),
            daily, weekly
 cache/     schemas (Polars), parquet (atomic I/O), locking (flock), sync, repository
 coach/     athlete profile (from TOML), overview assembly
-server.py  service layer; methods on TrainingCoachServer are directly testable
-api.py     FastAPI application with Pydantic response models (OpenAPI schema)
-cli.py     cyclopts CLI (TTY detection, global --config/--json); dispatches
-           payloads to cli_output (Rich) or plain JSON
-cli_output.py  Rich renderers taking payload dicts + injected Console
-              (the only module with rendering logic)
+services.py  service layer returning domain models; methods on
+             TrainingStatsService are directly testable
+wire.py    Pydantic wire/response models + domain→wire mappers, shared by
+           api.py (response_model) and cli.py (--json) so REST and CLI JSON
+           stay identical (anti-corruption layer at the edges)
+api.py     FastAPI application with wire response models (OpenAPI schema)
+cli.py     cyclopts CLI (TTY detection, global --config/--json); maps domain
+           → wire, dispatches to cli_output (Rich) or plain JSON
+cli_output.py  Rich renderers taking wire dicts (model_dump) + injected
+              Console (the only module with rendering logic)
 config.py  Pydantic TOML models, env-based secret resolution
-models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries, Overview, ...)
+models.py  shared frozen dataclasses (SourceFile, SyncResult, summaries,
+           deep Overview, ThrottledSync, ...)
 errors.py  typed exception hierarchy (TrainingStatsError base)
 ```
 
-Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> server -> (api, cli)`.
+Data flow: `sources -> fit.parser -> analytics -> cache.sync -> cache.repository -> services -> (wire -> api, cli)`.
+
+**Serialization convention:** services return domain models; serialize only
+at the edges. `api.py` and `cli.py` map domain → `wire.py` Pydantic models
+(the anti-corruption layer for HTTP/CLI JSON). Never leak domain shapes into
+REST/CLI payloads, and never pass wire models into the service layer.
 
 ## Critical Invariants
 

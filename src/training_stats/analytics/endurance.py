@@ -28,14 +28,6 @@ class DecouplingResult:
     aerobic_decoupling_pct: float | None
     confidence: str
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "ef_first_half": self.ef_first_half,
-            "ef_second_half": self.ef_second_half,
-            "aerobic_decoupling_pct": self.aerobic_decoupling_pct,
-            "confidence": self.confidence,
-        }
-
 
 def _empty_decoupling(confidence: str) -> DecouplingResult:
     return DecouplingResult(

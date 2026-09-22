@@ -21,7 +21,7 @@ from ..analytics.fitness import (
 from ..analytics.weekly import WeeklySummaryRow
 from ..config import AthleteConfig
 from ..converters import (
-    buckets_as_dicts,
+    buckets_from_json,
     flags_from_json,
     histogram_from_json,
     optional_float,
@@ -392,7 +392,7 @@ def _details_row(row: dict[str, object], tz: ZoneInfo) -> ActivityDetails:
         hr_zone_5_s=_float(row.get("hr_zone_5_s")),
         hr_coverage_ratio=_float(row.get("hr_coverage_ratio")),
         hr_histogram_s=histogram_from_json(row.get("hr_histogram_json")),
-        hr_10min_averages=buckets_as_dicts(row.get("hr_10min_json")),
+        hr_10min_averages=buckets_from_json(row.get("hr_10min_json")),
         hr_drift_bpm_per_hour=optional_float(row.get("hr_drift_bpm_per_hour")),
         load_value=summary.load_value,
         load_method=optional_str(row.get("load_method")),

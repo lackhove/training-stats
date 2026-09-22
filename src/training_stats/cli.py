@@ -19,13 +19,15 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 from cyclopts.exceptions import CycloptsError
+from pydantic import BaseModel
 from rich.console import Console
 
-from . import __version__, cli_output, converters
+from . import __version__, cli_output, wire
 from .config import CONFIG_ENV_VAR, AppConfig, config_path_from_env, load_config
 from .errors import ConfigurationError, TrainingStatsError
 from .logging_config import setup_logging
-from .server import TrainingCoachServer, create_server
+from .models import SyncResult, ThrottledSync
+from .services import TrainingStatsService, create_service
 
 logger = logging.getLogger(__name__)
 
@@ -101,23 +103,30 @@ def _load_config(config_path: Path | None) -> AppConfig:
     return load_config(Path("config.toml"))
 
 
-def _service(config_path: Path | None) -> TrainingCoachServer:
+def _service(config_path: Path | None) -> TrainingStatsService:
     config = _load_config(config_path)
     setup_logging(config.application.log_level)
-    return create_server(config)
+    return create_service(config)
+
+
+def _dump(payload: BaseModel | Sequence[BaseModel]) -> object:
+    if isinstance(payload, BaseModel):
+        return payload.model_dump(mode="json")
+    return [item.model_dump(mode="json") for item in payload]
 
 
 def _emit(
-    payload: object,
+    payload: BaseModel | Sequence[BaseModel],
     renderer: Callable[[object, Console], None],
     *,
     force_json: bool,
 ) -> None:
-    """Render a payload as a Rich view when stdout is a TTY, else as JSON."""
+    """Render a wire model as a Rich view when stdout is a TTY, else as JSON."""
+    data = _dump(payload)
     if not force_json and sys.stdout.isatty():
-        renderer(payload, Console())
+        renderer(data, Console())
     else:
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(data, indent=2))
 
 
 @app.meta.default
@@ -140,7 +149,7 @@ def _launcher(
     )
 
 
-def _print_sync_summary(result: dict[str, object]) -> None:
+def _print_sync_summary(result: SyncResult) -> None:
     """Print one sync progress/summary line plus error details to stderr.
 
     Stdout stays machine-readable: JSON payloads go there and only there.
@@ -148,35 +157,33 @@ def _print_sync_summary(result: dict[str, object]) -> None:
     print("syncing sources...", file=sys.stderr)
     print(
         "sync: "
-        f"{converters.int_value(result['files_discovered'])} found, "
-        f"{converters.int_value(result['files_processed'])} new, "
-        f"{converters.int_value(result['files_skipped'])} unchanged, "
-        f"{converters.int_value(result['files_failed'])} failed",
+        f"{result.files_discovered} found, "
+        f"{result.files_processed} new, "
+        f"{result.files_skipped} unchanged, "
+        f"{result.files_failed} failed",
         file=sys.stderr,
     )
     extras: list[str] = []
-    repaired = converters.int_value(result["files_repaired"])
-    discarded = converters.int_value(result["segments_discarded"])
-    duplicates = converters.int_value(result["duplicates_detected"])
-    if repaired:
-        extras.append(f"{repaired} repaired")
-    if discarded:
-        extras.append(f"{discarded} segments discarded")
-    if duplicates:
-        extras.append(f"{duplicates} duplicate" if duplicates == 1 else f"{duplicates} duplicates")
+    if result.files_repaired:
+        extras.append(f"{result.files_repaired} repaired")
+    if result.segments_discarded:
+        extras.append(f"{result.segments_discarded} segments discarded")
+    if result.duplicates_detected:
+        count = result.duplicates_detected
+        extras.append(f"{count} duplicate" if count == 1 else f"{count} duplicates")
     if extras:
         print("sync: " + ", ".join(extras), file=sys.stderr)
-    source_errors = result["source_errors"]
-    if isinstance(source_errors, list):
-        for error in source_errors:
-            print(f"sync source error: {error}", file=sys.stderr)
+    for error in result.source_errors:
+        print(f"sync source error: {error}", file=sys.stderr)
 
 
-def _print_sync_feedback(result: dict[str, object]) -> None:
+def _print_sync_feedback(result: SyncResult | ThrottledSync) -> None:
     """Report the outcome of a (possibly throttled) sync on stderr."""
-    if result.get("throttled"):
-        seconds = result["seconds_since_last_sync"]
-        print(f"sync: skipped (last sync {seconds}s ago)", file=sys.stderr)
+    if isinstance(result, ThrottledSync):
+        print(
+            f"sync: skipped (last sync {result.seconds_since_last_sync}s ago)",
+            file=sys.stderr,
+        )
         return
     _print_sync_summary(result)
 
@@ -196,9 +203,12 @@ def list_activities(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        service.list_activities(
-            start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
-        ),
+        [
+            wire.activity_summary(item)
+            for item in service.list_activities(
+                start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
+            )
+        ],
         cli_output.render_list,
         force_json=json_output,
     )
@@ -208,7 +218,7 @@ def list_activities(
 def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
     """Show one activity with metrics, zones, load and data quality."""
     _emit(
-        _service(config).get_activity(activity_id),
+        wire.activity_details(_service(config).get_activity(activity_id)),
         cli_output.render_show,
         force_json=json_output,
     )
@@ -229,9 +239,12 @@ def weekly(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        service.weekly_summary(
-            start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
-        ),
+        [
+            wire.weekly_row(row)
+            for row in service.weekly_summary(
+                start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
+            )
+        ],
         cli_output.render_weekly,
         force_json=json_output,
     )
@@ -250,22 +263,22 @@ def overview(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        service.overview(days=days, sport=sport, sync_first=False),
+        wire.overview(service.overview(days=days, sport=sport, sync_first=False)),
         cli_output.render_overview,
         force_json=json_output,
     )
 
 
-def _startup_sync(service: TrainingCoachServer) -> dict[str, object]:
+def _startup_sync(service: TrainingStatsService) -> SyncResult:
     """Synchronize sources once before the server starts; never aborts startup."""
     result = service.sync_activities()
     logger.info(
         "startup sync: discovered=%d processed=%d skipped=%d failed=%d%s",
-        result["files_discovered"],
-        result["files_processed"],
-        result["files_skipped"],
-        result["files_failed"],
-        "" if not result["source_errors"] else f" source_errors={result['source_errors']}",
+        result.files_discovered,
+        result.files_processed,
+        result.files_skipped,
+        result.files_failed,
+        "" if not result.source_errors else f" source_errors={list(result.source_errors)}",
     )
     return result
 

@@ -5,10 +5,10 @@ server) and other clients; route handlers are thin adapters over the service
 layer. Coarse derived aggregates (5-bpm HR histogram, 10-minute weighted HR
 averages) are returned; raw time-series records never are.
 
-Response shapes are declared once as TypedDicts in :mod:`.contracts` and
-validated with :class:`pydantic.TypeAdapter` at the boundary, so the OpenAPI
-schema and runtime validation stay in one place without hand-maintained
-Pydantic model mirrors.
+Response shapes are declared as Pydantic models in :mod:`.wire` and mapped
+from domain models in the handlers (the anti-corruption layer), so the
+OpenAPI schema and runtime validation stay in one place without coupling
+the API to internal domain shapes.
 """
 
 from __future__ import annotations
@@ -18,21 +18,14 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse
-from pydantic import TypeAdapter
 from starlette.requests import Request
 
-from . import __version__
+from . import __version__, wire
 from .auth import BearerGuard
 from .config import resolve_auth_token
-from .contracts import (
-    ActivityDetailsDict,
-    ActivitySummaryDict,
-    OverviewDict,
-    WeeklyRowDict,
-)
 from .errors import TrainingStatsError
 from .models import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS
-from .server import TrainingCoachServer
+from .services import TrainingStatsService
 
 StartDate = Annotated[date | None, Query(description="Inclusive lower bound (YYYY-MM-DD).")]
 EndDate = Annotated[date | None, Query(description="Inclusive upper bound (YYYY-MM-DD).")]
@@ -44,11 +37,6 @@ _SYNC_NOTE = (
     "``cache.sync_min_interval_seconds`` (default 10 seconds); within that "
     "window data is served from the local cache without contacting sources."
 )
-
-_activity_summaries = TypeAdapter(list[ActivitySummaryDict])
-_activity_details = TypeAdapter(ActivityDetailsDict)
-_weekly_rows = TypeAdapter(list[WeeklyRowDict])
-_overview = TypeAdapter(OverviewDict)
 
 
 # -- error handlers ------------------------------------------------------------
@@ -75,7 +63,7 @@ async def _training_stats_error_handler(request: Request, exc: Exception) -> JSO
 # -- application factory --------------------------------------------------------
 
 
-def build_app(service: TrainingCoachServer) -> FastAPI:
+def build_app(service: TrainingStatsService) -> FastAPI:
     """Build the FastAPI application over the given service."""
     app = FastAPI(
         title=service.config.application.name,
@@ -95,7 +83,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
 
     @app.get(
         "/activities",
-        response_model=list[ActivitySummaryDict],
+        response_model=list[wire.ActivitySummary],
         summary="List activity summaries, newest first",
         dependencies=route_dependencies,
         tags=["activities"],
@@ -106,27 +94,28 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         end_date: EndDate = None,
         sport: SportQuery = None,
         limit: Annotated[int, Query(gt=0, le=MAX_LIST_LIMIT)] = 50,
-    ) -> list[ActivitySummaryDict]:
-        payload = service.list_activities(
-            start_date=start_date, end_date=end_date, sport=sport, limit=limit
-        )
-        return _activity_summaries.validate_python(payload)
+    ) -> list[wire.ActivitySummary]:
+        return [
+            wire.activity_summary(item)
+            for item in service.list_activities(
+                start_date=start_date, end_date=end_date, sport=sport, limit=limit
+            )
+        ]
 
     @app.get(
         "/activities/{activity_id}",
-        response_model=ActivityDetailsDict,
+        response_model=wire.ActivityDetails,
         summary="Get one activity with metrics, zones, load and quality",
         description="Serves cached data; IDs come from /activities.",
         dependencies=route_dependencies,
         tags=["activities"],
     )
-    def get_activity(activity_id: str) -> ActivityDetailsDict:
-        payload = service.get_activity(activity_id)
-        return _activity_details.validate_python(payload)
+    def get_activity(activity_id: str) -> wire.ActivityDetails:
+        return wire.activity_details(service.get_activity(activity_id))
 
     @app.get(
         "/weekly",
-        response_model=list[WeeklyRowDict],
+        response_model=list[wire.WeeklyRow],
         summary="Weekly training totals with previous-week comparisons",
         dependencies=route_dependencies,
         tags=["aggregates"],
@@ -140,15 +129,17 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
         end_date: EndDate = None,
         weeks: Annotated[int, Query(gt=0, le=MAX_WEEKS)] = 8,
         sport: SportQuery = None,
-    ) -> list[WeeklyRowDict]:
-        payload = service.weekly_summary(
-            start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
-        )
-        return _weekly_rows.validate_python(payload)
+    ) -> list[wire.WeeklyRow]:
+        return [
+            wire.weekly_row(row)
+            for row in service.weekly_summary(
+                start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
+            )
+        ]
 
     @app.get(
         "/overview",
-        response_model=OverviewDict,
+        response_model=wire.Overview,
         summary="Compact coaching overview",
         dependencies=route_dependencies,
         tags=["aggregates"],
@@ -162,8 +153,7 @@ def build_app(service: TrainingCoachServer) -> FastAPI:
     def overview(
         days: Annotated[int, Query(gt=0, le=MAX_DAYS)] = 28,
         sport: SportQuery = None,
-    ) -> OverviewDict:
-        payload = service.overview(days=days, sport=sport)
-        return _overview.validate_python(payload)
+    ) -> wire.Overview:
+        return wire.overview(service.overview(days=days, sport=sport))
 
     return app

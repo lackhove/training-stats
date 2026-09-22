@@ -1,9 +1,11 @@
 """Service layer exposing the training analytics domain operations.
 
 Methods are thin, validating adapters over the repository and sync service;
-all business logic lives in the analytics, cache and coach layers. The
-FastAPI application (:mod:`training_stats.api`) and the CLI
-(:mod:`training_stats.cli`) are both wired over this class.
+all business logic lives in the analytics, cache and coach layers. They
+return domain models — serialization to HTTP/CLI JSON happens only at the
+edges via :mod:`training_stats.wire`. The FastAPI application
+(:mod:`training_stats.api`) and the CLI (:mod:`training_stats.cli`) are both
+wired over this class.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import logging
 import time
 from datetime import UTC, date, datetime
 
+from .analytics.weekly import WeeklySummaryRow
 from .cache import schemas
 from .cache.parquet import read_json
 from .cache.repository import ParquetTrainingRepository, TrainingRepository
@@ -19,7 +22,16 @@ from .cache.sync import SyncService
 from .config import AppConfig, LocalSourceConfig, WebDAVSourceConfig
 from .errors import TrainingStatsError
 from .fit.parser import FitDecodeParser, FitParser
-from .models import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS, SyncResult
+from .models import (
+    MAX_DAYS,
+    MAX_LIST_LIMIT,
+    MAX_WEEKS,
+    ActivityDetails,
+    ActivitySummary,
+    Overview,
+    SyncResult,
+    ThrottledSync,
+)
 from .sources.base import ActivitySource
 from .sources.local import LocalDirectorySource
 from .sources.webdav import WebDAVSource
@@ -27,7 +39,7 @@ from .sources.webdav import WebDAVSource
 logger = logging.getLogger(__name__)
 
 
-class TrainingCoachServer:
+class TrainingStatsService:
     """Domain-facing service; testable without HTTP or CLI wiring."""
 
     def __init__(
@@ -47,7 +59,7 @@ class TrainingCoachServer:
 
     # -- service operations (directly testable) ----------------------------
 
-    def sync_if_due(self) -> dict[str, object]:
+    def sync_if_due(self) -> SyncResult | ThrottledSync:
         """Synchronize unless the last successful sync is recent.
 
         Two-layer throttle: an in-memory monotonic stamp covers repeated
@@ -61,9 +73,9 @@ class TrainingCoachServer:
         now = time.monotonic()
         since = self._seconds_since_last_sync(now)
         if interval > 0 and since is not None and since < interval:
-            return {"throttled": True, "seconds_since_last_sync": round(max(since, 0.0), 1)}
+            return ThrottledSync(seconds_since_last_sync=round(max(since, 0.0), 1))
         result = self.sync_activities()
-        if result["cache_updated_at"] is not None:
+        if result.cache_updated_at is not None:
             self._last_sync_monotonic = now
         return result
 
@@ -82,7 +94,7 @@ class TrainingCoachServer:
             stamp = stamp.replace(tzinfo=UTC)
         return (datetime.now(UTC) - stamp).total_seconds()
 
-    def sync_activities(self) -> dict[str, object]:
+    def sync_activities(self) -> SyncResult:
         """Synchronize new or changed FIT files unconditionally; never raises.
 
         Source-level failures (e.g. an unreachable WebDAV source) are reported
@@ -98,7 +110,7 @@ class TrainingCoachServer:
                 files_processed=0,
                 files_skipped=0,
                 files_failed=0,
-            ).to_dict()
+            )
         if result.source_errors:
             logger.warning("activity sync reported source errors: %s", list(result.source_errors))
         if result.files_processed or result.files_failed:
@@ -108,7 +120,7 @@ class TrainingCoachServer:
                 result.files_skipped,
                 result.files_failed,
             )
-        return result.to_dict()
+        return result
 
     def list_activities(
         self,
@@ -117,23 +129,22 @@ class TrainingCoachServer:
         sport: str | None = None,
         limit: int = 50,
         sync_first: bool = True,
-    ) -> list[dict[str, object]]:
+    ) -> list[ActivitySummary]:
         """List compact activity summaries, newest first."""
         if sync_first:
             self.sync_if_due()
         _validate_int_range("limit", limit, 1, MAX_LIST_LIMIT)
-        activities = self.repository.list_activities(
+        return self.repository.list_activities(
             start_date=start_date, end_date=end_date, sport=sport, limit=limit
         )
-        return [item.to_dict() for item in activities]
 
-    def get_activity(self, activity_id: str) -> dict[str, object]:
+    def get_activity(self, activity_id: str) -> ActivityDetails:
         """Get one activity with metrics, zones, load and data quality."""
         details = self.repository.get_activity(activity_id)
         if details is None:
             msg = f"activity not found: {activity_id!r}"
             raise LookupError(msg)
-        return details.to_dict()
+        return details
 
     def weekly_summary(
         self,
@@ -142,19 +153,18 @@ class TrainingCoachServer:
         weeks: int = 8,
         sport: str | None = None,
         sync_first: bool = True,
-    ) -> list[dict[str, object]]:
+    ) -> list[WeeklySummaryRow]:
         """Weekly training totals with previous-week comparisons."""
         if sync_first:
             self.sync_if_due()
         _validate_int_range("weeks", weeks, 1, MAX_WEEKS)
-        rows = self.repository.weekly_summary(
+        return self.repository.weekly_summary(
             start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
         )
-        return [row.to_dict() for row in rows]
 
     def overview(
         self, days: int = 28, sport: str | None = None, sync_first: bool = True
-    ) -> dict[str, object]:
+    ) -> Overview:
         """Compact overview: profile, daily series, weekly summaries and form.
 
         The daily series carries per-(date, sport) totals for every metric,
@@ -163,10 +173,10 @@ class TrainingCoachServer:
         if sync_first:
             self.sync_if_due()
         _validate_int_range("days", days, 1, MAX_DAYS)
-        return self.repository.overview(days=days, sport=sport).to_dict()
+        return self.repository.overview(days=days, sport=sport)
 
 
-def create_server(config: AppConfig) -> TrainingCoachServer:
+def create_service(config: AppConfig) -> TrainingStatsService:
     """Instantiate sources, parser, sync service and repository from config."""
     from .config import resolve_webdav_credentials
 
@@ -210,7 +220,7 @@ def create_server(config: AppConfig) -> TrainingCoachServer:
         athlete=config.athlete,
         lock_timeout_seconds=config.cache.lock_timeout_seconds,
     )
-    return TrainingCoachServer(
+    return TrainingStatsService(
         config=config,
         sources=sources,
         parser=parser,

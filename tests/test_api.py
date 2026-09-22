@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import StubParser, StubSource, make_app_config, stub_activity_content
 from training_stats.api import build_app
-from training_stats.server import TrainingCoachServer, create_server
+from training_stats.services import TrainingStatsService, create_service
 
 # Fixture activities anchored to "today" so overview windows match.
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -26,16 +26,16 @@ def _stub_files() -> dict[str, bytes]:
     }
 
 
-def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingCoachServer:
+def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsService:
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
     config.cache.sync_min_interval_seconds = 0.0
-    server = create_server(config)
+    server = create_service(config)
     server.sync_service.sources = [StubSource(files=files)]
     server.sync_service.parser = StubParser()
     return server
 
 
-def _client(server: TrainingCoachServer) -> TestClient:
+def _client(server: TrainingStatsService) -> TestClient:
     return TestClient(build_app(server))
 
 
@@ -181,12 +181,12 @@ class TestOpenApi:
         assert set(schema["paths"]) == EXPECTED_PATHS
         schemas = schema["components"]["schemas"]
         assert {
-            "ActivitySummaryDict",
-            "ActivityDetailsDict",
-            "WeeklyRowDict",
-            "OverviewDict",
+            "ActivitySummary",
+            "ActivityDetails",
+            "WeeklyRow",
+            "Overview",
         } <= set(schemas)
         # Typed response payloads instead of loose objects.
-        details = schemas["ActivityDetailsDict"]["properties"]
-        assert details["hr_zones_s"]["$ref"].endswith("HrZonesDict")
-        assert details["load"]["$ref"].endswith("LoadDict")
+        details = schemas["ActivityDetails"]["properties"]
+        assert details["hr_zones_s"]["$ref"].endswith("HrZones")
+        assert details["load"]["$ref"].endswith("LoadInfo")

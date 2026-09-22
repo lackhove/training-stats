@@ -7,7 +7,6 @@ those untyped values safely without lying about types.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from .analytics.heart_rate import HrBucketAvg
 
@@ -94,8 +93,3 @@ def buckets_from_json(value: object) -> tuple[HrBucketAvg, ...]:
             )
         )
     return tuple(buckets)
-
-
-def buckets_as_dicts(value: object) -> tuple[dict[str, Any], ...]:
-    """Parse stored 10-minute buckets as plain dicts (activity details payload)."""
-    return tuple(bucket.to_dict() for bucket in buckets_from_json(value))

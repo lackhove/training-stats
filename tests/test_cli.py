@@ -223,18 +223,19 @@ class TestSyncThrottleFeedback:
 class TestSyncSummaryFeedback:
     def test_extras_and_source_errors(self, capsys: pytest.CaptureFixture[str]) -> None:
         from training_stats.cli import _print_sync_summary
+        from training_stats.models import SyncResult
 
         _print_sync_summary(
-            {
-                "files_discovered": 12,
-                "files_processed": 2,
-                "files_skipped": 10,
-                "files_failed": 0,
-                "files_repaired": 1,
-                "segments_discarded": 3,
-                "duplicates_detected": 1,
-                "source_errors": ["nextcloud: connection refused"],
-            }
+            SyncResult(
+                files_discovered=12,
+                files_processed=2,
+                files_skipped=10,
+                files_failed=0,
+                files_repaired=1,
+                segments_discarded=3,
+                duplicates_detected=1,
+                source_errors=("nextcloud: connection refused",),
+            )
         )
         err = capsys.readouterr().err
         assert "syncing sources..." in err
@@ -244,18 +245,15 @@ class TestSyncSummaryFeedback:
 
     def test_no_extras_lines_when_clean(self, capsys: pytest.CaptureFixture[str]) -> None:
         from training_stats.cli import _print_sync_summary
+        from training_stats.models import SyncResult
 
         _print_sync_summary(
-            {
-                "files_discovered": 4,
-                "files_processed": 0,
-                "files_skipped": 4,
-                "files_failed": 0,
-                "files_repaired": 0,
-                "segments_discarded": 0,
-                "duplicates_detected": 0,
-                "source_errors": [],
-            }
+            SyncResult(
+                files_discovered=4,
+                files_processed=0,
+                files_skipped=4,
+                files_failed=0,
+            )
         )
         err = capsys.readouterr().err.splitlines()
         assert len(err) == 2  # progress + summary, no extras/source lines

@@ -20,23 +20,6 @@ class WeeklySummaryRow(PeriodTotalsRow):
     duration_s_prev: float | None = None
     distance_m_prev: float | None = None
 
-    def to_dict(self) -> dict[str, object]:
-        base = {
-            "iso_year": self.iso_year,
-            "iso_week": self.iso_week,
-            "week_start": self.week_start,
-            "sport": self.sport,
-        }
-        return {
-            **base,
-            **self.totals_dict(),
-            "comparison_vs_prev_week": {
-                "load_value": self.load_value_prev,
-                "duration_s": self.duration_s_prev,
-                "distance_m": self.distance_m_prev,
-            },
-        }
-
 
 def iso_week_key(day: date) -> tuple[int, int]:
     """Return ``(iso_year, iso_week)`` for a date."""

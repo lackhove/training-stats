@@ -14,7 +14,7 @@ steps and all metric definitions.
 ## 1. Architecture & Data Flow
 
 ```
-sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.repository -> server
+sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.repository -> services -> (wire -> api, cli)
 ```
 
 | Package | Responsibility |
@@ -24,12 +24,13 @@ sources -> fit.parser -> fit.repair -> analytics -> cache.sync -> cache.reposito
 | `analytics/` | Per-activity metrics (`activities`, `heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`) |
 | `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), flock locking (`locking.py`), incremental sync (`sync.py`), read-side repository (`repository.py`) |
 | `coach/` | Athlete profile from TOML, overview assembly |
-| `server.py` | Service layer; methods on `TrainingCoachServer` are directly testable |
-| `api.py` | FastAPI application with Pydantic response models (OpenAPI schema) |
-| `cli.py` | cyclopts CLI; TTY detection + global `--json`, dispatches to `cli_output` or plain JSON |
-| `cli_output.py` | Rich renderers (payload dicts + injected `Console`); diagnostics on stderr |
+| `services.py` | Service layer returning domain models; methods on `TrainingStatsService` are directly testable |
+| `wire.py` | Pydantic wire/response models + domain→wire mappers, shared by `api.py` and `cli.py` |
+| `api.py` | FastAPI application with wire response models (OpenAPI schema) |
+| `cli.py` | cyclopts CLI; TTY detection + global `--json`, maps domain → wire, dispatches to `cli_output` or plain JSON |
+| `cli_output.py` | Rich renderers (wire dicts from `model_dump` + injected `Console`); diagnostics on stderr |
 | `config.py` | Pydantic TOML models; WebDAV secrets only via environment variables |
-| `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, …) |
+| `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, deep `Overview`, …) |
 | `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
 
 **Core invariants**
