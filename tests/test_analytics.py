@@ -10,7 +10,14 @@ import polars as pl
 import pytest
 
 from tests.conftest import StubParser, make_app_config, make_record_frame, stub_activity_content
-from training_stats.analytics.activities import ActivityMetrics, compute_activity_metrics
+from tests.test_repository import T0, build_repository, two_files
+from training_stats.analytics.activities import (
+    ActivityMetrics,
+    activity_details,
+    activity_summaries,
+    compute_activity_metrics,
+    data_quality,
+)
 from training_stats.analytics.daily import (
     HARD_LOAD_THRESHOLD,
     DailySummaryRow,
@@ -449,3 +456,80 @@ def test_stub_parser_roundtrip() -> None:
     second = parser.parse(content, SourceFile(source_name="s", path="a.fit"))
     assert first.activities[0].activity_id == second.activities[0].activity_id
     assert first.activities[0].records.height == 5
+
+
+# -- cache queries: LazyFrame in, domain rows out ---------------------------
+
+
+CACHE_TZ = ZoneInfo("Europe/Berlin")
+
+
+class TestActivitySummaries:
+    def test_newest_first(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
+        assert [item.sport for item in summaries] == ["running", "cycling"]
+
+    def test_limit(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        assert len(activity_summaries(repository.activities_scan(), CACHE_TZ, limit=1)) == 1
+
+    def test_sport_filter_case_insensitive(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ, sport="RUNNING")
+        assert [item.sport for item in summaries] == ["running"]
+
+    def test_date_filtering(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        day = datetime(2026, 6, 3, tzinfo=UTC).date()
+        summaries = activity_summaries(
+            repository.activities_scan(), CACHE_TZ, start_date=day, end_date=day
+        )
+        assert [item.sport for item in summaries] == ["running"]
+
+    def test_local_start_time_rendered(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
+        assert all(item.local_start_time != "" for item in summaries)
+
+
+class TestActivityDetails:
+    def test_found(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
+        details = activity_details(repository.activities_scan(), summaries[0].activity_id, CACHE_TZ)
+        assert details is not None
+        assert details.sport == summaries[0].sport
+        assert details.load_method == "hr_trimp"
+        assert details.source_name == "stub"
+        assert details.hr_zone_1_s >= 0.0
+
+    def test_not_found(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        assert activity_details(repository.activities_scan(), "deadbeef", CACHE_TZ) is None
+
+
+class TestDataQuality:
+    def test_values(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
+        assert quality.activity_count == 2
+        assert quality.failed_file_count == 0
+        assert quality.repaired_file_count == 0
+        assert quality.discarded_segment_count == 0
+        assert quality.duplicate_activity_count == 0
+        assert quality.mean_hr_coverage_ratio is not None
+
+    def test_duplicate_activity_counted(self, tmp_path: Path) -> None:
+        content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        repository = build_repository(tmp_path, {"one.fit": content, "two.fit": content})
+        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
+        assert quality.duplicate_activity_count == 1
+        assert quality.activity_count == 1
+
+    def test_failed_file_counted(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, {"broken.fit": b"garbage"})
+        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
+        assert quality.activity_count == 0
+        assert quality.failed_file_count == 1
+        assert quality.mean_hr_coverage_ratio is None

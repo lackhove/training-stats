@@ -1,12 +1,12 @@
 """Service layer exposing the training analytics domain operations.
 
 Methods are thin, validating adapters that orchestrate the repository and
-the pure analytics functions: the repository provides storage reads (and the
-lazy activity frame), analytics provides all aggregation and training-form
-mathematics. They return domain models — serialization to HTTP/CLI JSON
-happens only at the edges via :mod:`training_stats.wire`. The FastAPI
-application (:mod:`training_stats.api`) and the CLI (:mod:`training_stats.cli`)
-are both wired over this class.
+the pure analytics functions: the repository provides lazy cache scans,
+analytics provides all filtering, aggregation, activity queries and
+training-form mathematics. They return domain models — serialization to
+HTTP/CLI JSON happens only at the edges via :mod:`training_stats.wire`. The
+FastAPI application (:mod:`training_stats.api`) and the CLI
+(:mod:`training_stats.cli`) are both wired over this class.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 
+from .analytics import activities as activity_queries
 from .analytics.daily import select_daily, summarize_daily
 from .analytics.fitness import training_form_from
 from .analytics.overview import build_overview
@@ -135,13 +136,20 @@ class TrainingStatsService:
         if sync_first:
             self.sync_if_due()
         _validate_int_range("limit", limit, 1, MAX_LIST_LIMIT)
-        return self.repository.list_activities(
-            start_date=start_date, end_date=end_date, sport=sport, limit=limit
+        return activity_queries.activity_summaries(
+            self.repository.activities_scan(),
+            self.tz,
+            start_date=start_date,
+            end_date=end_date,
+            sport=sport,
+            limit=limit,
         )
 
     def get_activity(self, activity_id: str) -> ActivityDetails:
         """Get one activity with metrics, zones, load and data quality."""
-        details = self.repository.get_activity(activity_id)
+        details = activity_queries.activity_details(
+            self.repository.activities_scan(), activity_id, self.tz
+        )
         if details is None:
             msg = f"activity not found: {activity_id!r}"
             raise LookupError(msg)
@@ -186,12 +194,19 @@ class TrainingStatsService:
 
         activities = self.repository.activities_scan()
         daily_all = summarize_daily(activities, self.tz)
-        recent = self.repository.list_activities(
-            start_date=period_start, end_date=today, sport=sport, limit=OVERVIEW_RECENT_LIMIT
+        recent = activity_queries.activity_summaries(
+            activities,
+            self.tz,
+            start_date=period_start,
+            end_date=today,
+            sport=sport,
+            limit=OVERVIEW_RECENT_LIMIT,
         )
-        latest_rows = self.repository.list_activities(sport=sport, limit=1)
+        latest_rows = activity_queries.activity_summaries(activities, self.tz, sport=sport, limit=1)
         latest_details = (
-            self.repository.get_activity(latest_rows[0].activity_id) if latest_rows else None
+            activity_queries.activity_details(activities, latest_rows[0].activity_id, self.tz)
+            if latest_rows
+            else None
         )
         return build_overview(
             athlete=self.config.athlete,
@@ -206,7 +221,7 @@ class TrainingStatsService:
             form_result=training_form_from(
                 activities, tz=self.tz, days=days, sport=sport, today=today
             ),
-            quality=self.repository.data_quality(),
+            quality=activity_queries.data_quality(activities, self.repository.source_index_scan()),
             latest_summary=latest_rows[0] if latest_rows else None,
             latest_details=latest_details,
         )
@@ -246,10 +261,7 @@ def create_service(config: AppConfig) -> TrainingStatsService:
         quality=config.quality,
         analysis_version=schemas.ANALYSIS_VERSION_VALUE,
     )
-    repository = ParquetTrainingRepository(
-        cache_dir=config.cache.directory,
-        timezone=config.application.zoneinfo,
-    )
+    repository = ParquetTrainingRepository(cache_dir=config.cache.directory)
     sync_service = SyncService(
         sources=sources,
         processor=processor,

@@ -1,10 +1,11 @@
-"""Tests for the Parquet-backed repository."""
+"""Tests for the Parquet-backed repository: scans and sync-state I/O."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+import polars as pl
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.cache.repository import ParquetTrainingRepository
@@ -20,14 +21,11 @@ def build_repository(tmp_path: Path, files: dict[str, bytes]) -> ParquetTraining
     service = SyncService(
         sources=[source],
         processor=make_processor(athlete=config.athlete, analysis_version="1"),
-        repository=ParquetTrainingRepository(
-            cache_dir=cache_dir,
-            timezone=config.application.zoneinfo,
-        ),
+        repository=ParquetTrainingRepository(cache_dir=cache_dir),
         analysis_version="1",
     )
     service.sync()
-    return ParquetTrainingRepository(cache_dir=cache_dir, timezone=ZoneInfo("Europe/Berlin"))
+    return ParquetTrainingRepository(cache_dir=cache_dir)
 
 
 def two_files() -> dict[str, bytes]:
@@ -40,14 +38,12 @@ def two_files() -> dict[str, bytes]:
 
 
 class TestEmptyCache:
-    def test_all_queries_return_empty(self, tmp_path: Path) -> None:
+    def test_scans_return_empty_after_successful_empty_sync(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, {})
-        assert repository.list_activities() == []
-        assert repository.get_activity("nope") is None
         assert repository.activities_scan().collect().is_empty()
-        quality = repository.data_quality()
-        assert quality.activity_count == 0
-        assert quality.mean_hr_coverage_ratio is None
+        assert repository.source_index_scan().collect().is_empty()
+        # A successful listing with zero files still stamps the throttle.
+        assert repository.last_sync_stamp() is not None
 
 
 class TestActivitiesScan:
@@ -55,8 +51,8 @@ class TestActivitiesScan:
         repository = build_repository(tmp_path, two_files())
         frame = repository.activities_scan().collect()
         assert frame.height == 2
-        # The merged table carries session facts and derived metrics side by
-        # side: no join is needed to read load or zones.
+        # The merged table carries session facts, derived metrics and the
+        # source-index fields side by side: no join is needed to read them.
         assert "load_value" in frame.columns
         assert "hr_zone_1_s" in frame.columns
         assert "analysis_version" in frame.columns
@@ -68,69 +64,86 @@ class TestActivitiesScan:
         assert loads["cycling"] is not None
         assert loads["running"] is not None
 
-
-class TestListActivities:
-    def test_newest_first(self, tmp_path: Path) -> None:
+    def test_activity_rows_enriched_with_source_fields(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        activities = repository.list_activities()
-        assert [item.sport for item in activities] == ["running", "cycling"]
-
-    def test_limit(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        assert len(repository.list_activities(limit=1)) == 1
-
-    def test_sport_filter_case_insensitive(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        activities = repository.list_activities(sport="RUNNING")
-        assert [item.sport for item in activities] == ["running"]
-
-    def test_date_filtering(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        activities = repository.list_activities(
-            start_date=datetime(2026, 6, 3, tzinfo=UTC).date(),
-            end_date=datetime(2026, 6, 3, tzinfo=UTC).date(),
+        rows = (
+            repository.cache_scan().filter(pl.col("start_time").is_not_null()).collect().to_dicts()
         )
-        assert [item.sport for item in activities] == ["running"]
-
-    def test_load_joined(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        activities = repository.list_activities()
-        assert all(item.load_value is not None and item.load_value > 0 for item in activities)
-
-
-class TestGetActivity:
-    def test_found(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        activities = repository.list_activities()
-        details = repository.get_activity(activities[0].activity_id)
-        assert details is not None
-        assert details.sport == activities[0].sport
-        assert details.load_method == "hr_trimp"
-        assert details.source_name == "stub"
-        assert details.hr_zone_1_s >= 0.0
-
-    def test_not_found(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        assert repository.get_activity("deadbeef") is None
+        assert {str(row["sport"]) for row in rows} == {"cycling", "running"}
+        for row in rows:
+            assert row["status"] == "ok"
+            assert row["source_name"] == "stub"
+            assert row["source_hash"] is not None
+            assert row["file_size"] is not None
+            assert row["modified_at"] is not None
+            assert row["processed_at"] is not None
+            # Two distinct versions: the source-index copy drives change
+            # detection, the activity-level one names the metric-producing code.
+            assert row["source_analysis_version"] == "1"
+            assert str(row["analysis_version"]).startswith("1:")
 
 
-class TestDataQuality:
-    def test_values(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        quality = repository.data_quality()
-        assert quality.activity_count == 2
-        assert quality.failed_file_count == 0
-        assert quality.repaired_file_count == 0
-        assert quality.discarded_segment_count == 0
-        assert quality.duplicate_activity_count == 0
-        assert quality.mean_hr_coverage_ratio is not None
+class TestSourceIndexScan:
+    def test_failed_files_kept_without_activity_fields(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, {"broken.fit": b"garbage"})
+        rows = repository.source_index_scan().collect().to_dicts()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["error_message"] is not None
+        assert rows[0]["activity_id"] is None
+        # The failed file is kept as a source-only row: no activity fields.
+        cache_rows = repository.cache_scan().collect().to_dicts()
+        assert cache_rows[0]["start_time"] is None
+        assert repository.activities_scan().collect().is_empty()
 
-    def test_duplicate_activity_counted(self, tmp_path: Path) -> None:
+    def test_duplicate_rows_kept_without_activity_fields(self, tmp_path: Path) -> None:
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
         repository = build_repository(tmp_path, {"one.fit": content, "two.fit": content})
-        quality = repository.data_quality()
-        assert quality.duplicate_activity_count == 1
-        assert quality.activity_count == 1
+        rows = repository.source_index_scan().collect().to_dicts()
+        assert sorted(str(row["status"]) for row in rows) == ["duplicate", "ok"]
+        activities = repository.activities_scan().collect()
+        assert activities.height == 1
+
+
+class TestMultiSegmentRows:
+    def _two_segments(self) -> bytes:
+        first = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        second = stub_activity_content(T0 + timedelta(hours=2), "cycling", 1200.0, 8000.0)
+        return first + b"\n" + second
+
+    def test_file_level_fields_repeat_across_segments(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, {"ride.fit": self._two_segments()})
+        rows = (
+            repository.cache_scan().filter(pl.col("start_time").is_not_null()).collect().to_dicts()
+        )
+        assert len(rows) == 2
+        for field in ("file_size", "modified_at", "source_hash", "discarded_segment_count"):
+            assert rows[0][field] == rows[1][field]
+        assert rows[0]["segment_index"] != rows[1]["segment_index"]
+        assert rows[0]["segment_count"] == rows[1]["segment_count"] == 2
+
+
+class TestSyncState:
+    def test_load_round_trips_rows(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        state = repository.load_sync_state()
+        assert len(state.index_rows) == 2
+        scan_ids = {
+            str(row["activity_id"]) for row in repository.activities_scan().collect().to_dicts()
+        }
+        assert set(state.activities) == scan_ids
+
+    def test_source_only_rows_not_in_activity_store(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, {"broken.fit": b"garbage"})
+        state = repository.load_sync_state()
+        assert len(state.index_rows) == 1
+        assert state.activities == {}
+
+    def test_last_sync_stamp(self, tmp_path: Path) -> None:
+        repository = build_repository(tmp_path, two_files())
+        stamp = repository.last_sync_stamp()
+        assert stamp is not None
+        assert stamp.tzinfo is not None
 
 
 def test_t0_is_utc() -> None:

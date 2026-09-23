@@ -41,9 +41,7 @@ def make_sync(
     source = source or StubSource(files=files)
     cache_dir = tmp_path / "cache"
     config = make_app_config(cache_dir, tmp_path / "src")
-    repository = ParquetTrainingRepository(
-        cache_dir=cache_dir, timezone=config.application.zoneinfo
-    )
+    repository = ParquetTrainingRepository(cache_dir=cache_dir)
     service = SyncService(
         sources=[source],
         processor=make_processor(athlete=config.athlete, analysis_version=analysis_version),
@@ -54,7 +52,7 @@ def make_sync(
 
 
 def _repo(cache_dir: Path) -> ParquetTrainingRepository:
-    return ParquetTrainingRepository(cache_dir=cache_dir, timezone=TZ)
+    return ParquetTrainingRepository(cache_dir=cache_dir)
 
 
 class _CountingSource(StubSource):
@@ -151,14 +149,17 @@ class TestIncrementalSync:
         assert result.files_processed == 1
         assert result.files_skipped == 0
         assert result.files_failed == 0
-        assert (cache_dir / schemas.ACTIVITIES_FILE).exists()
-        # Derived data is no longer persisted: only activities, index and
-        # metadata remain in the cache directory.
+        assert (cache_dir / schemas.CACHE_FILE).exists()
+        # Derived data is no longer persisted: the unified cache file and
+        # the throttle stamp are the only artifacts.
         assert not (cache_dir / "activity_metrics.parquet").exists()
         assert not (cache_dir / "daily_metrics.parquet").exists()
         assert not (cache_dir / "weekly_metrics.parquet").exists()
+        assert not (cache_dir / "source_index.parquet").exists()
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        assert frame.height == 1
         metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
-        assert metadata["activity_count"] == 1
+        assert set(metadata) == {"last_sync"}
 
     def test_repeated_sync_is_idempotent(self, tmp_path: Path) -> None:
         service, _source, cache_dir = make_sync(tmp_path, one_file())
@@ -166,7 +167,7 @@ class TestIncrementalSync:
         second = service.sync()
         assert second.files_processed == 0
         assert second.files_skipped == 1
-        frame = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         assert frame.height == 1
         assert first.cache_updated_at is not None
 
@@ -230,7 +231,7 @@ class TestIncrementalSync:
         source.files["a.fit"] = stub_activity_content(T0, "cycling", 3600.0, 20000.0)
         result = service.sync()
         assert result.files_processed == 1
-        frame = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         assert frame.height == 1
         assert frame["duration_s"].to_list() == [3600.0]
 
@@ -242,14 +243,17 @@ class TestIncrementalSync:
         new_service, _unused, _dir = make_sync(tmp_path, source.files, analysis_version="2")
         result = new_service.sync()
         assert result.files_processed == 1
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        activities = parquet.read_parquet(cache_dir / schemas.CACHE_FILE).filter(
+            pl.col("start_time").is_not_null()
+        )
         assert activities["analysis_version"].to_list() == ["2:1"]
+        assert activities["source_analysis_version"].to_list() == ["2"]
 
     def test_histogram_and_buckets_round_trip(self, tmp_path: Path) -> None:
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0, heart_rates=[130] * 30)
         service, _source, cache_dir = make_sync(tmp_path, {"a.fit": content}, analysis_version="2")
         service.sync()
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        activities = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         row = activities.to_dicts()[0]
         assert row["hr_histogram_json"] is not None
         histogram = json.loads(str(row["hr_histogram_json"]))
@@ -269,7 +273,7 @@ class TestIncrementalSync:
         service.sync()
         source.files.clear()
         service.sync()
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
+        index = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         assert index.is_empty()
 
     def test_sync_logs_summary_and_duplicates(
@@ -294,7 +298,8 @@ class TestCacheProtection:
     def test_all_sources_failing_leaves_cache_untouched(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file())
         service.sync()
-        before = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        before = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        stamp_before = (cache_dir / schemas.METADATA_FILE).read_text()
 
         class FailingSource(StubSource):
             def list_files(self) -> list[SourceFile]:
@@ -307,36 +312,33 @@ class TestCacheProtection:
                 athlete=make_app_config(cache_dir, tmp_path / "src").athlete,
                 analysis_version="1",
             ),
-            repository=ParquetTrainingRepository(
-                cache_dir=cache_dir,
-                timezone=make_app_config(cache_dir, tmp_path / "src").application.zoneinfo,
-            ),
+            repository=ParquetTrainingRepository(cache_dir=cache_dir),
             analysis_version="1",
         )
         result = broken.sync()
         assert result.files_failed == 0
         assert result.cache_updated_at is None
         assert "stub: remote down" in result.source_errors
-        after = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        after = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         assert after.equals(before)
+        # A failed sync must not refresh the throttle stamp either.
+        assert (cache_dir / schemas.METADATA_FILE).read_text() == stamp_before
 
     def test_no_sources_leaves_cache_untouched(self, tmp_path: Path) -> None:
         service, _source, cache_dir = make_sync(tmp_path, one_file())
         service.sync()
-        before = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        before = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         config = make_app_config(cache_dir, tmp_path / "src")
         empty = SyncService(
             sources=[],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
-            repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo
-            ),
+            repository=ParquetTrainingRepository(cache_dir=cache_dir),
             analysis_version="1",
         )
         result = empty.sync()
         assert result.files_discovered == 0
         assert result.cache_updated_at is None
-        assert parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE).equals(before)
+        assert parquet.read_parquet(cache_dir / schemas.CACHE_FILE).equals(before)
 
     def test_emptied_source_purges_cache(self, tmp_path: Path) -> None:
         """A successful listing with zero files legitimately purges the cache."""
@@ -346,7 +348,17 @@ class TestCacheProtection:
         result = service.sync()
         assert result.files_discovered == 0
         assert result.cache_updated_at is not None
-        assert parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE).is_empty()
+        assert parquet.read_parquet(cache_dir / schemas.CACHE_FILE).is_empty()
+        # The successful sync still refreshes the throttle stamp.
+        metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
+        assert "last_sync" in metadata
+
+    def test_initial_empty_sync_stamps_last_sync(self, tmp_path: Path) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, {})
+        service.sync()
+        assert parquet.read_parquet(cache_dir / schemas.CACHE_FILE).is_empty()
+        metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
+        assert "last_sync" in metadata
 
 
 class TestFailureHandling:
@@ -355,12 +367,13 @@ class TestFailureHandling:
         source.files["broken.fit"] = b"garbage"
         result = service.sync()
         assert result.files_failed == 1
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
-        row = index.to_dicts()[0]
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        row = frame.to_dicts()[0]
         assert row["status"] == "failed"
         assert row["error_message"] is not None
+        assert row["start_time"] is None
         metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
-        assert metadata["failed_file_count"] == 1
+        assert set(metadata) == {"last_sync"}
 
     def test_failed_file_skipped_when_unchanged(self, tmp_path: Path) -> None:
         service, source, _cache_dir = make_sync(tmp_path, {})
@@ -383,10 +396,10 @@ class TestFailureHandling:
         service, _source, cache_dir = make_sync(tmp_path, {"one.fit": content, "two.fit": content})
         result = service.sync()
         assert result.files_processed == 2
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        activities = frame.filter(pl.col("start_time").is_not_null())
         assert activities.height == 1
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
-        statuses = sorted(row["status"] for row in index.to_dicts())
+        statuses = sorted(str(row["status"]) for row in frame.to_dicts())
         assert statuses == ["duplicate", "ok"]
 
     def test_source_error_does_not_abort(self, tmp_path: Path) -> None:
@@ -403,9 +416,7 @@ class TestFailureHandling:
         service = SyncService(
             sources=[source_b, source_a],
             processor=make_processor(athlete=config.athlete, analysis_version="1"),
-            repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo
-            ),
+            repository=ParquetTrainingRepository(cache_dir=cache_dir),
             analysis_version="1",
         )
         result = service.sync()
@@ -425,13 +436,11 @@ class TestSegmentSync:
         service, _source, cache_dir = make_sync(tmp_path, {"ride.fit": self._two_segments()})
         result = service.sync()
         assert result.files_processed == 1
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
-        assert activities.height == 2
-        assert activities["segment_count"].to_list() == [2, 2]
-        assert sorted(activities["segment_index"].to_list()) == [0, 1]
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
-        rows = index.to_dicts()
-        assert len(rows) == 2
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        assert frame.height == 2
+        assert frame["segment_count"].to_list() == [2, 2]
+        assert sorted(frame["segment_index"].to_list()) == [0, 1]
+        rows = frame.to_dicts()
         assert sorted(str(row["status"]) for row in rows) == ["ok", "ok"]
         daily = summarize_daily(_repo(cache_dir).activities_scan(), TZ)
         assert [row.activity_count for row in daily] == [2]
@@ -442,7 +451,7 @@ class TestSegmentSync:
         result = service.sync()
         assert result.files_skipped == 1
         assert result.files_processed == 0
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
+        activities = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         assert activities.height == 2
 
     def test_multi_segment_purge_on_change(self, tmp_path: Path) -> None:
@@ -451,10 +460,8 @@ class TestSegmentSync:
         source.files["ride.fit"] = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
         result = service.sync()
         assert result.files_processed == 1
-        activities = parquet.read_parquet(cache_dir / schemas.ACTIVITIES_FILE)
-        assert activities.height == 1
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
-        assert index.height == 1
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        assert frame.height == 1
         daily = summarize_daily(_repo(cache_dir).activities_scan(), TZ)
         assert [row.activity_count for row in daily] == [1]
 
@@ -488,16 +495,20 @@ class TestSegmentSync:
             processor=make_processor(
                 athlete=config.athlete, analysis_version="1", parser=FlagParser()
             ),
-            repository=ParquetTrainingRepository(
-                cache_dir=cache_dir, timezone=config.application.zoneinfo
-            ),
+            repository=ParquetTrainingRepository(cache_dir=cache_dir),
             analysis_version="1",
         )
         result = service.sync()
         assert result.files_repaired == 1
         assert result.duplicates_detected == 0
-        index = parquet.read_parquet(cache_dir / schemas.SOURCE_INDEX_FILE)
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        # File-level flags live in their own column; the per-activity copy
+        # may differ when a file splits into segments.
+        assert all(
+            json.loads(str(row["file_repair_flags_json"])) == ["clock_corrected"]
+            for row in frame.to_dicts()
+        )
         assert all(
             json.loads(str(row["repair_flags_json"])) == ["clock_corrected"]
-            for row in index.to_dicts()
+            for row in frame.filter(pl.col("start_time").is_not_null()).to_dicts()
         )

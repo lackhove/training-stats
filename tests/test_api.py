@@ -50,7 +50,7 @@ class TestActivitiesEndpoint:
         activities = response.json()
         assert len(activities) == 2
         assert {item["sport"] for item in activities} == {"cycling", "running"}
-        assert server.repository.list_activities(limit=10) != []
+        assert not server.repository.activities_scan().collect().is_empty()
 
     def test_list_filters(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
@@ -171,7 +171,7 @@ class TestSyncOnEndpoints:
         with _client(server) as client:
             response = client.get("/activities/does-not-exist")
         assert response.status_code == 404
-        assert server.repository.list_activities(limit=10) == []
+        assert server.repository.activities_scan().collect().is_empty()
 
 
 class TestOpenApi:

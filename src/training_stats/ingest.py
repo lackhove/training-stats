@@ -78,10 +78,10 @@ class FileProcessor:
             "activity_id": None,
             "segment_index": 0,
             "segment_count": 0,
-            "repair_flags_json": None,
+            schemas.FILE_REPAIR_FLAGS: None,
             "discarded_segment_count": 0,
             schemas.PROCESSED_AT: processed_at,
-            schemas.ANALYSIS_VERSION: self.analysis_version,
+            schemas.SOURCE_ANALYSIS_VERSION: self.analysis_version,
             "status": schemas.STATUS_FAILED,
             "error_message": None,
         }
@@ -107,7 +107,7 @@ class FileProcessor:
             row["activity_id"] = activity.activity_id
             row["segment_index"] = activity.segment_index
             row["segment_count"] = activity.segment_count
-            row["repair_flags_json"] = file_flags_json
+            row[schemas.FILE_REPAIR_FLAGS] = file_flags_json
             row["discarded_segment_count"] = parsed_file.discarded_segment_count
             if activity.activity_id in existing_ids:
                 row["status"] = schemas.STATUS_DUPLICATE

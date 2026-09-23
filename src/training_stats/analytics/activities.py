@@ -1,11 +1,31 @@
-"""Activity-level derived metrics."""
+"""Activity-level derived metrics and cache queries.
+
+``compute_activity_metrics`` derives per-activity analytics during ingest.
+The query functions (``activity_summaries``, ``activity_details``,
+``data_quality``) are the read-side counterpart: they consume lazy cache
+scans, own the user-facing filtering/aggregation, and map rows into domain
+models. Pure frame computation — no I/O, no locking.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, tzinfo
 
+import polars as pl
+
+from ..cache import schemas
 from ..config import AthleteConfig, QualityConfig
+from ..converters import (
+    buckets_from_json,
+    flags_from_json,
+    histogram_from_json,
+    optional_float,
+    optional_str,
+)
+from ..errors import CacheError
 from ..fit.types import ParsedActivity
+from ..models import ActivityDetails, ActivitySummary, DataQuality
 from .endurance import DecouplingResult, compute_aerobic_decoupling
 from .heart_rate import (
     HrBucketAvg,
@@ -115,3 +135,174 @@ def _completeness(activity: ParsedActivity) -> float:
         ]
     )
     return present / _COMPLETENESS_FIELDS
+
+
+# -- cache queries: LazyFrame in, domain rows out ---------------------------
+
+
+_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "activity_id",
+    "start_time",
+    "sport",
+    "sub_sport",
+    "duration_s",
+    "moving_time_s",
+    "distance_m",
+    "elevation_gain_m",
+    "avg_hr",
+    "max_hr",
+    "calories",
+    "load_value",
+)
+
+
+def activity_summaries(
+    activities: pl.LazyFrame,
+    tz: tzinfo,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    sport: str | None = None,
+    limit: int = 50,
+) -> list[ActivitySummary]:
+    """List compact activity summaries, newest first, filtered by local date."""
+    frame = activities.select(_SUMMARY_COLUMNS).with_columns(
+        pl.col("start_time").dt.convert_time_zone(str(tz)).dt.date().alias("local_date")
+    )
+    if start_date is not None:
+        frame = frame.filter(pl.col("local_date") >= start_date)
+    if end_date is not None:
+        frame = frame.filter(pl.col("local_date") <= end_date)
+    if sport is not None:
+        frame = frame.filter(pl.col("sport").str.to_lowercase() == sport.lower())
+    rows = frame.sort("start_time", descending=True).head(limit).collect().to_dicts()
+    return [_summary_row(row, tz) for row in rows]
+
+
+def activity_details(
+    activities: pl.LazyFrame, activity_id: str, tz: tzinfo
+) -> ActivityDetails | None:
+    """Map one activity row into full details; ``None`` for unknown ids."""
+    rows = activities.filter(pl.col("activity_id") == activity_id).collect().to_dicts()
+    if not rows:
+        return None
+    return _details_row(rows[0], tz)
+
+
+def data_quality(activities: pl.LazyFrame, source_index: pl.LazyFrame) -> DataQuality:
+    """Aggregate data-quality indicators over activities and source outcomes."""
+    metrics = (
+        activities.select(
+            pl.len().alias("activity_count"),
+            pl.col("hr_coverage_ratio").mean().alias("mean_coverage"),
+            pl.col("data_completeness").mean().alias("mean_completeness"),
+        )
+        .collect()
+        .to_dicts()[0]
+    )
+    failed = 0
+    duplicates = 0
+    repaired_files = 0
+    discarded_segments = 0
+    files: dict[tuple[str, str], tuple[bool, int]] = {}
+    for row in source_index.collect().to_dicts():
+        status = str(row.get("status"))
+        if status == schemas.STATUS_FAILED:
+            failed += 1
+        elif status == schemas.STATUS_DUPLICATE:
+            duplicates += 1
+        key = (str(row.get("source_name")), str(row.get("source_path")))
+        repaired = status == schemas.STATUS_OK and bool(
+            flags_from_json(row.get(schemas.FILE_REPAIR_FLAGS))
+        )
+        previous = files.get(key, (False, 0))
+        files[key] = (previous[0] or repaired, _int(row.get("discarded_segment_count")))
+    repaired_files = sum(1 for repaired, _discarded in files.values() if repaired)
+    discarded_segments = sum(discarded for _repaired, discarded in files.values())
+    return DataQuality(
+        activity_count=_int(metrics.get("activity_count")),
+        mean_hr_coverage_ratio=optional_float(metrics.get("mean_coverage")),
+        mean_data_completeness=optional_float(metrics.get("mean_completeness")),
+        failed_file_count=failed,
+        repaired_file_count=repaired_files,
+        discarded_segment_count=discarded_segments,
+        duplicate_activity_count=duplicates,
+    )
+
+
+# -- row mapping helpers ----------------------------------------------------
+
+
+def _summary_row(row: dict[str, object], tz: tzinfo) -> ActivitySummary:
+    start_time = row["start_time"]
+    if not isinstance(start_time, datetime):
+        msg = "activity start_time has unexpected type"
+        raise CacheError(msg)
+    return ActivitySummary(
+        activity_id=str(row["activity_id"]),
+        start_time=start_time,
+        sport=str(row["sport"]),
+        sub_sport=optional_str(row.get("sub_sport")),
+        duration_s=optional_float(row.get("duration_s")),
+        distance_m=optional_float(row.get("distance_m")),
+        elevation_gain_m=optional_float(row.get("elevation_gain_m")),
+        avg_hr=optional_float(row.get("avg_hr")),
+        max_hr=optional_float(row.get("max_hr")),
+        calories=optional_float(row.get("calories")),
+        load_value=optional_float(row.get("load_value")),
+        moving_time_s=optional_float(row.get("moving_time_s")),
+        local_start_time=start_time.astimezone(tz).isoformat(),
+    )
+
+
+def _details_row(row: dict[str, object], tz: tzinfo) -> ActivityDetails:
+    summary = _summary_row(row, tz)
+    return ActivityDetails(
+        activity_id=summary.activity_id,
+        start_time=summary.start_time,
+        sport=summary.sport,
+        sub_sport=summary.sub_sport,
+        duration_s=summary.duration_s,
+        moving_time_s=summary.moving_time_s,
+        distance_m=summary.distance_m,
+        elevation_gain_m=summary.elevation_gain_m,
+        avg_hr=summary.avg_hr,
+        max_hr=summary.max_hr,
+        avg_speed_mps=optional_float(row.get("avg_speed_mps")),
+        max_speed_mps=optional_float(row.get("max_speed_mps")),
+        calories=summary.calories,
+        hr_zone_1_s=_float(row.get("hr_zone_1_s")),
+        hr_zone_2_s=_float(row.get("hr_zone_2_s")),
+        hr_zone_3_s=_float(row.get("hr_zone_3_s")),
+        hr_zone_4_s=_float(row.get("hr_zone_4_s")),
+        hr_zone_5_s=_float(row.get("hr_zone_5_s")),
+        hr_coverage_ratio=_float(row.get("hr_coverage_ratio")),
+        hr_histogram_s=histogram_from_json(row.get("hr_histogram_json")),
+        hr_10min_averages=buckets_from_json(row.get("hr_10min_json")),
+        hr_drift_bpm_per_hour=optional_float(row.get("hr_drift_bpm_per_hour")),
+        load_value=summary.load_value,
+        load_method=optional_str(row.get("load_method")),
+        load_confidence=optional_str(row.get("load_confidence")),
+        data_completeness=_float(row.get("data_completeness")),
+        analysis_version=str(row.get(schemas.ANALYSIS_VERSION, "")),
+        source_name=str(row.get("source_name", "")),
+        source_path=str(row.get("source_path", "")),
+        ef_first_half=optional_float(row.get("ef_first_half")),
+        ef_second_half=optional_float(row.get("ef_second_half")),
+        aerobic_decoupling_pct=optional_float(row.get("aerobic_decoupling_pct")),
+        decoupling_confidence=optional_str(row.get("decoupling_confidence")),
+        local_start_time=summary.local_start_time,
+        paused_time_s=optional_float(row.get("paused_time_s")),
+        repair_flags=flags_from_json(row.get("repair_flags_json")),
+    )
+
+
+def _float(value: object) -> float:
+    result = optional_float(value)
+    return 0.0 if result is None else result
+
+
+def _int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0
+    return int(value)

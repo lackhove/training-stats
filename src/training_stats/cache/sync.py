@@ -43,9 +43,7 @@ class SyncCacheRepository(Protocol):
 
     def load_sync_state(self) -> SyncState: ...
 
-    def save_sync_snapshot(
-        self, state: SyncState, *, last_sync: datetime, analysis_version: str
-    ) -> None: ...
+    def save_sync_snapshot(self, state: SyncState, *, last_sync: datetime) -> None: ...
 
 
 class SyncService:
@@ -139,7 +137,6 @@ class SyncService:
             self.repository.save_sync_snapshot(
                 SyncState(index_rows=kept_index, activities=state.activities),
                 last_sync=started_at,
-                analysis_version=self.analysis_version,
             )
             logger.info(
                 "sync complete: %d discovered, %d processed, %d skipped, %d failed, "
@@ -177,10 +174,10 @@ class SyncService:
             "activity_id": None,
             "segment_index": 0,
             "segment_count": 0,
-            "repair_flags_json": None,
+            schemas.FILE_REPAIR_FLAGS: None,
             "discarded_segment_count": 0,
             schemas.PROCESSED_AT: processed_at,
-            schemas.ANALYSIS_VERSION: self.analysis_version,
+            schemas.SOURCE_ANALYSIS_VERSION: self.analysis_version,
             "status": schemas.STATUS_FAILED,
             "error_message": message,
         }
@@ -214,7 +211,7 @@ class SyncService:
             return False
         return all(
             row.get("source_hash") is not None
-            and row.get(schemas.ANALYSIS_VERSION) == self.analysis_version
+            and row.get(schemas.SOURCE_ANALYSIS_VERSION) == self.analysis_version
             and self._same_size(row.get("file_size"), source_file.size)
             and self._same_time(row.get("modified_at"), source_file.modified_at)
             for row in previous_rows

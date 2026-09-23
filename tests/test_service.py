@@ -76,10 +76,10 @@ class TestServiceOperations:
         assert result.files_skipped == 2
 
     def test_list_activities_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
-        assert unsynced_server.repository.list_activities(limit=10) == []
+        assert unsynced_server.repository.activities_scan().collect().is_empty()
         activities = unsynced_server.list_activities()
         assert len(activities) == 2
-        assert unsynced_server.repository.list_activities(limit=10) != []
+        assert not unsynced_server.repository.activities_scan().collect().is_empty()
 
     def test_list_activities_without_sync(self, unsynced_server: TrainingStatsService) -> None:
         activities = unsynced_server.list_activities(sync_first=False)
@@ -111,12 +111,12 @@ class TestServiceOperations:
     def test_startup_sync_populates_cache(self, unsynced_server: TrainingStatsService) -> None:
         from training_stats.cli import _startup_sync
 
-        assert unsynced_server.repository.list_activities(limit=10) == []
+        assert unsynced_server.repository.activities_scan().collect().is_empty()
         _startup_sync(unsynced_server)
-        assert len(unsynced_server.repository.list_activities(limit=10)) == 2
+        assert unsynced_server.repository.activities_scan().collect().height == 2
 
     def test_weekly_summary_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
-        assert unsynced_server.repository.list_activities(limit=10) == []
+        assert unsynced_server.repository.activities_scan().collect().is_empty()
         rows = unsynced_server.weekly_summary(weeks=4)
         assert len(rows) == 2
 
@@ -136,7 +136,7 @@ class TestServiceOperations:
         with pytest.raises(LookupError, match="not found"):
             unsynced_server.get_activity("does-not-exist")
         # Cache-only: no sync happened, so the store is still empty.
-        assert unsynced_server.repository.list_activities(limit=10) == []
+        assert unsynced_server.repository.activities_scan().collect().is_empty()
 
     def test_list_activities(self, server: TrainingStatsService) -> None:
         activities = server.list_activities()

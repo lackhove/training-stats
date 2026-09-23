@@ -208,9 +208,11 @@ network.
 
 ```text
 data/cache/
-├── activities.parquet          # one row per activity: session facts + derived metrics
-├── source_index.parquet        # per-file hash, status, error diagnostics
-└── metadata.json               # last sync, counts, analysis version
+├── training_cache.parquet       # one row per accepted activity: session facts,
+│                                #   derived metrics and its source-index fields;
+│                                #   failed/duplicate source outcomes kept as
+│                                #   rows without activity data
+└── metadata.json                # last sync stamp
 ```
 
 All writes are atomic (temporary file + rename). Daily/weekly summaries and

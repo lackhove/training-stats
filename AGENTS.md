@@ -55,7 +55,8 @@ sources/   ActivitySource ABC -> LocalDirectorySource, WebDAVSource (httpx)
 fit/       FitParser protocol (returns ParsedFile), FitDecodeParser,
            repair (clock shifts + segment splits), normalize helpers,
            RECORD_SCHEMA (records as transient Polars frame)
-analytics/ activities (metrics from records), heart_rate (vectorized zones),
+analytics/ activities (metrics from records; cache queries — list/get/data
+           quality — returning domain rows), heart_rate (vectorized zones),
            load (hr_trimp), endurance, daily (frame group-by + row selection),
            weekly, fitness (training form), overview + profile (pure
            Overview assembly — the former coach/ package)
@@ -63,7 +64,7 @@ ingest.py  FileProcessor: parse one file, compute metrics, build merged
            Parquet row dicts (domain half of sync, injected into cache/sync.py)
 cache/     schemas (Polars), parquet (atomic I/O), locking (app-wide flock),
            sync (orchestration + change detection), repository (storage
-           boundary: lazy activities_scan + row mapping + sync state
+           boundary: lazy scans of the unified cache file + sync state
            load/save; the only module touching Parquet directly)
 services.py  service layer orchestrating repository reads and pure analytics
              calls; methods on TrainingStatsService are directly testable
@@ -83,10 +84,11 @@ errors.py  typed exception hierarchy (TrainingStatsError base)
 
 Data flow: `sources -> ingest (fit.parser + analytics) -> cache.sync -> cache.repository -> services (analytics over activities_scan) -> (wire -> api, cli)`.
 
-The read boundary: the repository exposes `activities_scan() -> pl.LazyFrame`
-plus row-mapped queries; **all** aggregation lives in `analytics/`, which the
-service layer is the only module allowed to call. Analytics functions are
-pure (`LazyFrame → dataclass rows` / `rows → rows`) — no I/O, no locking.
+The read boundary: the repository exposes lazy scans (`activities_scan()`,
+`source_index_scan()`); **all** filtering, aggregation and row mapping into
+domain models lives in `analytics/`, which the service layer is the only
+module allowed to call. Analytics functions are pure
+(`LazyFrame → dataclass rows` / `rows → rows`) — no I/O, no locking.
 
 **Serialization convention:** services return domain models; serialize only
 at the edges. `api.py` and `cli.py` map domain → `wire.py` Pydantic models
@@ -107,12 +109,14 @@ These are core design decisions — do not violate them casually:
   frame (`fit/types.py` `RECORD_SCHEMA`) during processing and is discarded.
   Raw records must never appear in Parquet files, REST/CLI responses, or logs.
   Coarse derived aggregates (5-bpm HR histogram, 10-minute weighted HR
-  averages) are allowed in `activities.parquet` and API responses.
+  averages) are allowed in `training_cache.parquet` and API responses.
   Schemas in `cache/schemas.py` enforce this.
 - **No stored period aggregates.** Daily/weekly summaries and training form
-  are derived on read by `analytics/` over the lazy activity frame. Only
-  per-activity rows (`activities.parquet`) and the source index are
-  persisted; `metadata.json` holds the sync throttle stamp.
+  are derived on read by `analytics/` over the lazy activity frame. Only the
+  unified cache file is persisted (`training_cache.parquet`: one row per
+  accepted activity, enriched with its source-index fields, plus rows for
+  failed/duplicate source outcomes); `metadata.json` holds the sync
+  throttle stamp.
 - **Secrets only from environment variables.** The TOML file stores the
   *names* of env vars (`username_env`/`password_env`). Values are wrapped in
   `SecretStr`/`WebDAVCredentials` and must never leak into logs, `repr`,
@@ -126,8 +130,8 @@ These are core design decisions — do not violate them casually:
   consistent file version. Don't write cache files directly.
 - **Incremental sync via file metadata.** Unchanged files are skipped
   without being read when `file_size` + `modified_at` match the previous
-  sync and a content hash is stored (the prior read succeeded; stored in
-  `source_index.parquet`); downloaded candidates are reprocessed
+  sync and a content hash is stored (the prior read succeeded; stored on
+  the cache row); downloaded candidates are reprocessed
   unconditionally — FIT files are only ever added, deleted or rewritten,
   and a rewrite changes size or modification time. Rows without a stored
   hash (failed reads) always retry. Bumping the internal
@@ -137,7 +141,8 @@ These are core design decisions — do not violate them casually:
 - **Deterministic analytics.** HR zones and athlete values come from
   configuration, never hardcoded.
 - **Typed errors.** Use the exception hierarchy in `errors.py`; per-file FIT
-  failures are recorded in the source index, they don't abort the sync.
+  failures are recorded as source-only rows in the cache, they don't abort
+  the sync.
 
 ## Code Style
 
