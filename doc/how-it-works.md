@@ -15,24 +15,24 @@ steps and all metric definitions.
 ## 1. Architecture & Data Flow
 
 ```
-sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.repository
-        -> services (analytics over the lazy activity frame) -> (wire -> api, cli)
+adapters/sources + adapters/fit -> services -> domain analytics
+                 adapters/cache <- services
+adapters/bootstrap wires services to adapters; adapters/http and adapters/cli
+map domain results to transport output.
 ```
 
 | Package | Responsibility |
 |---|---|
-| `sources/` | `ActivitySource` ABC; `LocalDirectorySource` (filesystem walk) and `WebDAVSource` (httpx + env-resolved secrets) |
-| `fit/` | `FitParser` protocol returning a `ParsedFile`; `FitDecodeParser` (fitdecode boundary); `repair.py` (timeline repair, segmentation, moving time); `normalize.py` (coercion helpers); `types.py` (`RECORD_SCHEMA`, `ParsedActivity`, `ParsedFile`) |
-| `analytics/` | Pure functions: per-activity metrics and cache queries returning domain rows (`activities`), per-activity metrics (`heart_rate`, `load`, `endurance`), aggregations (`daily`, `weekly`), training form (`fitness`), overview + athlete profile assembly (`overview`, `profile`) |
-| `ingest.py` | `FileProcessor`: parse one FIT file, compute metrics, build the merged index/activity row dicts (domain half of sync; injected into `cache.sync`) |
-| `cache/` | Parquet schemas (`schemas.py`), atomic I/O (`parquet.py`), app-wide cache lock (`locking.py`), incremental sync (`sync.py`), storage repository (`repository.py`: lazy scans of the unified cache file + sync-state load/save) |
-| `services.py` | Service layer orchestrating repository reads and pure analytics calls; returns domain models. Methods on `TrainingStatsService` are directly testable |
-| `wire.py` | Pydantic wire/response models + domain→wire mappers, shared by `api.py` and `cli.py` |
-| `api.py` | FastAPI application with wire response models (OpenAPI schema) |
-| `cli.py` | cyclopts CLI; TTY detection + global `--json`, maps domain → wire, dispatches to `cli_output` or plain JSON |
-| `cli_output.py` | Rich renderers (wire dicts from `model_dump` + injected `Console`); diagnostics on stderr |
-| `config.py` | Pydantic TOML models; WebDAV secrets only via environment variables |
-| `models.py` | Shared frozen dataclasses (`SourceFile`, `SyncResult`, summaries, deep `Overview`, …) |
+| `domain/` | Domain dataclasses/settings, canonical Polars frame contracts, FIT timeline repair and pure analytics |
+| `services/` | Ports and use cases (`TrainingStatsService`, `SyncService`, `FileProcessor`); no concrete adapters |
+| `adapters/cache/` | Unified Parquet schema, serialization, atomic I/O, repository implementation and app-wide lock |
+| `adapters/fit/` | `FitDecodeParser` and raw FIT value normalization |
+| `adapters/sources/` | `LocalDirectorySource` and `WebDAVSource` implementations |
+| `adapters/config.py` | TOML/environment loading and secret resolution; maps domain athlete/quality settings |
+| `adapters/http/` | FastAPI application, auth and wire response mapping |
+| `adapters/cli/` | cyclopts CLI; TTY detection + global `--json`, Rich rendering and stderr diagnostics |
+| `adapters/wire.py` | Pydantic transport models shared by HTTP and CLI JSON output |
+| `adapters/bootstrap.py` | Composition root wiring concrete adapters to application-service ports |
 | `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
 
 **Core invariants**
@@ -43,11 +43,11 @@ sources -> ingest (fit.parser + fit.repair + analytics) -> cache.sync -> cache.r
    Polars frame during processing and are discarded. Only coarse derived
    aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages).
    Period aggregates (daily/weekly, training form) are **never persisted**;
-   they are derived on read by `analytics/` over the lazy activity frame.
+    they are derived on read by `domain/analytics/` over the lazy activity frame.
 3. Secrets only from environment variables (`SecretStr`, never logged).
 4. Atomic cache writes only (tmp file + fsync + `os.replace`); exactly one
    process operates on the cache at a time via the app-wide flock
-   (`cache/locking.py`), held for the process lifetime.
+    (`adapters/cache/locking.py`), held for the process lifetime.
 5. Incremental sync: size + mtime skip re-reads; downloaded candidates are
    reprocessed (FIT files are only ever added, deleted or rewritten, and a
    rewrite changes size or mtime).
@@ -80,7 +80,7 @@ version is bumped and the next sync reprocesses every file (current: `"4"`).
 
 ### 3.1 Discovery & Change Detection
 
-1. Each source lists FIT files (`*.fit`, case-insensitive; symlinks are
+1. Each source adapter lists FIT files (`*.fit`, case-insensitive; symlinks are
    skipped unless `follow_symlinks`).
 2. Files whose `file_size` and `modified_at` match the previous sync are
    skipped without being read at all (metadata short-circuit).
@@ -88,7 +88,7 @@ version is bumped and the next sync reprocesses every file (current: `"4"`).
    content hash and the source-level `analysis_version` are recorded on the
    cache row (the hash marks successful reads).
 4. Files whose read previously failed (no stored hash) always retry.
-5. Bumping the internal `ANALYSIS_VERSION_VALUE` (`cache/schemas.py`)
+5. Bumping the internal `ANALYSIS_VERSION_VALUE` (`adapters/cache/schemas.py`)
    forces full reprocessing of every file.
 
 ### 3.2 Why Cleaning Is Necessary
@@ -105,7 +105,7 @@ Real device files exhibit three failure modes:
 3. **Day-tour rides with long pauses** — multiple substantial legs separated
    by gaps; these are legitimate multi-segment activities.
 
-### 3.3 The Repair Pipeline (`fit/repair.py`)
+### 3.3 The Repair Pipeline (`domain/fit/repair.py`)
 
 The repair layer operates exclusively on the transient record frame
 (timestamp, heart_rate, distance_m, altitude_m, speed_mps).
@@ -187,7 +187,7 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 
 ## 4. Processing: Sync & Cache
 
-### 4.1 Sync Flow (`cache/sync.py` + `ingest.py` + `cache/repository.py`)
+### 4.1 Sync Flow (`services/sync.py` + `services/ingest.py` + `adapters/cache/repository.py`)
 
 1. Load source index + activity/metrics stores (in memory) via
    `repository.load_sync_state()`.
@@ -197,7 +197,8 @@ static pre-ride prefix show up as *paused* instead of *moving* time.
 4. On change: **purge all cached rows of that file** (every segment), then
    delegate to `ingest.FileProcessor` — parse, repair, compute metrics,
    index one row per segment.
-5. Duplicate segments are marked `status="duplicate"` with no store rows.
+5. Duplicate segments are marked `status="duplicate"` and retained as
+   source-only rows (no activity fields) in the unified table.
 6. `repository.save_sync_snapshot()` prunes orphan store rows (no `ok`
    index row) and writes the unified cache file (`training_cache.parquet`)
    and `metadata.json` atomically under the app-wide cache lock.
@@ -212,15 +213,16 @@ down) is reported in `source_errors` without aborting other sources.
 
 | File | Content |
 |---|---|
-| `training_cache.parquet` | One row per accepted activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, calories, segment fields, repair flags, the derived metrics (§5): zone seconds, coverage, histogram JSON, 10-min buckets JSON, drift, load (+method/confidence), decoupling, completeness, analysis version — enriched with the source-index fields (hashes, size/mtime, per-file repair flags, status). Failed reads and duplicate activity ids are kept as rows without activity data (null `start_time`) |
+| `training_cache.parquet` | One row per accepted activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, calories, segment fields, repair flags, derived metrics (§5), and source-index fields (hashes, size/mtime, per-file repair flags, status). Histograms, HR buckets, and flags use native nested Parquet values. Failed reads and duplicate activity ids are retained as rows without activity data (null `start_time`) |
 | `metadata.json` | last sync time |
 
 Daily and weekly summaries and the training-form curve are **not stored**:
-`analytics/daily.py` groups the lazy activity frame on read, `analytics/
-weekly.py` rolls up daily rows, `analytics/fitness.py` folds the form curve
-(§6–7). The repository exposes `activities_scan()` and `source_index_scan()`;
-list/get/data-quality queries and row mapping live in `analytics/
-activities.py`, and the service layer is the only caller of analytics.
+`domain/analytics/daily.py` groups the lazy activity frame on read,
+`domain/analytics/weekly.py` rolls up daily rows, and
+`domain/analytics/fitness.py` folds the form curve (§6–7). The repository
+exposes domain-shaped `activities_scan()` and `source_index_scan()` frames;
+list/get/data-quality queries and row mapping live in
+`domain/analytics/activities.py`.
 
 Statuses: `ok`, `duplicate`, `failed`. Row key: `(source_name, source_path, segment_index)`.
 
@@ -433,7 +435,7 @@ contain raw time-series data.
   automatic migration — delete stale `activity_metrics.parquet`,
   `daily_metrics.parquet`, `weekly_metrics.parquet` (and the old
   `sync.lock`) and re-sync.
-- Bumping the internal `ANALYSIS_VERSION_VALUE` in `cache/schemas.py`
+- Bumping the internal `ANALYSIS_VERSION_VALUE` in `adapters/cache/schemas.py`
   (currently `"4"`) forces full reprocessing on the next sync; activity IDs
   are re-derived deterministically.
 - History: v2 (histogram + 10-min averages + drift), v3 (clock-correction

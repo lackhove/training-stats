@@ -8,12 +8,12 @@ from datetime import UTC, datetime
 import pytest
 
 from tests.conftest import ZONE_BOUNDS, make_record_frame
-from training_stats.analytics.heart_rate import (
+from training_stats.domain.analytics.heart_rate import (
     ZoneResult,
     build_zone_bounds,
     time_in_zones,
 )
-from training_stats.analytics.load import (
+from training_stats.domain.analytics.load import (
     LOAD_METHOD,
     LOAD_VERSION,
     hr_trimp_load,

@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
-from training_stats.cache import schemas
-from training_stats.models import SyncResult, ThrottledSync
-from training_stats.services import TrainingStatsService, create_service
+from training_stats.adapters.bootstrap import create_service
+from training_stats.adapters.cache import schemas
+from training_stats.services.results import SyncResult, ThrottledSync
+from training_stats.services.training import TrainingStatsService
 
 # Fixture activities anchored to "today" so overview windows match.
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -27,14 +28,16 @@ def _stub_files() -> dict[str, bytes]:
     }
 
 
-def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsService:
+def _make_server(
+    tmp_path: Path, files: dict[str, bytes], *, interval_s: float = 0.0
+) -> TrainingStatsService:
     """Build a server backed by the deterministic stub source/parser.
 
     The sync throttle is disabled so tests observe individual syncs; the
     throttle itself is exercised in ``TestSyncThrottle``.
     """
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
-    config.cache.sync_min_interval_seconds = 0.0
+    config.cache.sync_min_interval_seconds = interval_s
     server = create_service(config)
     # Swap in the deterministic stub source/parser for cache independence.
     server.sync_service.sources = [StubSource(files=files)]
@@ -45,9 +48,7 @@ def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsServic
 
 
 def _make_throttled_server(tmp_path: Path, interval_s: float = 10.0) -> TrainingStatsService:
-    server = _make_server(tmp_path, _stub_files())
-    server.config.cache.sync_min_interval_seconds = interval_s
-    return server
+    return _make_server(tmp_path, _stub_files(), interval_s=interval_s)
 
 
 def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
@@ -103,13 +104,13 @@ class TestServiceOperations:
             raise RuntimeError("disk gone")
 
         monkeypatch.setattr(server.sync_service, "sync", broken_sync)
-        with caplog.at_level(logging.WARNING, logger="training_stats.services"):
+        with caplog.at_level(logging.WARNING, logger="training_stats.services.training"):
             activities = server.list_activities()
         assert len(activities) == 2
         assert any("activity sync failed" in record.message for record in caplog.records)
 
     def test_startup_sync_populates_cache(self, unsynced_server: TrainingStatsService) -> None:
-        from training_stats.cli import _startup_sync
+        from training_stats.adapters.cli.app import _startup_sync
 
         assert unsynced_server.repository.activities_scan().collect().is_empty()
         _startup_sync(unsynced_server)
@@ -251,7 +252,7 @@ class TestSyncThrottle:
         assert second.seconds_since_last_sync >= 0
 
     def test_throttle_expires(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import training_stats.services as services_module
+        import training_stats.services.training as services_module
 
         server = _make_throttled_server(tmp_path)
         server.sync_if_due()
@@ -313,7 +314,7 @@ class TestCreateServer:
         assert [source.name for source in server.sources] == ["local"]
 
     def test_webdav_source_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from training_stats.config import (
+        from training_stats.adapters.config import (
             WebDAVSourceConfig,
         )
 

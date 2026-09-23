@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import FIXTURES
-from training_stats.cli import main
+from training_stats.adapters.cli.app import main
 
 EXPECTED_OVERVIEW_KEYS = {
     "athlete_profile",
@@ -222,8 +222,8 @@ class TestSyncThrottleFeedback:
 
 class TestSyncSummaryFeedback:
     def test_extras_and_source_errors(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from training_stats.cli import _print_sync_summary
-        from training_stats.models import SyncResult
+        from training_stats.adapters.cli.app import _print_sync_summary
+        from training_stats.services.results import SyncResult
 
         _print_sync_summary(
             SyncResult(
@@ -244,8 +244,8 @@ class TestSyncSummaryFeedback:
         assert "sync source error: nextcloud: connection refused" in err
 
     def test_no_extras_lines_when_clean(self, capsys: pytest.CaptureFixture[str]) -> None:
-        from training_stats.cli import _print_sync_summary
-        from training_stats.models import SyncResult
+        from training_stats.adapters.cli.app import _print_sync_summary
+        from training_stats.services.results import SyncResult
 
         _print_sync_summary(
             SyncResult(

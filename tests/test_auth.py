@@ -10,15 +10,15 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
-from training_stats.api import build_app
-from training_stats.auth import BearerGuard
-from training_stats.config import (
+from training_stats.adapters.bootstrap import create_service
+from training_stats.adapters.config import (
     AuthConfig,
     ServerConfig,
     resolve_auth_token,
 )
-from training_stats.errors import ConfigurationError
-from training_stats.services import TrainingStatsService, create_service
+from training_stats.adapters.errors import ConfigurationError
+from training_stats.adapters.http.api import build_app
+from training_stats.adapters.http.auth import BearerGuard
 
 TOKEN_ENV = "TRAINING_STATS_AUTH_TOKEN"
 TOKEN = "test-token-0123456789abcdef"
@@ -67,7 +67,7 @@ class TestResolveAuthToken:
 # -- HTTP behavior --------------------------------------------------------------
 
 
-def _make_server(tmp_path: Path, with_auth: bool) -> TrainingStatsService:
+def _make_app(tmp_path: Path, with_auth: bool) -> object:
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
     if with_auth:
         config.server.auth = AuthConfig(token_env=TOKEN_ENV)
@@ -86,7 +86,7 @@ def _make_server(tmp_path: Path, with_auth: bool) -> TrainingStatsService:
     server.sync_service.processor = make_processor(
         athlete=config.athlete, analysis_version=server.sync_service.analysis_version
     )
-    return server
+    return build_app(server, auth_token=resolve_auth_token(config))
 
 
 @pytest.fixture
@@ -96,47 +96,47 @@ def token_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestHttpBehavior:
     def test_accepts_matching_token(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             response = client.get("/activities", headers={"Authorization": f"Bearer {TOKEN}"})
         assert response.status_code == 200
 
     def test_rejects_missing_header(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             response = client.get("/activities")
         assert response.status_code == 401
         assert response.headers["www-authenticate"] == "Bearer"
 
     def test_rejects_wrong_token(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             response = client.get("/activities", headers={"Authorization": "Bearer wrong"})
         assert response.status_code == 401
 
     def test_rejects_empty_token(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             response = client.get("/activities", headers={"Authorization": "Bearer "})
         assert response.status_code == 401
 
     def test_rejects_non_bearer_scheme(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             response = client.get("/activities", headers={"Authorization": f"Basic {TOKEN}"})
         assert response.status_code == 401
 
     def test_open_server_without_auth_config(self, tmp_path: Path) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=False))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=False)) as client:
             assert client.get("/activities").status_code == 200
             assert client.get("/openapi.json").status_code == 200
 
 
 class TestOpenApiSecurityScheme:
     def test_scheme_declared_when_auth_configured(self, tmp_path: Path, token_env: None) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=True))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=True)) as client:
             schema = client.get("/openapi.json").json()
         assert "HTTPBearer" in schema["components"]["securitySchemes"]
         assert schema["paths"]["/activities"]["get"]["security"] == [{"HTTPBearer": []}]
         assert client.get("/openapi.json").status_code == 200
 
     def test_no_security_requirement_without_auth(self, tmp_path: Path) -> None:
-        with TestClient(build_app(_make_server(tmp_path, with_auth=False))) as client:
+        with TestClient(_make_app(tmp_path, with_auth=False)) as client:
             schema = client.get("/openapi.json").json()
         assert "securitySchemes" not in schema["components"]
         assert "security" not in schema["paths"]["/activities"]["get"]
@@ -150,9 +150,9 @@ class TestGuardRepr:
 
 class TestOpenBindWarning:
     def test_warns_for_non_loopback_without_auth(self, caplog: pytest.LogCaptureFixture) -> None:
-        from training_stats.cli import _warn_unauthenticated_bind
+        from training_stats.adapters.cli.app import _warn_unauthenticated_bind
 
-        with caplog.at_level("WARNING", logger="training_stats.cli"):
+        with caplog.at_level("WARNING", logger="training_stats.adapters.cli.app"):
             _warn_unauthenticated_bind("0.0.0.0", has_auth=False)
         assert any("non-loopback" in record.message for record in caplog.records)
 
@@ -163,8 +163,8 @@ class TestOpenBindWarning:
     def test_no_warning_otherwise(
         self, caplog: pytest.LogCaptureFixture, host: str, has_auth: bool
     ) -> None:
-        from training_stats.cli import _warn_unauthenticated_bind
+        from training_stats.adapters.cli.app import _warn_unauthenticated_bind
 
-        with caplog.at_level("WARNING", logger="training_stats.cli"):
+        with caplog.at_level("WARNING", logger="training_stats.adapters.cli.app"):
             _warn_unauthenticated_bind(host, has_auth)
         assert caplog.records == []

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import polars as pl
 import pytest
 
-from training_stats.analytics.fitness import (
+from training_stats.domain.analytics.fitness import (
     ATL_DECAY,
     CLASSIFICATION_FRESH,
     CLASSIFICATION_HIGH_FATIGUE,

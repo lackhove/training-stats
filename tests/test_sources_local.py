@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from training_stats.errors import SourceError
-from training_stats.sources.local import LocalDirectorySource
+from training_stats.adapters.sources.local import LocalDirectorySource
+from training_stats.services.errors import SourceError
 
 
 def make_source(root: Path, **kwargs: object) -> LocalDirectorySource:
@@ -94,7 +94,7 @@ def test_read_file_roundtrip(tmp_path: Path) -> None:
 
 def test_read_file_rejects_escape(tmp_path: Path) -> None:
     source = make_source(tmp_path)
-    from training_stats.models import SourceFile
+    from training_stats.domain.models import SourceFile
 
     evil = SourceFile(source_name="local", path="../outside.fit")
     with pytest.raises(SourceError, match="outside the configured directory"):

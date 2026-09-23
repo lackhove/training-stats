@@ -1,0 +1,215 @@
+"""Per-file processing use case: parse, analyze, and return typed records."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from ..domain.analytics.activities import AnalyzedActivity, compute_activity_metrics
+from ..domain.errors import FitParseError
+from ..domain.frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
+from ..domain.models import SourceFile
+from ..domain.settings import AthleteConfig, QualityConfig
+from .ports import FitParser
+from .state import ActivityRecord, SourceIndexEntry, SourceStatus
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """Typed result of processing one FIT file."""
+
+    index_rows: list[SourceIndexEntry]
+    activities: list[ActivityRecord]
+    duplicates: int
+    repaired: bool
+    discarded_segments: int
+
+
+class FileProcessor:
+    """Parse one FIT file and compute its domain activity records."""
+
+    def __init__(
+        self,
+        *,
+        parser: FitParser,
+        athlete: AthleteConfig,
+        quality: QualityConfig,
+        analysis_version: str,
+    ) -> None:
+        self.parser = parser
+        self.athlete = athlete
+        self.quality = quality
+        self.analysis_version = analysis_version
+
+    def process(
+        self,
+        source_file: SourceFile,
+        content: bytes,
+        file_hash: str,
+        existing_ids: set[str],
+        processed_at: datetime,
+    ) -> Outcome:
+        """Analyze ``content``; update ``existing_ids`` with accepted ids."""
+        try:
+            parsed_file = self.parser.parse(content, source_file)
+        except FitParseError as exc:
+            logger.error("cannot parse %s/%s: %s", source_file.source_name, source_file.path, exc)
+            return Outcome(
+                index_rows=[
+                    _source_entry(
+                        source_file=source_file,
+                        source_hash=file_hash,
+                        processed_at=processed_at,
+                        analysis_version=self.analysis_version,
+                        status=STATUS_FAILED,
+                        error_message=str(exc),
+                    )
+                ],
+                activities=[],
+                duplicates=0,
+                repaired=False,
+                discarded_segments=0,
+            )
+
+        index_rows: list[SourceIndexEntry] = []
+        activities: list[ActivityRecord] = []
+        duplicates = 0
+        for activity in parsed_file.activities:
+            analyzed = AnalyzedActivity(
+                activity=activity,
+                metrics=compute_activity_metrics(
+                    activity, self.athlete, self.analysis_version, self.quality
+                ),
+            )
+            if activity.activity_id in existing_ids:
+                index_rows.append(
+                    _source_entry(
+                        source_file=source_file,
+                        source_hash=file_hash,
+                        processed_at=processed_at,
+                        analysis_version=self.analysis_version,
+                        activity_id=activity.activity_id,
+                        segment_index=activity.segment_index,
+                        segment_count=activity.segment_count,
+                        file_repair_flags=parsed_file.repair_flags,
+                        discarded_segment_count=parsed_file.discarded_segment_count,
+                        status=STATUS_DUPLICATE,
+                        error_message="duplicate activity id",
+                    )
+                )
+                duplicates += 1
+                logger.info(
+                    "duplicate %s/%s: activity %s already cached",
+                    source_file.source_name,
+                    source_file.path,
+                    activity.activity_id,
+                )
+                continue
+
+            existing_ids.add(activity.activity_id)
+            index_rows.append(
+                _source_entry(
+                    source_file=source_file,
+                    source_hash=file_hash,
+                    processed_at=processed_at,
+                    analysis_version=self.analysis_version,
+                    activity_id=activity.activity_id,
+                    segment_index=activity.segment_index,
+                    segment_count=activity.segment_count,
+                    file_repair_flags=parsed_file.repair_flags,
+                    discarded_segment_count=parsed_file.discarded_segment_count,
+                    status=STATUS_OK,
+                )
+            )
+            activities.append(_activity_record(analyzed, source_file.source_name))
+
+        return Outcome(
+            index_rows=index_rows,
+            activities=activities,
+            duplicates=duplicates,
+            repaired=bool(parsed_file.repair_flags),
+            discarded_segments=parsed_file.discarded_segment_count,
+        )
+
+
+def _source_entry(
+    *,
+    source_file: SourceFile,
+    source_hash: str | None,
+    processed_at: datetime,
+    analysis_version: str,
+    status: SourceStatus,
+    error_message: str | None = None,
+    activity_id: str | None = None,
+    segment_index: int = 0,
+    segment_count: int = 0,
+    file_repair_flags: tuple[str, ...] = (),
+    discarded_segment_count: int = 0,
+) -> SourceIndexEntry:
+    return SourceIndexEntry(
+        source_name=source_file.source_name,
+        source_path=source_file.path,
+        source_hash=source_hash,
+        file_size=source_file.size,
+        modified_at=source_file.modified_at,
+        activity_id=activity_id,
+        segment_index=segment_index,
+        segment_count=segment_count,
+        file_repair_flags=file_repair_flags,
+        discarded_segment_count=discarded_segment_count,
+        processed_at=processed_at,
+        source_analysis_version=analysis_version,
+        status=status,
+        error_message=error_message,
+    )
+
+
+def _activity_record(item: AnalyzedActivity, source_name: str) -> ActivityRecord:
+    activity = item.activity
+    metrics = item.metrics
+    return ActivityRecord(
+        activity_id=activity.activity_id,
+        start_time=_ensure_utc(activity.start_time),
+        sport=activity.sport,
+        sub_sport=activity.sub_sport,
+        duration_s=activity.duration_s,
+        moving_time_s=activity.moving_time_s,
+        paused_time_s=activity.paused_time_s,
+        distance_m=activity.distance_m,
+        elevation_gain_m=activity.elevation_gain_m,
+        avg_hr=activity.avg_hr,
+        max_hr=activity.max_hr,
+        avg_speed_mps=activity.avg_speed_mps,
+        max_speed_mps=activity.max_speed_mps,
+        calories=activity.calories,
+        segment_index=activity.segment_index,
+        segment_count=activity.segment_count,
+        repair_flags=activity.repair_flags,
+        source_name=source_name,
+        source_path=activity.source_path,
+        hr_zone_1_s=metrics.hr_zone_1_s,
+        hr_zone_2_s=metrics.hr_zone_2_s,
+        hr_zone_3_s=metrics.hr_zone_3_s,
+        hr_zone_4_s=metrics.hr_zone_4_s,
+        hr_zone_5_s=metrics.hr_zone_5_s,
+        hr_coverage_ratio=metrics.hr_coverage_ratio,
+        hr_histogram_s=metrics.hr_histogram_s,
+        hr_10min_averages=metrics.hr_10min_averages,
+        hr_drift_bpm_per_hour=metrics.hr_drift_bpm_per_hour,
+        load_value=metrics.load_value,
+        load_method=metrics.load_method,
+        load_confidence=metrics.load_confidence,
+        data_completeness=metrics.data_completeness,
+        ef_first_half=metrics.ef_first_half,
+        ef_second_half=metrics.ef_second_half,
+        aerobic_decoupling_pct=metrics.aerobic_decoupling_pct,
+        decoupling_confidence=metrics.decoupling_confidence,
+        analysis_version=metrics.analysis_version,
+    )
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

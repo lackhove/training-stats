@@ -8,8 +8,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
-from training_stats.api import build_app
-from training_stats.services import TrainingStatsService, create_service
+from training_stats.adapters.bootstrap import create_service
+from training_stats.adapters.http.api import build_app
+from training_stats.services.training import TrainingStatsService
 
 # Fixture activities anchored to "today" so overview windows match.
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)

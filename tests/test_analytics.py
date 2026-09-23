@@ -11,25 +11,25 @@ import pytest
 
 from tests.conftest import StubParser, make_app_config, make_record_frame, stub_activity_content
 from tests.test_repository import T0, build_repository, two_files
-from training_stats.analytics.activities import (
+from training_stats.domain.analytics.activities import (
     ActivityMetrics,
     activity_details,
     activity_summaries,
     compute_activity_metrics,
     data_quality,
 )
-from training_stats.analytics.daily import (
+from training_stats.domain.analytics.daily import (
     HARD_LOAD_THRESHOLD,
     DailySummaryRow,
     select_daily,
     summarize_daily,
 )
-from training_stats.analytics.weekly import (
+from training_stats.domain.analytics.weekly import (
     WeeklySummaryRow,
     aggregate_weekly,
     select_weekly,
 )
-from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
+from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
 
 # Columns summarize_daily and its selection helpers consume.
 ACTIVITY_FRAME_SCHEMA: dict[str, pl.DataType] = {
@@ -447,7 +447,7 @@ def _daily(date: str, load: float) -> DailySummaryRow:
 def test_stub_parser_roundtrip() -> None:
     """The conftest StubParser is deterministic."""
     parser = StubParser()
-    from training_stats.models import SourceFile
+    from training_stats.domain.models import SourceFile
 
     content = stub_activity_content(
         datetime(2026, 6, 1, 10, 0, tzinfo=UTC), "cycling", 600.0, 10000.0, [120] * 5

@@ -5,9 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from training_stats.config import WebDAVCredentials, WebDAVSourceConfig
-from training_stats.errors import AuthenticationError, RemoteFileError, SourceError
-from training_stats.sources.webdav import WebDAVSource
+from training_stats.adapters.config import WebDAVCredentials, WebDAVSourceConfig
+from training_stats.adapters.errors import AuthenticationError, RemoteFileError
+from training_stats.adapters.sources.webdav import WebDAVSource
+from training_stats.services.errors import SourceError
 
 BASE_URL = "https://cloud.example.com/remote.php/dav/files/alice/"
 
@@ -127,7 +128,7 @@ def test_successful_download() -> None:
 
 def test_client_reused_across_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     """PROPFIND + GET + a second listing share one httpx.Client."""
-    import training_stats.sources.webdav as webdav_module
+    import training_stats.adapters.sources.webdav as webdav_module
 
     created: list[int] = []
     real_client = httpx.Client

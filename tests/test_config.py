@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from training_stats.config import (
+from training_stats.adapters.config import (
     load_config,
     resolve_webdav_credentials,
 )
-from training_stats.errors import ConfigurationError
+from training_stats.adapters.errors import ConfigurationError
 
 VALID_LOCAL = """
 [athlete]
@@ -184,7 +184,7 @@ class TestSecrets:
     def test_credentials_repr_masks_values(self) -> None:
         from pydantic import SecretStr
 
-        from training_stats.config import WebDAVCredentials
+        from training_stats.adapters.config import WebDAVCredentials
 
         credentials = WebDAVCredentials(username=SecretStr("hunter2"), password=SecretStr("s3cret"))
         assert "hunter2" not in repr(credentials)

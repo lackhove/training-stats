@@ -18,15 +18,16 @@ from tests.conftest import (
     make_processor,
     stub_activity_content,
 )
-from training_stats.analytics.daily import summarize_daily
-from training_stats.analytics.weekly import daily_to_weekly
-from training_stats.cache import parquet, schemas
-from training_stats.cache.locking import acquire_app_lock
-from training_stats.cache.repository import ParquetTrainingRepository
-from training_stats.cache.sync import SyncService
-from training_stats.errors import CacheError, SourceError
-from training_stats.fit.types import ParsedFile
-from training_stats.models import SourceFile
+from training_stats.adapters.cache import parquet, schemas
+from training_stats.adapters.cache.locking import acquire_app_lock
+from training_stats.adapters.cache.repository import ParquetTrainingRepository
+from training_stats.adapters.errors import CacheError
+from training_stats.domain.analytics.daily import summarize_daily
+from training_stats.domain.analytics.weekly import daily_to_weekly
+from training_stats.domain.fit.types import ParsedFile
+from training_stats.domain.models import SourceFile
+from training_stats.services.errors import SourceError
+from training_stats.services.sync import SyncService
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 TZ = ZoneInfo("Europe/Berlin")
@@ -255,10 +256,8 @@ class TestIncrementalSync:
         service.sync()
         activities = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         row = activities.to_dicts()[0]
-        assert row["hr_histogram_json"] is not None
-        histogram = json.loads(str(row["hr_histogram_json"]))
-        assert histogram == {"130-134": 870.0}  # 29 intervals x 30 s cap
-        buckets = json.loads(str(row["hr_10min_json"]))
+        assert row["hr_histogram"] == [{"bin": "130-134", "seconds": 870.0}]
+        buckets = row["hr_10min_averages"]
         # 29 capped 30 s intervals split across three 10-min buckets.
         assert buckets == [
             {"start_min": 0, "avg_hr": 130.0, "hr_time_s": 300.0},
@@ -504,11 +503,8 @@ class TestSegmentSync:
         frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         # File-level flags live in their own column; the per-activity copy
         # may differ when a file splits into segments.
+        assert all(row["file_repair_flags"] == ["clock_corrected"] for row in frame.to_dicts())
         assert all(
-            json.loads(str(row["file_repair_flags_json"])) == ["clock_corrected"]
-            for row in frame.to_dicts()
-        )
-        assert all(
-            json.loads(str(row["repair_flags_json"])) == ["clock_corrected"]
+            row["repair_flags"] == ["clock_corrected"]
             for row in frame.filter(pl.col("start_time").is_not_null()).to_dicts()
         )

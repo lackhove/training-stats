@@ -8,16 +8,16 @@ import polars as pl
 import pytest
 
 from tests.conftest import FIXTURES
-from training_stats.analytics.endurance import (
+from training_stats.adapters.fit.parser import FitDecodeParser
+from training_stats.domain.analytics.endurance import (
     CONFIDENCE_HIGH,
     CONFIDENCE_INSUFFICIENT_COVERAGE,
     CONFIDENCE_INSUFFICIENT_DURATION,
     CONFIDENCE_INVALID_EF,
     compute_aerobic_decoupling,
 )
-from training_stats.fit.parser import FitDecodeParser
-from training_stats.fit.types import RECORD_SCHEMA
-from training_stats.models import SourceFile
+from training_stats.domain.fit.types import RECORD_SCHEMA
+from training_stats.domain.models import SourceFile
 
 START = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 

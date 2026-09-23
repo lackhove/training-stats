@@ -8,8 +8,8 @@ from pathlib import Path
 import polars as pl
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
-from training_stats.cache.repository import ParquetTrainingRepository
-from training_stats.cache.sync import SyncService
+from training_stats.adapters.cache.repository import ParquetTrainingRepository
+from training_stats.services.sync import SyncService
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 

@@ -10,22 +10,20 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from training_stats.config import (
+from training_stats.adapters.config import (
     AppConfig,
     ApplicationConfig,
-    AthleteConfig,
     CacheConfig,
-    HeartRateZonesConfig,
     LocalSourceConfig,
-    QualityConfig,
     ServerConfig,
 )
-from training_stats.errors import FitParseError, SourceError
-from training_stats.fit.parser import FitParser
-from training_stats.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
-from training_stats.ingest import FileProcessor
-from training_stats.models import SourceFile
-from training_stats.sources.base import ActivitySource
+from training_stats.domain.errors import FitParseError
+from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
+from training_stats.domain.models import SourceFile
+from training_stats.domain.settings import AthleteConfig, HeartRateZonesConfig, QualityConfig
+from training_stats.services.errors import SourceError
+from training_stats.services.ingest import FileProcessor
+from training_stats.services.ports import ActivitySource, FitParser
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

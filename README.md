@@ -209,7 +209,8 @@ network.
 ```text
 data/cache/
 ├── training_cache.parquet       # one row per accepted activity: session facts,
-│                                #   derived metrics and its source-index fields;
+│                                #   derived metrics (nested histogram/buckets)
+│                                #   and its source-index fields;
 │                                #   failed/duplicate source outcomes kept as
 │                                #   rows without activity data
 └── metadata.json                # last sync stamp
@@ -228,7 +229,7 @@ by `cache.sync_min_interval_seconds` (default 10 s, anchored at the
 unreachable WebDAV server) is logged and does not abort the remaining
 sources or the response, and a failed sync is never recorded as "recent".
 A full rebuild happens when the internal analysis version in
-`cache/schemas.py` invalidates derived data on metric semantics changes.
+`adapters/cache/schemas.py` invalidates derived data on metric semantics changes.
 
 ## Development
 

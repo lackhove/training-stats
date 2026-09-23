@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from tests.conftest import make_record_frame
-from training_stats.fit.repair import (
+from training_stats.domain.fit.repair import (
     RepairResult,
     moving_time_from_records,
     repair_timeline,

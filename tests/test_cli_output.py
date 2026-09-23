@@ -1,4 +1,4 @@
-"""Tests for the rich rendering layer (``training_stats.cli_output``)."""
+"""Tests for the Rich rendering adapter."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from rich.console import Console
 
-from training_stats.cli_output import (
+from training_stats.adapters.cli.output import (
     format_delta,
     format_distance,
     format_duration,
