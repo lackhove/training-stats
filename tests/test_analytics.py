@@ -72,10 +72,8 @@ def _parsed(
         max_hr=None,
         avg_speed_mps=None,
         max_speed_mps=None,
-        calories=None,
         records=records,
         source_path="x",
-        source_hash="h",
     )
 
 
@@ -176,10 +174,8 @@ class TestActivityMetrics:
             max_hr=130.0,
             avg_speed_mps=5.0,
             max_speed_mps=5.0,
-            calories=200.0,
             records=records,
             source_path="x",
-            source_hash="h",
         )
         metrics = compute_activity_metrics(activity, config.athlete, "1")
         assert metrics.decoupling_confidence == "high"
@@ -454,8 +450,8 @@ def test_stub_parser_roundtrip() -> None:
     )
     first = parser.parse(content, SourceFile(source_name="s", path="a.fit"))
     second = parser.parse(content, SourceFile(source_name="s", path="a.fit"))
-    assert first.activities[0].activity_id == second.activities[0].activity_id
-    assert first.activities[0].records.height == 5
+    assert first.frame.equals(second.frame)
+    assert first.frame.filter(pl.col("message_type") == "record").height > 5
 
 
 # -- cache queries: LazyFrame in, domain rows out ---------------------------

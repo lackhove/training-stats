@@ -1,15 +1,25 @@
 """Normalized FIT activity data and timeline repair rules."""
 
-from .repair import RepairResult, RepairSegment, repair_timeline
-from .types import RECORD_COLUMNS, RECORD_SCHEMA, ParsedActivity, ParsedFile, empty_records
+from .repair import repair_timeline
+from .types import (
+    RECORD_COLUMNS,
+    RECORD_SCHEMA,
+    FitData,
+    ParsedActivity,
+    PauseInterval,
+    TimerEvent,
+    empty_fit_data_frame,
+    empty_records,
+)
 
 __all__ = [
     "RECORD_COLUMNS",
     "RECORD_SCHEMA",
+    "FitData",
     "ParsedActivity",
-    "ParsedFile",
-    "RepairResult",
-    "RepairSegment",
+    "PauseInterval",
+    "TimerEvent",
+    "empty_fit_data_frame",
     "empty_records",
     "repair_timeline",
 ]

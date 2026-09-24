@@ -41,7 +41,7 @@ def create_service(config: AppConfig) -> TrainingStatsService:
             msg = f"unsupported source type: {type(source_config).__name__}"
             raise TrainingStatsError(msg)
 
-    parser: FitParser = FitDecodeParser(quality=config.quality)
+    parser: FitParser = FitDecodeParser()
     processor = FileProcessor(
         parser=parser,
         athlete=config.athlete,

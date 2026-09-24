@@ -72,7 +72,7 @@ Everything non-secret lives in a TOML file (see `config.example.toml`):
 
 The analysis version (see §10) is owned by the code, not the config: it is
 the reprocessing switch — when parsing or metric semantics change, the
-version is bumped and the next sync reprocesses every file (current: `"4"`).
+version is bumped and the next sync reprocesses every file (current: `"5"`).
 
 ---
 
@@ -93,83 +93,59 @@ version is bumped and the next sync reprocesses every file (current: `"4"`).
 
 ### 3.2 Why Cleaning Is Necessary
 
-Real device files exhibit three failure modes:
+The FIT adapter decodes normalized raw record samples, timer events, and
+sport/sub-sport metadata into a thin `FitData(frame)` wrapper. It ignores all
+session aggregate fields.
 
-1. **Clock corrections during recording** — e.g. a Sigma-style device with
-   an unsynced RTC records minutes/hours on a wrong clock (even a 2021
-   epoch) until GPS fixes the time mid-ride; `total_elapsed_time` then
-   includes the jump (observed: 82 h "rides").
-2. **Recording breaks / appended blips** — a device restarted days later
-   appends a seconds-long static blip to the same file; elapsed time spans
-   the gap (observed: 43 h gaps between a 12 s blip and the real ride).
-3. **Day-tour rides with long pauses** — multiple substantial legs separated
-   by gaps; these are legitimate multi-segment activities.
+### 3.3 Repair and segmentation (`domain/fit/repair.py`)
 
-### 3.3 The Repair Pipeline (`domain/fit/repair.py`)
+`FileProcessor` calls the pure repair function after parsing. Repair stably
+sorts record rows and splits the frame when adjacent record timestamps differ
+by **more than 15 minutes** (`activity_gap_threshold_s = 900`) or their
+cumulative distance readings differ by **more than 500 m**
+(`activity_distance_gap_threshold_m = 500`). Both thresholds are configurable.
+Repair returns a list of `FitData` wrappers, one per candidate segment, and
+does not alter timestamps. A pause under 15 minutes remains within a segment.
 
-The repair layer operates exclusively on the transient record frame
-(timestamp, heart_rate, distance_m, altitude_m, speed_mps).
+Analysis identifies pauses from FIT timer stop/start events; if timer events
+are unavailable, it uses record speed below `moving_speed_threshold_mps` as
+the fallback. Pauses remain part of elapsed duration but do not contribute to
+statistics. Analysis drops every segment with less than
+`minimum_segment_duration_s = 300` seconds of moving time, including when all
+segments are short. Such files are indexed as successful source-only outcomes
+and are not retried on every sync.
 
-1. **Sort & validate.** Records are stably sorted by timestamp. If the
-   original file order was not monotonic, the flag
-   `non_monotonic_timestamps` is set.
-2. **Discontinuity classification.** For every gap between consecutive
-   records (config: `record_gap_threshold_s = 120`, `clock_jump_min_gap_s = 3600`):
-   - *Gap ≥ 3600 s → clock-jump candidate.* The repair computes the
-     **moving time of the pre-gap records** (speed ≥ 1.0 m/s, capped at
-     30 s per interval). The shift is accepted when pre-gap movement is
-     negligible (`clock_shift_max_pre_moving_s = 60` s) — or unmeasurable
-     (no speed data, typical for pre-GPS static recordings). Accepted shifts
-     set `clock_corrected`.
-     Rationale: a static prefix is a device waiting for a GPS fix; a moving
-     prefix is a real ride leg. This distinguishes f957-style clock
-     corrections (correct) from cca0-style resume blips (rejected → split).
-   - *Gap ≥ 120 s (and < 3600 s, or a rejected shift) → recording break.*
-     The timeline splits into separate segments.
-3. **Shift mechanics.** Only the pre-jump records are shifted, by exactly
-   the jump offset, so the boundary becomes seamless and the merged
-   timeline is strictly continuous. Records after the correction keep
-   their (trusted) timestamps. The activity *start time* is the first
-   record of the repaired timeline — the true start.
-4. **Segmentation & discard.** Segments shorter than
-   `minimum_segment_duration_s = 600` (10 min) are **discarded** when at
-   least one longer segment exists in the same file; if all segments are
-   short, the longest is retained so a file is never completely lost.
-   Discards increment `discarded_segment_count` and set
-   `segments_discarded`. Each retained segment becomes its own
-   `ParsedActivity` (with `segment_index`/`segment_count`).
-5. **Forgotten stop (diagnostic).** An activity is flagged
-   `forgotten_stop` when duration > 86,400 s (24 h), or when moving
-   ratio < 0.20 for activities longer than 2 h. Flagged activities are
-   retained.
+The `forgotten_stop` diagnostic remains: an activity is flagged when duration
+exceeds 24 hours, or moving-time ratio is below the configured minimum for
+activities longer than two hours. Flagged activities are retained.
 
-**Repair/hygiene flags:** `clock_corrected`, `segments_discarded`,
-`non_monotonic_timestamps`, `forgotten_stop` — persisted per activity and
-per file, exposed in activity details and the data-quality resource.
+**Repair/hygiene flags:** `segments_discarded` and
+`non_monotonic_timestamps` are file-level; `forgotten_stop` is per activity.
+They are exposed in activity details and data-quality summaries.
 
-### 3.4 Session Header Re-derivation (per segment)
+### 3.4 Statistics (`domain/analytics/`)
 
-| Field | Rule |
-|---|---|
-| `start_time` | First record of the (repaired) segment timeline; falls back to session `start_time` only when no records exist |
-| `duration_s` | Record-timeline span; the session `total_elapsed_time` is kept **only when coherent** (`|elapsed − span| ≤ record_gap_threshold_s`), otherwise the span wins. Session-less files fall back to `total_timer_time` |
-| `moving_time_s` | Derived from record speeds (§4.2); falls back to session `total_moving_time` (allocated proportionally across segments), then to duration |
-| `paused_time_s` | `duration_s − moving_time_s` when both exist |
-| `distance_m` | Record distance delta (`last − first`); falls back to session `total_distance` (proportional per segment) |
-| `elevation_gain_m` | Session `total_ascent` (proportional per segment); records-derived gain as fallback |
-| `avg_hr` / `max_hr` | Per-segment record HR; single-segment files prefer session values with records fallback |
-| `avg_speed_mps` / `max_speed_mps` | Session weighted values (single segment); per-segment `distance/span` and record max for multi-segment |
-| `calories` | Session `total_calories`, allocated proportionally by segment span |
-| `sport` / `sub_sport` | From the session |
+All user-visible statistics are derived in the analysis module from repaired
+record samples and pause intervals. FIT session aggregates are not used as
+fallbacks. Start time is the first record timestamp; duration is the record
+span and therefore includes pauses. Moving time excludes pauses, and
+`paused_time_s = duration_s − moving_time_s`. Distance and elevation gain are
+derived from active record intervals. Sport and sub-sport come from raw
+session metadata.
 
-### 3.5 Moving Time from Records
+Time-weighted averages, HR zones, histograms, HR buckets, load, aerobic
+decoupling, and maxima use active intervals/samples only. HR time buckets use
+an active-time axis, so pauses do not shift later active samples into later
+statistical windows. The 30-second per-record interval cap guards against
+sparse samples.
 
-Intervals between consecutive records are assigned to their **starting**
-record. An interval counts when the starting record's speed ≥
-`moving_speed_threshold_mps` (1.0 m/s) and contributes
-`min(dt, 30 s)`. When fewer than 50% of intervals carry a speed reading,
-the derivation is rejected (fallback chain above). This is what makes a
-static pre-ride prefix show up as *paused* instead of *moving* time.
+### 3.5 Active Time from Records
+
+When timer events are present, their stop/start pairs define pause intervals.
+Otherwise, speed readings classify intervals below
+`moving_speed_threshold_mps` as paused when at least half of intervals have a
+speed reading. If neither source provides pause evidence, the segment is
+treated as active for its full record span.
 
 ### 3.6 Activity Identity and Duplicates
 
@@ -213,7 +189,7 @@ down) is reported in `source_errors` without aborting other sources.
 
 | File | Content |
 |---|---|
-| `training_cache.parquet` | One row per accepted activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, calories, segment fields, repair flags, derived metrics (§5), and source-index fields (hashes, size/mtime, per-file repair flags, status). Histograms, HR buckets, and flags use native nested Parquet values. Failed reads and duplicate activity ids are retained as rows without activity data (null `start_time`) |
+| `training_cache.parquet` | One row per accepted activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, segment fields, repair flags, derived metrics (§5), and source-index fields (hashes, size/mtime, per-file repair flags, status). Histograms, HR buckets, and flags use native nested Parquet values. Failed reads, duplicates, and files with no retained segments are source-only rows (null `start_time`) |
 | `metadata.json` | last sync time |
 
 Daily and weekly summaries and the training-form curve are **not stored**:
@@ -298,15 +274,15 @@ Quality gates (clean `None` + confidence on failure):
 | Minimum moving time with HR | ≥ 1200 s (`decoupling_min_duration_s`) |
 | HR coverage of moving time | ≥ 0.80 (`decoupling_min_coverage`) |
 | Moving intervals | speed ≥ 1.0 m/s, interval ≤ 30 s, same segment |
-| Moving-time basis | `max(session moving time, records-derived moving time)` |
+| Moving-time basis | Records and pause intervals only |
 
 Confidence values: `high`, `insufficient_duration`, `insufficient_coverage`,
 `invalid_ef`.
 
 ### 5.8 Data Completeness
 
-`data_completeness` = fraction of 8 key fields present: duration, moving
-time, distance, elevation gain, avg HR, max HR, avg speed, calories.
+`data_completeness` = fraction of 7 key fields present: duration, moving
+time, distance, elevation gain, avg HR, max HR, and avg speed.
 
 ---
 

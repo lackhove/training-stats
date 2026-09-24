@@ -7,7 +7,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ..domain.frames import STATUS_FAILED
+from ..domain.frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
 from ..domain.models import SourceFile
 from .errors import SourceError
 from .ports import ActivitySource, SyncRepository
@@ -82,7 +82,7 @@ class SyncService:
                 kept_index.extend(outcome.index_rows)
                 for activity in outcome.activities:
                     state.activities[activity.activity_id] = activity
-                if outcome.activities or outcome.duplicates:
+                if any(row.status in {STATUS_OK, STATUS_DUPLICATE} for row in outcome.index_rows):
                     processed += 1
                 else:
                     failed += 1

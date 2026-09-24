@@ -44,7 +44,6 @@ class ActivityRecord:
     max_hr: float | None
     avg_speed_mps: float | None
     max_speed_mps: float | None
-    calories: float | None
     segment_index: int
     segment_count: int
     repair_flags: tuple[str, ...]

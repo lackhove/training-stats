@@ -37,7 +37,7 @@ from .heart_rate import (
 )
 from .load import LOAD_METHOD, LOAD_VERSION, hr_trimp_load, load_confidence
 
-_COMPLETENESS_FIELDS = 8
+_COMPLETENESS_FIELDS = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +81,10 @@ def compute_activity_metrics(
 ) -> ActivityMetrics:
     """Compute zones, load and data-quality metrics for one activity."""
     zones = build_zone_bounds(athlete.heart_rate_zones.as_bounds())
-    zone_result: ZoneResult = time_in_zones(activity.records, zones)
-    buckets = hr_bucket_averages(activity.records)
+    zone_result: ZoneResult = time_in_zones(
+        activity.records, zones, pause_intervals=activity.pause_intervals
+    )
+    buckets = hr_bucket_averages(activity.records, pause_intervals=activity.pause_intervals)
     load_value = hr_trimp_load(
         zone_result, zones, max_hr=athlete.max_heart_rate, resting_hr=athlete.resting_heart_rate
     )
@@ -93,6 +95,7 @@ def compute_activity_metrics(
         min_duration_s=effective_quality.decoupling_min_duration_s,
         min_coverage=effective_quality.decoupling_min_coverage,
         session_moving_time_s=activity.moving_time_s,
+        pause_intervals=activity.pause_intervals,
     )
     return ActivityMetrics(
         activity_id=activity.activity_id,
@@ -102,7 +105,7 @@ def compute_activity_metrics(
         hr_zone_4_s=zone_result.zone_seconds[3],
         hr_zone_5_s=zone_result.zone_seconds[4],
         hr_coverage_ratio=zone_result.hr_coverage_ratio,
-        hr_histogram_s=hr_histogram(activity.records),
+        hr_histogram_s=hr_histogram(activity.records, pause_intervals=activity.pause_intervals),
         hr_10min_averages=tuple(buckets),
         hr_drift_bpm_per_hour=hr_drift_bpm_per_hour(buckets),
         load_value=load_value,
@@ -130,7 +133,6 @@ def _completeness(activity: ParsedActivity) -> float:
             activity.avg_hr is not None,
             activity.max_hr is not None,
             activity.avg_speed_mps is not None,
-            activity.calories is not None,
         ]
     )
     return present / _COMPLETENESS_FIELDS
@@ -150,7 +152,6 @@ _SUMMARY_COLUMNS: tuple[str, ...] = (
     "elevation_gain_m",
     "avg_hr",
     "max_hr",
-    "calories",
     "load_value",
 )
 
@@ -245,7 +246,6 @@ def _summary_row(row: dict[str, object], tz: tzinfo) -> ActivitySummary:
         elevation_gain_m=optional_float(row.get("elevation_gain_m")),
         avg_hr=optional_float(row.get("avg_hr")),
         max_hr=optional_float(row.get("max_hr")),
-        calories=optional_float(row.get("calories")),
         load_value=optional_float(row.get("load_value")),
         moving_time_s=optional_float(row.get("moving_time_s")),
         local_start_time=start_time.astimezone(tz).isoformat(),
@@ -267,7 +267,6 @@ def _details_row(row: dict[str, object], tz: tzinfo) -> ActivityDetails:
         max_hr=summary.max_hr,
         avg_speed_mps=optional_float(row.get("avg_speed_mps")),
         max_speed_mps=optional_float(row.get("max_speed_mps")),
-        calories=summary.calories,
         hr_zone_1_s=_float(row.get("hr_zone_1_s")),
         hr_zone_2_s=_float(row.get("hr_zone_2_s")),
         hr_zone_3_s=_float(row.get("hr_zone_3_s")),

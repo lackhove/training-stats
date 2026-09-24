@@ -7,6 +7,9 @@ from datetime import datetime
 
 import polars as pl
 
+from ..fit.types import PauseInterval
+from .intervals import interval_frame, merge_pause_intervals, overlap_seconds
+
 # Intervals longer than this are capped to avoid over-counting time-in-zone
 # when a device pauses recording or produces sparse smart recordings.
 MAX_RECORD_INTERVAL_S = 30.0
@@ -75,43 +78,19 @@ def _zone_expression(zones: list[ZoneBounds]) -> pl.Expr:
     return pl.coalesce(matchers)
 
 
-def _interval_frame(records: pl.DataFrame, max_interval_s: float) -> pl.DataFrame:
-    """Per-interval time weights shared by zones, histogram and buckets.
-
-    Each interval belongs to its *starting* record: the row carries that
-    record's timestamp and heart rate, and ``counted_s`` is the time until the
-    next record, capped at ``max_interval_s``. Non-positive intervals collapse
-    to zero; rows without heart rate are dropped.
-    """
-    return records.select(
-        pl.col("timestamp"),
-        pl.col("heart_rate"),
-        _interval_seconds().clip(0.0, max_interval_s).alias("counted_s"),
-    ).filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
-
-
-def _interval_seconds() -> pl.Expr:
-    """Seconds to the *next* record; ``None`` on the last row.
-
-    The interval belongs to its starting record so that the row's heart rate
-    is the interval's zone-defining sample.
-    """
-    return (
-        pl.col("timestamp").shift(-1) - pl.col("timestamp")
-    ).dt.total_microseconds() / 1_000_000.0
-
-
 def time_in_zones(
     records: pl.DataFrame,
     zones: list[ZoneBounds],
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
+    *,
+    pause_intervals: tuple[PauseInterval, ...] = (),
 ) -> ZoneResult:
-    """Compute elapsed time per heart-rate zone from record samples.
+    """Compute moving time per heart-rate zone from record samples.
 
     Each interval between consecutive timestamped records contributes
     ``min(dt, max_interval_s)`` seconds when the interval's starting record has
-    a plausible heart-rate value. ``hr_coverage_ratio`` is the share of the
-    sampled time span with HR data.
+    a plausible heart-rate value. Paused time is excluded from zone time and
+    the coverage denominator.
 
     ``records`` follows :data:`training_stats.domain.fit.types.RECORD_SCHEMA` and
     is never mutated.
@@ -123,23 +102,26 @@ def time_in_zones(
     first, last = timestamps.min(), timestamps.max()
     if not isinstance(first, datetime) or not isinstance(last, datetime):
         return _empty_zone_result()
-    span_s = (last - first).total_seconds()
+    merged_pauses = merge_pause_intervals(pause_intervals, first, last)
+    span_s = (last - first).total_seconds() - overlap_seconds(first, last, merged_pauses)
     if span_s <= 0:
         return _empty_zone_result()
 
-    intervals = _interval_frame(records, max_interval_s)
-    valid_hr_time_s = _sum_column(intervals, "counted_s")
+    intervals = interval_frame(records, merged_pauses, max_interval_s=max_interval_s).filter(
+        pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0)
+    )
+    valid_hr_time_s = _sum_column(intervals, "active_s")
 
     zone_seconds = [0.0, 0.0, 0.0, 0.0, 0.0]
     with_zone = intervals.select(
-        pl.col("counted_s"),
+        pl.col("active_s"),
         _zone_expression(zones).alias("zone"),
     ).filter(pl.col("zone").is_not_null())
-    per_zone = with_zone.group_by("zone").agg(pl.col("counted_s").sum()).sort("zone")
+    per_zone = with_zone.group_by("zone").agg(pl.col("active_s").sum()).sort("zone")
     for row in per_zone.iter_rows(named=True):
         index = int(row["zone"]) - 1
         if 0 <= index < 5:
-            zone_seconds[index] = _as_float(row["counted_s"])
+            zone_seconds[index] = _as_float(row["active_s"])
 
     coverage = valid_hr_time_s / span_s
     return ZoneResult(
@@ -153,6 +135,8 @@ def hr_histogram(
     records: pl.DataFrame,
     bin_bpm: int = 5,
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
+    *,
+    pause_intervals: tuple[PauseInterval, ...] = (),
 ) -> dict[str, float]:
     """Time-weighted histogram of heart-rate samples in ``bin_bpm``-wide bins.
 
@@ -164,14 +148,16 @@ def hr_histogram(
         return {}
 
     heart_rate = pl.col("heart_rate")
-    intervals = _interval_frame(records, max_interval_s).with_columns(
-        ((heart_rate // bin_bpm) * bin_bpm).alias("bin_start")
+    intervals = (
+        interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+        .filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
+        .with_columns(((heart_rate // bin_bpm) * bin_bpm).alias("bin_start"))
     )
-    per_bin = intervals.group_by("bin_start").agg(pl.col("counted_s").sum()).sort("bin_start")
+    per_bin = intervals.group_by("bin_start").agg(pl.col("active_s").sum()).sort("bin_start")
     histogram: dict[str, float] = {}
     for row in per_bin.iter_rows(named=True):
         low = int(row["bin_start"])
-        seconds = _as_float(row["counted_s"])
+        seconds = _as_float(row["active_s"])
         if seconds > 0:
             histogram[f"{low}-{low + bin_bpm - 1}"] = seconds
     return histogram
@@ -181,6 +167,8 @@ def hr_bucket_averages(
     records: pl.DataFrame,
     bucket_s: float = HR_BUCKET_S,
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
+    *,
+    pause_intervals: tuple[PauseInterval, ...] = (),
 ) -> list[HrBucketAvg]:
     """Time-weighted heart-rate averages per ``bucket_s`` window.
 
@@ -192,20 +180,16 @@ def hr_bucket_averages(
     if records.height < 2 or bucket_s <= 0:
         return []
 
-    first = records["timestamp"].min()
-    if not isinstance(first, datetime):
-        return []
-
-    intervals = _interval_frame(records, max_interval_s).with_columns(
-        ((pl.col("timestamp") - pl.lit(first)).dt.total_microseconds() / 1_000_000.0 // bucket_s)
-        .cast(pl.UInt32)
-        .alias("bucket")
+    intervals = (
+        interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+        .filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
+        .with_columns((pl.col("active_elapsed_s") // bucket_s).cast(pl.UInt32).alias("bucket"))
     )
     per_bucket = (
         intervals.group_by("bucket")
         .agg(
-            pl.col("counted_s").sum().alias("hr_time_s"),
-            (pl.col("counted_s") * pl.col("heart_rate")).sum().alias("hr_weighted"),
+            pl.col("active_s").sum().alias("hr_time_s"),
+            (pl.col("active_s") * pl.col("heart_rate")).sum().alias("hr_weighted"),
         )
         .sort("bucket")
     )

@@ -6,8 +6,10 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from ..domain.analytics.activities import AnalyzedActivity, compute_activity_metrics
+from ..domain.analytics.activities import AnalyzedActivity
+from ..domain.analytics.segments import analyze_segments
 from ..domain.errors import FitParseError
+from ..domain.fit.repair import repair_timeline
 from ..domain.frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
 from ..domain.models import SourceFile
 from ..domain.settings import AthleteConfig, QualityConfig
@@ -54,7 +56,7 @@ class FileProcessor:
     ) -> Outcome:
         """Analyze ``content``; update ``existing_ids`` with accepted ids."""
         try:
-            parsed_file = self.parser.parse(content, source_file)
+            fit_data = self.parser.parse(content, source_file)
         except FitParseError as exc:
             logger.error("cannot parse %s/%s: %s", source_file.source_name, source_file.path, exc)
             return Outcome(
@@ -74,16 +76,34 @@ class FileProcessor:
                 discarded_segments=0,
             )
 
+        raw_records = fit_data.frame.filter(fit_data.frame["message_type"] == "record").select(
+            "timestamp"
+        )
+        repair_flags = (
+            ["non_monotonic_timestamps"]
+            if not raw_records.is_empty() and not raw_records["timestamp"].is_sorted()
+            else []
+        )
+        repaired_segments = repair_timeline(
+            fit_data,
+            gap_threshold_s=self.quality.activity_gap_threshold_s,
+            distance_gap_threshold_m=self.quality.activity_distance_gap_threshold_m,
+        )
+        analysis = analyze_segments(
+            repaired_segments,
+            source_path=source_file.path,
+            athlete=self.athlete,
+            analysis_version=self.analysis_version,
+            quality=self.quality,
+        )
+        if analysis.discarded_segment_count:
+            repair_flags.append("segments_discarded")
+
         index_rows: list[SourceIndexEntry] = []
         activities: list[ActivityRecord] = []
         duplicates = 0
-        for activity in parsed_file.activities:
-            analyzed = AnalyzedActivity(
-                activity=activity,
-                metrics=compute_activity_metrics(
-                    activity, self.athlete, self.analysis_version, self.quality
-                ),
-            )
+        for analyzed in analysis.activities:
+            activity = analyzed.activity
             if activity.activity_id in existing_ids:
                 index_rows.append(
                     _source_entry(
@@ -94,8 +114,8 @@ class FileProcessor:
                         activity_id=activity.activity_id,
                         segment_index=activity.segment_index,
                         segment_count=activity.segment_count,
-                        file_repair_flags=parsed_file.repair_flags,
-                        discarded_segment_count=parsed_file.discarded_segment_count,
+                        file_repair_flags=tuple(repair_flags),
+                        discarded_segment_count=analysis.discarded_segment_count,
                         status=STATUS_DUPLICATE,
                         error_message="duplicate activity id",
                     )
@@ -119,19 +139,32 @@ class FileProcessor:
                     activity_id=activity.activity_id,
                     segment_index=activity.segment_index,
                     segment_count=activity.segment_count,
-                    file_repair_flags=parsed_file.repair_flags,
-                    discarded_segment_count=parsed_file.discarded_segment_count,
+                    file_repair_flags=tuple(repair_flags),
+                    discarded_segment_count=analysis.discarded_segment_count,
                     status=STATUS_OK,
                 )
             )
             activities.append(_activity_record(analyzed, source_file.source_name))
 
+        if not index_rows:
+            index_rows.append(
+                _source_entry(
+                    source_file=source_file,
+                    source_hash=file_hash,
+                    processed_at=processed_at,
+                    analysis_version=self.analysis_version,
+                    status=STATUS_OK,
+                    file_repair_flags=tuple(repair_flags),
+                    discarded_segment_count=analysis.discarded_segment_count,
+                )
+            )
+
         return Outcome(
             index_rows=index_rows,
             activities=activities,
             duplicates=duplicates,
-            repaired=bool(parsed_file.repair_flags),
-            discarded_segments=parsed_file.discarded_segment_count,
+            repaired=bool(repair_flags),
+            discarded_segments=analysis.discarded_segment_count,
         )
 
 
@@ -184,7 +217,6 @@ def _activity_record(item: AnalyzedActivity, source_name: str) -> ActivityRecord
         max_hr=activity.max_hr,
         avg_speed_mps=activity.avg_speed_mps,
         max_speed_mps=activity.max_speed_mps,
-        calories=activity.calories,
         segment_index=activity.segment_index,
         segment_count=activity.segment_count,
         repair_flags=activity.repair_flags,

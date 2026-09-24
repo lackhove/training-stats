@@ -44,6 +44,9 @@ z5_max = 180
 
 [quality]
 moving_speed_threshold_mps = 1.0
+activity_gap_threshold_s = 900.0
+activity_distance_gap_threshold_m = 500.0
+minimum_segment_duration_s = 300.0
 decoupling_min_duration_s = 1200.0
 decoupling_min_coverage = 0.80
 

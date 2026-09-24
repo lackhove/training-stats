@@ -43,7 +43,6 @@ class ActivitySummary:
     elevation_gain_m: float | None
     avg_hr: float | None
     max_hr: float | None
-    calories: float | None
     load_value: float | None
     moving_time_s: float | None = None
     local_start_time: str = ""
@@ -65,7 +64,6 @@ class ActivityDetails:
     max_hr: float | None
     avg_speed_mps: float | None
     max_speed_mps: float | None
-    calories: float | None
     hr_zone_1_s: float
     hr_zone_2_s: float
     hr_zone_3_s: float

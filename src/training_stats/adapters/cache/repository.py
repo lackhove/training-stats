@@ -140,7 +140,6 @@ def _activity_record_from_row(row: dict[str, object]) -> ActivityRecord:
         max_hr=_optional_float(row.get("max_hr")),
         avg_speed_mps=_optional_float(row.get("avg_speed_mps")),
         max_speed_mps=_optional_float(row.get("max_speed_mps")),
-        calories=_optional_float(row.get("calories")),
         segment_index=_int(row.get("segment_index")),
         segment_count=_int(row.get("segment_count")),
         repair_flags=_string_tuple(row.get("repair_flags")),

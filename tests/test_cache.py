@@ -24,7 +24,6 @@ from training_stats.adapters.cache.repository import ParquetTrainingRepository
 from training_stats.adapters.errors import CacheError
 from training_stats.domain.analytics.daily import summarize_daily
 from training_stats.domain.analytics.weekly import daily_to_weekly
-from training_stats.domain.fit.types import ParsedFile
 from training_stats.domain.models import SourceFile
 from training_stats.services.errors import SourceError
 from training_stats.services.sync import SyncService
@@ -256,13 +255,13 @@ class TestIncrementalSync:
         service.sync()
         activities = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         row = activities.to_dicts()[0]
-        assert row["hr_histogram"] == [{"bin": "130-134", "seconds": 870.0}]
+        assert row["hr_histogram"] == [{"bin": "130-134", "seconds": 1800.0}]
         buckets = row["hr_10min_averages"]
-        # 29 capped 30 s intervals split across three 10-min buckets.
+        # Each active ten-minute bucket accumulates its record intervals.
         assert buckets == [
-            {"start_min": 0, "avg_hr": 130.0, "hr_time_s": 300.0},
-            {"start_min": 10, "avg_hr": 130.0, "hr_time_s": 300.0},
-            {"start_min": 20, "avg_hr": 130.0, "hr_time_s": 270.0},
+            {"start_min": 0, "avg_hr": 130.0, "hr_time_s": 600.0},
+            {"start_min": 10, "avg_hr": 130.0, "hr_time_s": 600.0},
+            {"start_min": 20, "avg_hr": 130.0, "hr_time_s": 600.0},
         ]
         assert row["hr_drift_bpm_per_hour"] is not None
         assert abs(float(row["hr_drift_bpm_per_hour"])) < 1e-9  # constant HR
@@ -475,24 +474,15 @@ class TestSegmentSync:
         assert [row.activity_count for row in weekly] == [1]
 
     def test_repair_counters_in_sync_result(self, tmp_path: Path) -> None:
-        from dataclasses import replace
-
-        class FlagParser(StubParser):
-            def parse(self, content: bytes, source_file: SourceFile) -> ParsedFile:
-                parsed = super().parse(content, source_file)
-                flagged = tuple(
-                    replace(activity, repair_flags=("clock_corrected",))
-                    for activity in parsed.activities
-                )
-                return replace(parsed, activities=flagged, repair_flags=("clock_corrected",))
-
-        source = StubSource(files={"ride.fit": self._two_segments()})
+        short = stub_activity_content(T0, "cycling", 120.0, 1000.0)
+        long = stub_activity_content(T0 + timedelta(hours=2), "cycling", 1200.0, 8000.0)
+        source = StubSource(files={"ride.fit": short + b"\n" + long})
         cache_dir = tmp_path / "cache"
         config = make_app_config(cache_dir, tmp_path / "src")
         service = SyncService(
             sources=[source],
             processor=make_processor(
-                athlete=config.athlete, analysis_version="1", parser=FlagParser()
+                athlete=config.athlete, analysis_version="1", parser=StubParser()
             ),
             repository=ParquetTrainingRepository(cache_dir=cache_dir),
             analysis_version="1",
@@ -503,8 +493,23 @@ class TestSegmentSync:
         frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
         # File-level flags live in their own column; the per-activity copy
         # may differ when a file splits into segments.
-        assert all(row["file_repair_flags"] == ["clock_corrected"] for row in frame.to_dicts())
-        assert all(
-            row["repair_flags"] == ["clock_corrected"]
-            for row in frame.filter(pl.col("start_time").is_not_null()).to_dicts()
-        )
+        assert all(row["file_repair_flags"] == ["segments_discarded"] for row in frame.to_dicts())
+        assert frame["discarded_segment_count"].to_list() == [1]
+        assert frame.filter(pl.col("start_time").is_not_null())["repair_flags"].to_list() == [[]]
+
+    def test_all_short_segments_are_successfully_indexed(self, tmp_path: Path) -> None:
+        content = stub_activity_content(T0, "cycling", 120.0, 1000.0)
+        service, _source, cache_dir = make_sync(tmp_path, {"short.fit": content})
+
+        first = service.sync()
+        frame = parquet.read_parquet(cache_dir / schemas.CACHE_FILE)
+        assert first.files_processed == 1
+        assert first.files_failed == 0
+        assert frame.height == 1
+        assert frame["status"].to_list() == ["ok"]
+        assert frame["start_time"].null_count() == 1
+        assert frame["discarded_segment_count"].to_list() == [1]
+
+        second = service.sync()
+        assert second.files_skipped == 1
+        assert second.files_failed == 0

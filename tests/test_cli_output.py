@@ -40,7 +40,6 @@ def _summary(**overrides: object) -> dict[str, object]:
         "elevation_gain_m": 229.0,
         "avg_hr": 125.0,
         "max_hr": 142.0,
-        "calories": 512.0,
         "load_value": 109.0,
     }
     base.update(overrides)
@@ -71,8 +70,8 @@ def _details(**overrides: object) -> dict[str, object]:
         },
         load={"value": 109.0, "method": "hr_trimp", "confidence": "high"},
         data_completeness=1.0,
-        analysis_version="4:1",
-        data_hygiene_flags=["clock_shift_repaired"],
+        analysis_version="5:1",
+        data_hygiene_flags=["segments_discarded"],
         source={"name": "local", "path": "cycling.fit"},
     )
     base.update(overrides)
@@ -225,7 +224,7 @@ class TestShowRendering:
         assert "10-minute averages" in out
         assert "hr_trimp" in out
         assert "Decoupling" in out
-        assert "clock_shift_repaired" in out
+        assert "segments_discarded" in out
         assert "local: cycling.fit" in out
 
     def test_optional_sections_absent(self) -> None:

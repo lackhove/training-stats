@@ -325,7 +325,6 @@ def render_show(payload: object, console: Console) -> None:
                     ("Max HR", format_number(_opt_float(details.get("max_hr")), unit=" bpm")),
                     ("Avg speed", format_speed_kmh(_opt_float(details.get("avg_speed_mps")))),
                     ("Max speed", format_speed_kmh(_opt_float(details.get("max_speed_mps")))),
-                    ("Calories", format_number(_opt_float(details.get("calories")), unit=" kcal")),
                 ]
             ),
         )

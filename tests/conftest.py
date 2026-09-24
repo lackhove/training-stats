@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 
 import polars as pl
@@ -18,7 +19,7 @@ from training_stats.adapters.config import (
     ServerConfig,
 )
 from training_stats.domain.errors import FitParseError
-from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, ParsedFile
+from training_stats.domain.fit.types import RECORD_SCHEMA, FitData
 from training_stats.domain.models import SourceFile
 from training_stats.domain.settings import AthleteConfig, HeartRateZonesConfig, QualityConfig
 from training_stats.services.errors import SourceError
@@ -142,7 +143,7 @@ class StubParser:
     lines in the content produce one segment activity per line.
     """
 
-    def parse(self, content: bytes, source_file: SourceFile) -> ParsedFile:
+    def parse(self, content: bytes, source_file: SourceFile) -> FitData:
         try:
             lines = [line for line in content.decode("utf-8").splitlines() if line.strip()]
         except UnicodeDecodeError as exc:
@@ -151,55 +152,58 @@ class StubParser:
         if not lines:
             msg = f"invalid stub content in {source_file.path}"
             raise FitParseError(msg)
-        segment_count = len(lines)
-        activities = tuple(
-            self._parse_line(line, index, segment_count, source_file)
-            for index, line in enumerate(lines)
-        )
-        return ParsedFile(activities=activities, repair_flags=(), discarded_segment_count=0)
+        rows: list[dict[str, object]] = []
+        for line in lines:
+            rows.extend(self._parse_line(line, source_file))
+        return FitData(frame=pl.DataFrame(rows, schema=FitData.SCHEMA))
 
-    def _parse_line(
-        self, text: str, segment_index: int, segment_count: int, source_file: SourceFile
-    ) -> ParsedActivity:
+    @staticmethod
+    def _parse_line(text: str, source_file: SourceFile) -> list[dict[str, object]]:
         try:
             head, _, hr_part = text.partition(",")
             start_raw, sport, duration_raw, distance_raw = head.split("|")
             start = datetime.fromisoformat(start_raw)
             duration = float(duration_raw)
+            distance = float(distance_raw)
+            heart_rates = [int(value) for value in hr_part.split(";")] if hr_part else []
         except ValueError as exc:
             msg = f"invalid stub content in {source_file.path}"
             raise FitParseError(msg) from exc
-        records: pl.DataFrame = pl.DataFrame(schema=RECORD_SCHEMA)
-        if hr_part:
-            heart_rates = [int(value) for value in hr_part.split(";")]
-            records = make_record_frame(start, heart_rates)
-        return ParsedActivity(
-            activity_id=self._activity_id(start, sport),
-            start_time=start,
-            sport=sport,
-            sub_sport=None,
-            duration_s=duration,
-            moving_time_s=duration,
-            distance_m=float(distance_raw),
-            elevation_gain_m=None,
-            avg_hr=None,
-            max_hr=None,
-            avg_speed_mps=None,
-            max_speed_mps=None,
-            calories=None,
-            records=records,
-            source_path=source_file.path,
-            source_hash="",
-            segment_index=segment_index,
-            segment_count=segment_count,
-        )
 
-    @staticmethod
-    def _activity_id(start: datetime, sport: str) -> str:
-        import hashlib
-
-        key = f"{start.isoformat()}|{sport}"
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        intervals = max(1, ceil(duration / 30), ceil(distance / 500))
+        intervals = max(intervals, len(heart_rates) - 1)
+        rows: list[dict[str, object]] = [
+            {
+                "message_type": "session",
+                "timestamp": None,
+                "heart_rate": None,
+                "distance_m": None,
+                "altitude_m": None,
+                "speed_mps": None,
+                "sport": sport,
+                "sub_sport": None,
+                "event": None,
+                "event_type": None,
+            }
+        ]
+        for index in range(intervals + 1):
+            hr_index = min(index * len(heart_rates) // (intervals + 1), len(heart_rates) - 1)
+            heart_rate = heart_rates[hr_index] if heart_rates else None
+            rows.append(
+                {
+                    "message_type": "record",
+                    "timestamp": start + timedelta(seconds=duration * index / intervals),
+                    "heart_rate": heart_rate,
+                    "distance_m": distance * index / intervals,
+                    "altitude_m": None,
+                    "speed_mps": 5.0,
+                    "sport": None,
+                    "sub_sport": None,
+                    "event": None,
+                    "event_type": None,
+                }
+            )
+        return rows
 
 
 def stub_activity_content(

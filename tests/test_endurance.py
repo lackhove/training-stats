@@ -16,7 +16,7 @@ from training_stats.domain.analytics.endurance import (
     CONFIDENCE_INVALID_EF,
     compute_aerobic_decoupling,
 )
-from training_stats.domain.fit.types import RECORD_SCHEMA
+from training_stats.domain.fit.types import RECORD_COLUMNS, RECORD_SCHEMA
 from training_stats.domain.models import SourceFile
 
 START = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
@@ -167,11 +167,14 @@ class TestAerobicDecoupling:
     def test_real_cycling_fixture(self) -> None:
         parser = FitDecodeParser()
         content = (FIXTURES / "cycling.fit").read_bytes()
-        activity = parser.parse(content, SourceFile("test", "cycling.fit")).activities[0]
-
-        result = compute_aerobic_decoupling(
-            activity.records, session_moving_time_s=activity.moving_time_s
+        decoded = parser.parse(content, SourceFile("test", "cycling.fit"))
+        records = (
+            decoded.frame.filter(pl.col("message_type") == "record")
+            .select(RECORD_COLUMNS)
+            .cast(pl.Schema(RECORD_SCHEMA))
         )
+
+        result = compute_aerobic_decoupling(records)
         assert result.confidence == CONFIDENCE_HIGH
         assert result.ef_first_half is not None
         assert result.ef_second_half is not None
@@ -184,11 +187,14 @@ class TestAerobicDecoupling:
     def test_real_activity_2_fixture(self) -> None:
         parser = FitDecodeParser()
         content = (FIXTURES / "activity_2.fit").read_bytes()
-        activity = parser.parse(content, SourceFile("test", "activity_2.fit")).activities[0]
-
-        result = compute_aerobic_decoupling(
-            activity.records, session_moving_time_s=activity.moving_time_s
+        decoded = parser.parse(content, SourceFile("test", "activity_2.fit"))
+        records = (
+            decoded.frame.filter(pl.col("message_type") == "record")
+            .select(RECORD_COLUMNS)
+            .cast(pl.Schema(RECORD_SCHEMA))
         )
+
+        result = compute_aerobic_decoupling(records)
         assert result.confidence == CONFIDENCE_HIGH
         assert result.ef_first_half is not None
         assert result.ef_second_half is not None

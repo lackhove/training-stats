@@ -74,6 +74,9 @@ class TestValidConfigs:
         assert config.server.host == "127.0.0.1"
         assert config.server.port == 8000
         assert config.quality.moving_speed_threshold_mps == 1.0
+        assert config.quality.activity_gap_threshold_s == 900.0
+        assert config.quality.activity_distance_gap_threshold_m == 500.0
+        assert config.quality.minimum_segment_duration_s == 300.0
         assert config.quality.decoupling_min_duration_s == 1200.0
         assert config.quality.decoupling_min_coverage == 0.80
 
@@ -83,12 +86,18 @@ class TestValidConfigs:
             + """
 [quality]
 moving_speed_threshold_mps = 1.5
+activity_gap_threshold_s = 1200.0
+activity_distance_gap_threshold_m = 750.0
+minimum_segment_duration_s = 360.0
 decoupling_min_duration_s = 600.0
 decoupling_min_coverage = 0.70
 """
         )
         config = load_config(_write_config(tmp_path, content))
         assert config.quality.moving_speed_threshold_mps == 1.5
+        assert config.quality.activity_gap_threshold_s == 1200.0
+        assert config.quality.activity_distance_gap_threshold_m == 750.0
+        assert config.quality.minimum_segment_duration_s == 360.0
         assert config.quality.decoupling_min_duration_s == 600.0
         assert config.quality.decoupling_min_coverage == 0.70
 

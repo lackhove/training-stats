@@ -25,7 +25,7 @@ ANALYSIS_VERSION = "analysis_version"
 # Cache-invalidation key for derived analytics, owned by the code: bump it
 # whenever parsing or metric semantics change so the next sync reprocesses
 # every file (hash-based change detection alone would serve stale rows).
-ANALYSIS_VERSION_VALUE = "4"
+ANALYSIS_VERSION_VALUE = "5"
 PROCESSED_AT = "processed_at"
 # The source-index copy of the analysis version drives incremental change
 # detection; the activity-level one records which code produced the metrics.

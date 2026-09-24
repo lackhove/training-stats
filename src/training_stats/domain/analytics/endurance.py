@@ -11,7 +11,9 @@ from datetime import datetime
 
 import polars as pl
 
+from ..fit.types import PauseInterval
 from .heart_rate import MAX_RECORD_INTERVAL_S
+from .intervals import interval_frame
 
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_INSUFFICIENT_DURATION = "insufficient_duration"
@@ -45,6 +47,7 @@ def compute_aerobic_decoupling(
     min_coverage: float = 0.80,
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
     session_moving_time_s: float | None = None,
+    pause_intervals: tuple[PauseInterval, ...] = (),
 ) -> DecouplingResult:
     """Compute efficiency factor drift across two equal moving-time halves.
 
@@ -60,19 +63,7 @@ def compute_aerobic_decoupling(
     if not isinstance(first, datetime) or not isinstance(last, datetime):
         return _empty_decoupling(CONFIDENCE_INSUFFICIENT_DURATION)
 
-    # Calculate raw dt to next record
-    dt_expr = (
-        (pl.col("timestamp").shift(-1) - pl.col("timestamp")).dt.total_microseconds() / 1_000_000.0
-    ).alias("dt")
-
-    frame = records.select(
-        pl.col("timestamp"),
-        pl.col("heart_rate")
-        if "heart_rate" in records.columns
-        else pl.lit(None).alias("heart_rate"),
-        pl.col("speed_mps") if "speed_mps" in records.columns else pl.lit(None).alias("speed_mps"),
-        dt_expr,
-    )
+    frame = interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
 
     # Exclude segment breaks if a segment column is present
     if "segment" in records.columns:
@@ -86,7 +77,7 @@ def compute_aerobic_decoupling(
 
     # Exclude intervals crossing capped gaps or out-of-order timestamps
     valid_intervals = frame.filter(
-        pl.col("dt").is_not_null() & (pl.col("dt") > 0.0) & (pl.col("dt") <= max_interval_s)
+        (pl.col("dt_s") > 0.0) & (pl.col("dt_s") <= max_interval_s) & (pl.col("active_s") > 0.0)
     )
     if valid_intervals.is_empty():
         return _empty_decoupling(CONFIDENCE_INSUFFICIENT_DURATION)
@@ -94,7 +85,7 @@ def compute_aerobic_decoupling(
     # Moving intervals based on speed
     moving_intervals = valid_intervals.filter(
         pl.col("speed_mps").is_not_null() & (pl.col("speed_mps") >= moving_speed_threshold_mps)
-    )
+    ).with_columns(pl.col("active_s").alias("dt"))
     record_moving_duration = _sum_col(moving_intervals, "dt")
 
     total_moving_time = (

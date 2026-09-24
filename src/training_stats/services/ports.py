@@ -8,7 +8,7 @@ from typing import Protocol
 
 import polars as pl
 
-from ..domain.fit.types import ParsedFile
+from ..domain.fit.types import FitData
 from ..domain.models import SourceFile
 from .state import SyncState
 
@@ -29,9 +29,9 @@ class ActivitySource(ABC):
 
 
 class FitParser(Protocol):
-    """Port for decoding raw FIT bytes into normalized domain activities."""
+    """Port for decoding FIT bytes into normalized transient inputs."""
 
-    def parse(self, content: bytes, source_file: SourceFile) -> ParsedFile: ...
+    def parse(self, content: bytes, source_file: SourceFile) -> FitData: ...
 
 
 class TrainingRepository(Protocol):

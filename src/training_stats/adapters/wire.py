@@ -72,7 +72,6 @@ class ActivitySummary(BaseModel):
     elevation_gain_m: float | None
     avg_hr: float | None
     max_hr: float | None
-    calories: float | None
     load_value: float | None
 
 
@@ -91,7 +90,6 @@ class ActivityDetails(BaseModel):
     max_hr: float | None
     avg_speed_mps: float | None
     max_speed_mps: float | None
-    calories: float | None
     hr_zones_s: HrZones
     hr_coverage_ratio: float
     hr_histogram_s: dict[str, float]
@@ -183,7 +181,6 @@ class LatestActivity(BaseModel):
     elevation_gain_m: float | None
     avg_hr: float | None
     max_hr: float | None
-    calories: float | None
     load_value: float | None
     decoupling: Decoupling | None = None
 
@@ -218,7 +215,6 @@ def activity_summary(domain: models.ActivitySummary) -> ActivitySummary:
         elevation_gain_m=domain.elevation_gain_m,
         avg_hr=domain.avg_hr,
         max_hr=domain.max_hr,
-        calories=domain.calories,
         load_value=domain.load_value,
     )
 
@@ -247,7 +243,6 @@ def activity_details(domain: models.ActivityDetails) -> ActivityDetails:
         max_hr=domain.max_hr,
         avg_speed_mps=domain.avg_speed_mps,
         max_speed_mps=domain.max_speed_mps,
-        calories=domain.calories,
         hr_zones_s=_hr_zones_from_details(domain),
         hr_coverage_ratio=domain.hr_coverage_ratio,
         hr_histogram_s=domain.hr_histogram_s,
@@ -382,7 +377,6 @@ def _latest_activity(domain: models.LatestActivity | None) -> LatestActivity | N
         elevation_gain_m=summary.elevation_gain_m,
         avg_hr=summary.avg_hr,
         max_hr=summary.max_hr,
-        calories=summary.calories,
         load_value=summary.load_value,
         decoupling=decoupling,
     )

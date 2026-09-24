@@ -8,8 +8,9 @@ Guidance for AI coding agents working in this repository.
 
 1. Reads FIT activity files from local directories or Nextcloud via WebDAV
 2. Detects new/changed files incrementally (file size + modification time)
-3. Parses FIT sessions and records via `fitdecode`
-4. Computes derived analytics (HR zones, estimated load, daily/weekly summaries)
+3. Decodes FIT records, timer events, and sport metadata via `fitdecode`
+4. Repairs record gaps and computes derived analytics (HR zones, estimated load,
+   daily/weekly summaries)
 5. Caches per-activity facts + derived metrics as Parquet (never time-series
    data; period aggregates are derived on read, not persisted)
 6. Exposes verb-based CLI commands (Rich tables on a TTY, JSON otherwise)
@@ -28,7 +29,7 @@ any task; the code is only complete when all of them pass):
 uv run ruff format --check .   # formatting (run `uv run ruff format .` to fix)
 uv run ruff check .            # linting (run with `--fix` to auto-fix)
 uv run mypy --strict src       # static typing (src only, not tests)
-uv run pytest                  # tests (~285 tests, <25 s)
+uv run pytest                  # tests (~300 tests, <25 s)
 ```
 
 Combined one-liner:
@@ -80,14 +81,19 @@ REST/CLI payloads, and never pass wire models into the service layer.
 
 These are core design decisions — do not violate them casually:
 
-- **Session headers are never trusted blindly.** Start time and duration are
-  re-derived from the repaired record timeline (`domain/fit/repair.py`): clock
-  jumps shift static prefixes onto the post-fix timeline, recording breaks
-  split into segment activities, and implausible session elapsed time falls
-  back to the record span.
+- **FIT parsing is decode-only; analysis owns statistics.** The parser returns
+  a thin `FitData` wrapper around normalized raw messages. Session aggregates
+  are ignored; only raw sport/sub-sport metadata is retained. The service calls
+  pure `domain/fit/repair.py` gap segmentation, then `domain/analytics/` derives
+  all activity statistics. Gaps split at configurable thresholds (default
+  `dt > 900 s` or adjacent distance change `> 500 m`); pauses are separately
+  identified from timer events or speed, count toward elapsed duration, and are
+  excluded from statistics. Segments under 300 s moving time are discarded.
+- **Calories are not part of the product.** Do not add calorie fields to FIT
+  parsing, analysis, caches, domain models, or REST/CLI payloads.
 
 - **No raw time-series persistence.** Record data lives as a transient Polars
-  frame (`domain/fit/types.py` `RECORD_SCHEMA`) during processing and is discarded.
+  frame (`domain/fit/types.py` `FitData.SCHEMA`) during processing and is discarded.
   Raw records must never appear in Parquet files, REST/CLI responses, or logs.
   Coarse derived aggregates (5-bpm HR histogram, 10-minute weighted HR
   averages) are allowed in `training_cache.parquet` and API responses.
@@ -96,7 +102,7 @@ These are core design decisions — do not violate them casually:
   are derived on read by `domain/analytics/` over the lazy activity frame. Only the
   unified cache file is persisted (`training_cache.parquet`: one row per
   accepted activity, enriched with its source-index fields, plus rows for
-  failed/duplicate source outcomes); `metadata.json` holds the sync
+  failed/duplicate/source-only outcomes); `metadata.json` holds the sync
   throttle stamp.
 - **Secrets only from environment variables.** The TOML file stores the
   *names* of env vars (`username_env`/`password_env`). Values are wrapped in

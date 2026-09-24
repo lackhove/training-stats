@@ -83,10 +83,9 @@ class AthleteConfig:
 @dataclass(frozen=True, slots=True)
 class QualityConfig:
     moving_speed_threshold_mps: float = 1.0
-    record_gap_threshold_s: float = 120.0
-    clock_jump_min_gap_s: float = 3600.0
-    minimum_segment_duration_s: float = 600.0
-    clock_shift_max_pre_moving_s: float = 60.0
+    activity_gap_threshold_s: float = 900.0
+    activity_distance_gap_threshold_m: float = 500.0
+    minimum_segment_duration_s: float = 300.0
     forgotten_stop_max_duration_s: float = 86400.0
     forgotten_stop_min_moving_ratio: float = 0.20
     decoupling_min_duration_s: float = 1200.0
@@ -95,8 +94,8 @@ class QualityConfig:
     def __post_init__(self) -> None:
         positive = (
             "moving_speed_threshold_mps",
-            "record_gap_threshold_s",
-            "clock_jump_min_gap_s",
+            "activity_gap_threshold_s",
+            "activity_distance_gap_threshold_m",
             "minimum_segment_duration_s",
             "forgotten_stop_max_duration_s",
             "decoupling_min_duration_s",
@@ -104,8 +103,6 @@ class QualityConfig:
         for name in positive:
             if getattr(self, name) <= 0:
                 raise ValueError(f"quality.{name} must be positive")
-        if self.clock_shift_max_pre_moving_s < 0:
-            raise ValueError("quality.clock_shift_max_pre_moving_s must be non-negative")
         for name in ("forgotten_stop_min_moving_ratio", "decoupling_min_coverage"):
             value = getattr(self, name)
             if not 0 < value <= 1:
