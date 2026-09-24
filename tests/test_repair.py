@@ -33,6 +33,8 @@ def _fit_data(records: pl.DataFrame, events: tuple[TimerEvent, ...] = ()) -> Fit
             "message_type": "event",
             "timestamp": event.timestamp,
             "heart_rate": None,
+            "cadence": None,
+            "fractional_cadence": None,
             "distance_m": None,
             "altitude_m": None,
             "speed_mps": None,
@@ -57,6 +59,8 @@ def _spaced(
         {
             "timestamp": timestamps,
             "heart_rate": [110] * count,
+            "cadence": [None] * count,
+            "fractional_cadence": [None] * count,
             "distance_m": [float(i * distance_step) for i in range(count)],
             "altitude_m": [None] * count,
             "speed_mps": [5.0] * count,

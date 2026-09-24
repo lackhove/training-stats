@@ -22,12 +22,20 @@ def _fit_data(
     distances: list[float],
     *,
     timer_events: tuple[tuple[int, str], ...] = (),
+    cadences: list[int | None] | None = None,
+    fractional_cadences: list[int | None] | None = None,
 ) -> FitData:
+    cadence_values = cadences if cadences is not None else [None] * len(heart_rates)
+    fractional_cadence_values = (
+        fractional_cadences if fractional_cadences is not None else [None] * len(heart_rates)
+    )
     rows: list[dict[str, object]] = [
         {
             "message_type": "session",
             "timestamp": None,
             "heart_rate": None,
+            "cadence": None,
+            "fractional_cadence": None,
             "distance_m": None,
             "altitude_m": None,
             "speed_mps": None,
@@ -37,12 +45,23 @@ def _fit_data(
             "event_type": None,
         }
     ]
-    for index, (hr, speed, distance) in enumerate(zip(heart_rates, speeds, distances, strict=True)):
+    for index, (hr, speed, distance, cadence, fractional_cadence) in enumerate(
+        zip(
+            heart_rates,
+            speeds,
+            distances,
+            cadence_values,
+            fractional_cadence_values,
+            strict=True,
+        )
+    ):
         rows.append(
             {
                 "message_type": "record",
                 "timestamp": START + timedelta(seconds=30 * index),
                 "heart_rate": hr,
+                "cadence": cadence,
+                "fractional_cadence": fractional_cadence,
                 "distance_m": distance,
                 "altitude_m": 100.0,
                 "speed_mps": speed,
@@ -58,6 +77,8 @@ def _fit_data(
                 "message_type": "event",
                 "timestamp": START + timedelta(seconds=seconds),
                 "heart_rate": None,
+                "cadence": None,
+                "fractional_cadence": None,
                 "distance_m": None,
                 "altitude_m": None,
                 "speed_mps": None,
@@ -121,6 +142,37 @@ def _paused_activity(timer_events: bool) -> FitData:
 
 
 class TestPauseAwareStatistics:
+    def test_cadence_fields_reach_analysis_records_unchanged(self) -> None:
+        data = _fit_data(
+            heart_rates=[120, 121, 122],
+            speeds=[5.0, 5.0, 5.0],
+            distances=[0.0, 150.0, 300.0],
+            cadences=[80, 81, 82],
+            fractional_cadences=[4, 5, 6],
+        )
+
+        result = _analyze(data)
+
+        records = result.activities[0].activity.records
+        assert records.select("cadence", "fractional_cadence").rows() == [
+            (80, 4),
+            (81, 5),
+            (82, 6),
+        ]
+
+    def test_missing_cadence_reaches_analysis_as_null(self) -> None:
+        result = _analyze(
+            _fit_data(
+                heart_rates=[120, 121, 122],
+                speeds=[5.0, 5.0, 5.0],
+                distances=[0.0, 150.0, 300.0],
+            )
+        )
+
+        records = result.activities[0].activity.records
+        assert records["cadence"].null_count() == records.height
+        assert records["fractional_cadence"].null_count() == records.height
+
     def test_timer_pause_is_in_elapsed_time_not_statistics(self) -> None:
         result = _analyze(_paused_activity(timer_events=True))
         assert len(result.activities) == 1

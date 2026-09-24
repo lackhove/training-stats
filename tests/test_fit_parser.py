@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
+import fitdecode
 import polars as pl
 import pytest
 
 from tests.conftest import FIXTURES, ZONE_BOUNDS, make_athlete
-from training_stats.adapters.fit.parser import FitDecodeParser
+from training_stats.adapters.fit.parser import FitDecodeParser, _parse_record_row
 from training_stats.domain.analytics.heart_rate import build_zone_bounds, time_in_zones
 from training_stats.domain.analytics.segments import analyze_segments
 from training_stats.domain.errors import FitParseError
@@ -48,6 +50,14 @@ def _parse(name: str) -> ParsedActivity:
     assert analyzed.discarded_segment_count == 0
     assert len(analyzed.activities) == 1
     return analyzed.activities[0].activity
+
+
+class _SyntheticRecordMessage:
+    def __init__(self, values: dict[str, object]) -> None:
+        self.values = values
+
+    def get_value(self, name: str, fallback: object | None = None) -> object | None:
+        return self.values.get(name, fallback)
 
 
 class TestFixtures:
@@ -126,6 +136,35 @@ class TestRawFitData:
         session_rows = decoded.frame.filter(pl.col("message_type") == "session")
         assert session_rows["sport"][0] == "cycling"
         assert session_rows["sub_sport"][0] == "generic"
+
+
+class TestCadenceParsing:
+    def test_record_cadence_fields_are_normalized(self) -> None:
+        timestamp = datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)
+        message = _SyntheticRecordMessage(
+            {
+                "timestamp": timestamp,
+                "cadence": 87,
+                "fractional_cadence": 64,
+            }
+        )
+
+        row = _parse_record_row(cast(fitdecode.FitDataMessage, message))
+
+        assert row is not None
+        assert row["cadence"] == 87
+        assert row["fractional_cadence"] == 64
+
+    def test_missing_record_cadence_fields_are_null(self) -> None:
+        message = _SyntheticRecordMessage(
+            {"timestamp": datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)}
+        )
+
+        row = _parse_record_row(cast(fitdecode.FitDataMessage, message))
+
+        assert row is not None
+        assert row["cadence"] is None
+        assert row["fractional_cadence"] is None
 
 
 class TestMalformedInput:

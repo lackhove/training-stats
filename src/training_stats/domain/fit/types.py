@@ -18,6 +18,8 @@ import polars as pl
 RECORD_SCHEMA: dict[str, pl.DataType] = {
     "timestamp": pl.Datetime("us", "UTC"),
     "heart_rate": pl.Int32(),
+    "cadence": pl.Int32(),
+    "fractional_cadence": pl.Int32(),
     "distance_m": pl.Float64(),
     "altitude_m": pl.Float64(),
     "speed_mps": pl.Float64(),
@@ -26,6 +28,8 @@ RECORD_SCHEMA: dict[str, pl.DataType] = {
 RECORD_COLUMNS: tuple[str, ...] = (
     "timestamp",
     "heart_rate",
+    "cadence",
+    "fractional_cadence",
     "distance_m",
     "altitude_m",
     "speed_mps",
@@ -67,6 +71,8 @@ class FitData:
         "message_type": pl.String(),
         "timestamp": pl.Datetime("us", "UTC"),
         "heart_rate": pl.Int32(),
+        "cadence": pl.Int32(),
+        "fractional_cadence": pl.Int32(),
         "distance_m": pl.Float64(),
         "altitude_m": pl.Float64(),
         "speed_mps": pl.Float64(),

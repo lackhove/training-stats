@@ -93,7 +93,14 @@ def make_record_frame(
     rows: list[dict[str, object]] = []
     timestamp = start
     for heart_rate in heart_rates:
-        rows.append({"timestamp": timestamp, "heart_rate": heart_rate})
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "heart_rate": heart_rate,
+                "cadence": None,
+                "fractional_cadence": None,
+            }
+        )
         timestamp = timestamp + timedelta(seconds=interval_s)
     return pl.DataFrame(rows, schema=RECORD_SCHEMA)
 
@@ -177,6 +184,8 @@ class StubParser:
                 "message_type": "session",
                 "timestamp": None,
                 "heart_rate": None,
+                "cadence": None,
+                "fractional_cadence": None,
                 "distance_m": None,
                 "altitude_m": None,
                 "speed_mps": None,
@@ -194,6 +203,8 @@ class StubParser:
                     "message_type": "record",
                     "timestamp": start + timedelta(seconds=duration * index / intervals),
                     "heart_rate": heart_rate,
+                    "cadence": None,
+                    "fractional_cadence": None,
                     "distance_m": distance * index / intervals,
                     "altitude_m": None,
                     "speed_mps": 5.0,
