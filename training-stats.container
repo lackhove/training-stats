@@ -12,9 +12,9 @@ Image=ghcr.io/lackhove/training-stats:latest
 ContainerName=training-stats
 Network=training-stats.network
 EnvironmentFile=<repo-root>/.env
-Volume=<repo-root>/config.toml:/app/config/config.toml:ro
-Volume=<repo-root>/data:/app/data
-Volume=/path/to/activities:/data/activities:ro
+Volume=<repo-root>/config.toml:/app/config/config.toml:ro,Z,U
+Volume=<repo-root>/data:/app/data:Z,U
+Volume=/path/to/activities:/data/activities:ro,Z,U
 # No PublishPort: the API is reachable only from containers on the shared
 # training-stats network. For same-host-only access from outside containers,
 # add PublishPort=127.0.0.1:<port>:<port>.
