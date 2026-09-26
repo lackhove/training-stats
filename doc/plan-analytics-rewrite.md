@@ -8,7 +8,7 @@
   Polars inputs and return one or more metrics.
 - Make public summary functions compose metric functions and return a generic
   `MetricReport`.
-- Make the API and Rich renderer generic over metric names and the supported
+- Make the API and CLI JSON serializer generic over metric names and supported
   value shapes.
 - Store one activity record with its metric collection in a JSON cache. A cache
   rebuild is sufficient when the cache format or analysis semantics change;
@@ -110,24 +110,13 @@ Validate JSON round-trips and inspect generated OpenAPI for all tagged variants.
 The wire layer stays at the HTTP/JSON boundary; domain code has no Pydantic
 dependency.
 
-## Rich output and CLI
+## CLI JSON output
 
-Replace field- and endpoint-specific metric renderers with one generic
-`render_report` function that dispatches only on metric value shape:
+Emit typed JSON for every CLI command, regardless of whether stdout is attached
+to a terminal. Keep synchronization progress and errors on stderr.
 
-- Scalars render in a summary table.
-- Tables render from their axis and values.
-- Matrices render as heatmaps with axis labels and cell units.
-- Missing metrics remain visible with their missing reason.
-- Descriptions are displayed from the metric; names are humanized automatically.
-  Known units receive generic formatting,
-  with a value-plus-unit fallback for unfamiliar units.
-- Period, kind, confidence, and provenance render from metric metadata.
-
-Rich consumes domain `MetricReport` dataclasses. CLI JSON uses the generic wire
-adapter. Adding a metric using an existing value shape must not require Rich or
-API-module changes. Non-metric process diagnostics such as sync status and
-errors remain diagnostic output.
+The CLI uses the typed wire adapters at the output boundary. Non-metric process
+diagnostics such as sync status and errors remain on stderr.
 
 ## Migration of existing code and tests
 
@@ -137,8 +126,7 @@ errors remain diagnostic output.
 - Keep daily/weekly/form intermediates inside analytics; expose their results
   only as MetricReports and remove obsolete output models once unused.
 - Consolidate legacy adapter wire mappings into the generic metric wire layer.
-- Replace CLI list/show/weekly/overview field-specific renderers for metric
-  reports.
+- Replace CLI list/show/weekly/overview output with typed JSON serializers.
 - Keep FIT parsing, timeline repair, source handling, typed service errors,
   synchronization, and cache locking in their existing architectural layers.
 - Update `AGENTS.md` and user documentation to describe the new domain/API/cache
@@ -147,8 +135,8 @@ errors remain diagnostic output.
 ## Verification
 
 Add tests for metric invariants, all period/value variants, cache JSON
-round-trips, analytics outputs and periods, missing reasons, and generic API
-and Rich behavior with arbitrary metric names and unknown units. Preserve
+round-trips, analytics outputs and periods, missing reasons, and API/CLI JSON
+behavior with arbitrary metric names and unknown units. Preserve
 regression coverage for current analytics results and FIT timing semantics.
 Verify cache rebuilds, incremental sync, source outcomes, atomic writes, and
 that raw records never appear in the cache.

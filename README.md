@@ -41,11 +41,10 @@ Synchronization runs automatically at server startup and before every query
 throttled: a real sync runs at most once per
 `cache.sync_min_interval_seconds` (default 10 s), so bursts of commands or
 API requests contact your sources only once — set the interval to `0` to
-always synchronize, `--no-sync` to never synchronize for one call. On an
-interactive terminal commands render Rich tables and panels; when stdout is
-piped or redirected — or `--json` is given — they print JSON on stdout and
-nothing else, while progress and diagnostics (sync summary, source errors)
-go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
+always synchronize, `--no-sync` to never synchronize for one call. CLI query
+commands always print JSON on stdout, regardless of whether output is attached to a
+terminal; progress and diagnostics (sync summary, source errors) go to stderr,
+so piping stays clean: `training-stats list | jq '.[].sport'`.
 
 ## Commands
 
@@ -53,24 +52,23 @@ go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
 | --- | --- |
 | `training-stats list [--sport --start --end --limit --no-sync]` | Matching activities with ID, start time, sport, and sub-sport only (synchronizes if due) |
 | `training-stats show <activity-id>` | One complete activity record with metrics (serves cached data) |
-| `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly metrics as tables (synchronizes if due) |
+| `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly metrics as JSON (synchronizes if due) |
 | `training-stats overview [--days --sport --no-sync]` | Generic coaching metric report (synchronizes if due) |
 | `training-stats server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
 
-Global options: `--config/-c` and `--json` (before or after the verb),
-`--help`, `--version`.
+Global options: `--config/-c`, `--json` (accepted for compatibility; JSON is
+always emitted), `--help`, `--version`.
 `list` returns an array containing only `activity_id`, `start_time`, `sport`,
 and `sub_sport` for each matching activity.
-`show` returns one activity record with its metadata and metrics. Its terminal
-view starts with the same compact activity header as `list`, followed by the
-metric panels. In `show` JSON, each metric omits its `period` because the
-enclosing record identifies the activity. `weekly` returns one shared `period`
-alongside its metrics, which omit their repeated period; `overview` returns the
+`show` returns one activity record with its metadata and metrics. In `show`
+JSON, each metric omits its `period` because the enclosing record identifies
+the activity. `weekly` returns one shared `period` alongside its metrics, which
+omit their repeated period; `overview` returns the
 generic metric-report envelope. Each metric includes its stable name, required
 human-readable description, period (where applicable), value shape, unit, and
 missing reason when unavailable. Tables and matrices are self-describing
-through their axes; adding metrics that use the existing shapes does not require
-API or Rich renderer changes.
+through their axes; adding metrics that use existing shapes does not require
+changes to CLI serialization.
 API and CLI JSON omit object fields whose value is `None`; null cells inside
 metric arrays are retained to preserve their axes.
 

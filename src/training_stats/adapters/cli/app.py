@@ -1,10 +1,9 @@
 """Coach command line interface.
 
-Interactive terminals (stdout is a TTY) get Rich tables and panels; piped or
-redirected output — or an explicit ``--json`` — prints the service payload as
-JSON on stdout and nothing else. Diagnostics (sync feedback, errors) go to
-stderr. Exit codes: 0 success, 1 domain error (unknown activity, invalid
-range), 2 configuration or usage error.
+Query commands print their service payload as JSON on stdout, regardless of
+whether stdout is a TTY. Diagnostics (sync feedback, errors) go to stderr.
+Exit codes: 0 success, 1 domain error (unknown activity, invalid range),
+2 configuration or usage error.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 from cyclopts.exceptions import CycloptsError
-from rich.console import Console
 
 from ... import __version__
 from ...domain.errors import TrainingStatsError
@@ -39,13 +37,12 @@ from ..config import (
 )
 from ..errors import ConfigurationError
 from ..logging_config import setup_logging
-from . import output as cli_output
 
 logger = logging.getLogger(__name__)
 
 app = App(
     name="training-stats",
-    help="Training stats for FIT activity data. Pretty tables on a TTY; JSON otherwise.",
+    help="Training stats for FIT activity data. Outputs JSON.",
     version=__version__,
     result_action="return_none",
 )
@@ -94,14 +91,14 @@ JsonFlag = Annotated[
     Parameter(
         name=["--json"],
         show=False,
-        help="Print the payload as JSON on stdout even when attached to a terminal.",
+        help="Accepted for compatibility; commands always output JSON.",
     ),
 ]
 GlobalJsonFlag = Annotated[
     bool,
     Parameter(
         name=["--json"],
-        help="Print payloads as JSON on stdout even when attached to a terminal.",
+        help="Accepted for compatibility; commands always output JSON.",
     ),
 ]
 
@@ -130,17 +127,13 @@ def _service(config_path: Path | None) -> TrainingStatsService:
 
 def _emit(
     payload: MetricReport | ActivityRecord | tuple[ActivitySummary, ...],
-    renderer: Callable[[object, Console], None],
     *,
-    force_json: bool,
     report_serializer: Callable[
         [MetricReport], wire.MetricReportWire | wire.WeeklyReportWire
     ] = wire.metric_report,
 ) -> None:
-    """Render metrics, an activity record, or an activity list."""
-    if not force_json and sys.stdout.isatty():
-        renderer(payload, Console())
-    elif isinstance(payload, MetricReport):
+    """Serialize command output as JSON."""
+    if isinstance(payload, MetricReport):
         report_payload = report_serializer(payload).model_dump(mode="json", exclude_none=True)
         print(json.dumps(report_payload, indent=2))
     elif isinstance(payload, tuple):
@@ -230,20 +223,14 @@ def list_activities(
     _emit(
         service.list_activities(
             start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
-        ),
-        cli_output.render_activity_list,
-        force_json=json_output,
+        )
     )
 
 
 @app.command
 def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
     """Show one activity record with its metrics."""
-    _emit(
-        _service(config).get_activity(activity_id),
-        cli_output.render_activity_detail,
-        force_json=json_output,
-    )
+    _emit(_service(config).get_activity(activity_id))
 
 
 @app.command
@@ -264,8 +251,6 @@ def weekly(
         service.weekly_summary(
             start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
         ),
-        cli_output.render_report,
-        force_json=json_output,
         report_serializer=wire.weekly_report,
     )
 
@@ -282,11 +267,7 @@ def overview(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(
-        service.overview(days=days, sport=sport, sync_first=False),
-        cli_output.render_report,
-        force_json=json_output,
-    )
+    _emit(service.overview(days=days, sport=sport, sync_first=False))
 
 
 def _startup_sync(service: TrainingStatsService) -> SyncResult:

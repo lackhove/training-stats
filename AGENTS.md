@@ -14,9 +14,8 @@ Guidance for AI coding agents working in this repository.
 5. Caches one JSON `ActivityRecord` per accepted activity with its derived
    `Metric` collection (never raw time-series data; period aggregates are
    derived on read, not persisted)
-6. Exposes verb-based CLI commands (Rich tables on a TTY, JSON otherwise)
-   and a typed REST API with
-   OpenAPI schema (consumable as an Open WebUI external OpenAPI tool server)
+6. Exposes verb-based CLI query commands that always emit JSON and a typed REST
+   API with OpenAPI schema (consumable as an Open WebUI external OpenAPI tool server)
 
 Architecture details and design decisions are captured below; user-facing
 setup instructions in `README.md`.
@@ -75,10 +74,10 @@ Every metric has a stable name and a required human-readable description;
 presentation uses the description stored on the metric rather than a name map.
 
 **Serialization convention:** services return domain models; serialize only at
-the edges. HTTP and CLI JSON use the generic Pydantic contracts in
-`adapters/wire.py`; Rich rendering consumes domain `MetricReport` objects.
-Never pass wire models into the service or analytics layers. The cache codec
-serializes domain records independently of the public wire models.
+the edges. HTTP and CLI JSON use the typed Pydantic contracts in
+`adapters/wire.py`. Never pass wire models into the service or analytics
+layers. The cache codec serializes domain records independently of the public
+wire models.
 
 ## Critical Invariants
 

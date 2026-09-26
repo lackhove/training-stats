@@ -7,8 +7,8 @@ steps and all metric definitions.
 - Language: Python 3.12+, everything managed through `uv`
 - Cache: atomic JSON records at ActivityRecord grain (per-activity metrics,
   never raw time series; period aggregates derived on read)
-- Interface: verb-based CLI (Rich tables on a TTY, JSON when piped or via
-  `--json`) and FastAPI REST API with OpenAPI schema
+- Interface: verb-based CLI (JSON output) and FastAPI REST API with OpenAPI
+  schema
 
 ---
 
@@ -16,9 +16,9 @@ steps and all metric definitions.
 
 ```
 adapters/sources + adapters/fit -> services -> domain analytics
-                 adapters/cache <- services
+                  adapters/cache <- services
 adapters/bootstrap wires services to adapters; adapters/http and adapters/cli
-serialize generic MetricReport values at the output boundary.
+serialize typed activity and metric JSON at the output boundary.
 ```
 
 | Package | Responsibility |
@@ -30,7 +30,7 @@ serialize generic MetricReport values at the output boundary.
 | `adapters/sources/` | `LocalDirectorySource` and `WebDAVSource` implementations |
 | `adapters/config.py` | TOML/environment loading and secret resolution; maps domain athlete/quality settings |
 | `adapters/http/` | FastAPI application and auth |
-| `adapters/cli/` | cyclopts CLI; generic shape-based Rich rendering and stderr diagnostics |
+| `adapters/cli/` | cyclopts CLI; typed JSON output and stderr diagnostics |
 | `adapters/wire.py` | Generic Pydantic metric/report transport models shared by HTTP and CLI JSON |
 | `adapters/bootstrap.py` | Composition root wiring concrete adapters to application-service ports |
 | `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
@@ -366,14 +366,14 @@ overview exposes aggregate repair and data-quality signals.
 
 ## 9. CLI Commands & REST Endpoints
 
-**CLI** (`training-stats`, Rich tables on a TTY / JSON when piped or via
-`--json`; `training-stats server` runs the REST API)
+**CLI** (`training-stats` always emits JSON; `--json` is accepted for
+compatibility; `training-stats server` runs the REST API)
 
 | Command | Purpose |
 |---|---|
-| `list [--start? --end? --sport? --limit? --no-sync]` | Generic trip-metric report, newest first |
-| `show <activity-id>` | One activity's metric report |
-| `weekly [--start? --end? --weeks? --sport? --no-sync]` | ISO-week table metrics |
+| `list [--start? --end? --sport? --limit? --no-sync]` | Compact activity summaries, newest first |
+| `show <activity-id>` | One activity record with its metrics |
+| `weekly [--start? --end? --weeks? --sport? --no-sync]` | Shared period and ISO-week metrics |
 | `overview [--days? --sport? --no-sync]` | Generic coaching report: profile, trends, form, readiness, and quality metrics |
 
 **REST** (same service layer; OpenAPI at `/openapi.json`)
@@ -385,11 +385,11 @@ overview exposes aggregate repair and data-quality signals.
 | `GET /weekly` | As `weekly`; synchronizes if due |
 | `GET /overview` | As `overview`; synchronizes if due |
 
-All metric commands return one generic MetricReport envelope. Each Metric is
-self-describing through its stable name, required human-readable description,
-period, shape, unit, missing reason, kind, and optional calculation provenance.
-Adding a scalar/table/matrix metric does not require route or Rich renderer
-changes.
+List, detail, weekly, and overview commands use their typed JSON response
+shapes. Detail metrics omit their shared trip period; weekly metrics omit their
+shared date-range period. Other metrics are self-describing through their
+stable name, required human-readable description, period where applicable,
+shape, unit, missing reason, kind, and optional calculation provenance.
 
 `list`, `weekly` and `overview` synchronize *if due*: a real sync runs
 only when the last successful one is older than

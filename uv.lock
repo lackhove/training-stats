@@ -822,7 +822,6 @@ dependencies = [
     { name = "polars" },
     { name = "pyarrow" },
     { name = "pydantic" },
-    { name = "rich" },
     { name = "uvicorn" },
 ]
 
@@ -843,7 +842,6 @@ requires-dist = [
     { name = "polars", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=17.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "rich", specifier = ">=13" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 

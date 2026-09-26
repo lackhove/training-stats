@@ -300,8 +300,8 @@ def interactive(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(type(sys.stdout), "isatty", lambda self: True)
 
 
-class TestInteractiveOutput:
-    def test_list_renders_table(
+class TestJsonOnlyOutput:
+    def test_list_emits_json_when_stdout_is_a_tty(
         self,
         config_path: Path,
         capsys: pytest.CaptureFixture[str],
@@ -309,14 +309,12 @@ class TestInteractiveOutput:
     ) -> None:
         assert main(["-c", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
-        assert "Activities" in captured.out
-        assert "cycling" in captured.out
-        assert "Training Load" not in captured.out
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(captured.out)
+        activities = json.loads(captured.out)
+        assert len(_activity_ids(activities)) == 2
+        assert {activity["sport"] for activity in activities} == {"cycling"}
         assert "sync: 2 found" in captured.err
 
-    def test_show_renders_activity_header_and_metrics(
+    def test_show_emits_json_when_stdout_is_a_tty(
         self,
         config_path: Path,
         capsys: pytest.CaptureFixture[str],
@@ -326,24 +324,19 @@ class TestInteractiveOutput:
         activity_id = next(iter(_activity_ids(_stdout_payload(capsys))))
 
         assert main(["-c", str(config_path), "show", activity_id]) == 0
-        output = capsys.readouterr().out
-        assert "Activities" in output
-        assert activity_id in output
-        assert "Metrics" in output
-        assert "Training Load" in output
+        details = _stdout_payload(capsys)
+        assert details["activity_id"] == activity_id
+        assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
 
-    def test_overview_renders_panels(
+    def test_overview_emits_json_when_stdout_is_a_tty(
         self,
         config_path: Path,
         capsys: pytest.CaptureFixture[str],
         interactive: None,
     ) -> None:
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
-        out = capsys.readouterr().out
-        assert "Metrics" in out
-        assert "Athlete Profile" in out
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(out)
+        overview = _stdout_payload(capsys)
+        assert _metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
 
     def test_json_flag_before_and_after_command(
         self,
