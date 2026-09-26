@@ -109,7 +109,7 @@ class StubSource(ActivitySource):
     """In-memory source for tests; content is an opaque byte string."""
 
     def __init__(self, name: str = "stub", files: dict[str, bytes] | None = None) -> None:
-        super().__init__(name)
+        self.name = name
         self.files: dict[str, bytes] = dict(files or {})
 
     def list_files(self) -> list[SourceFile]:

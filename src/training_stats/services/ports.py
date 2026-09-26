@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Protocol
 
@@ -11,18 +10,13 @@ from ..domain.models import SourceFile
 from .state import SyncState
 
 
-class ActivitySource(ABC):
+class ActivitySource(Protocol):
     """Port for discovering and reading activity files."""
 
     name: str
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    @abstractmethod
     def list_files(self) -> list[SourceFile]: ...
 
-    @abstractmethod
     def read_file(self, source_file: SourceFile) -> bytes: ...
 
 
@@ -40,10 +34,8 @@ class TrainingRepository(Protocol):
     def last_sync_stamp(self) -> datetime | None: ...
 
 
-class SyncRepository(Protocol):
+class SyncRepository(TrainingRepository, Protocol):
     """Write-side storage port used by incremental synchronization."""
-
-    def load_sync_state(self) -> SyncState: ...
 
     def save_sync_snapshot(self, state: SyncState, *, last_sync: datetime) -> None: ...
 

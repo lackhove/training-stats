@@ -230,6 +230,40 @@ class TestErrorExits:
 
 
 class TestSyncThrottleFeedback:
+    def test_each_query_command_checks_sync_exactly_once(
+        self, config_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from training_stats.services.training import TrainingStatsService
+
+        checks: list[bool] = []
+        original = TrainingStatsService.sync_if_due
+
+        def counting_sync_if_due(self: TrainingStatsService) -> object:
+            checks.append(True)
+            return original(self)
+
+        monkeypatch.setattr(TrainingStatsService, "sync_if_due", counting_sync_if_due)
+
+        assert main(["-c", str(config_path), "list", "--no-sync"]) == 0
+        capsys.readouterr()
+        assert checks == []  # --no-sync skips the check entirely
+
+        assert main(["-c", str(config_path), "list"]) == 0
+        capsys.readouterr()
+        assert len(checks) == 1
+
+        assert main(["-c", str(config_path), "show", "does-not-exist"]) == 1
+        capsys.readouterr()
+        assert len(checks) == 1  # show serves the cache without syncing
+
+        assert main(["-c", str(config_path), "weekly"]) == 0
+        capsys.readouterr()
+        assert len(checks) == 2
+
+        assert main(["-c", str(config_path), "overview"]) == 0
+        capsys.readouterr()
+        assert len(checks) == 3
+
     def test_second_command_within_interval_is_skipped(
         self, throttled_config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

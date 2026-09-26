@@ -7,8 +7,9 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from ...services.ports import SyncRepository, TrainingRepository
-from ...services.state import ActivityRecord, SourceIndexEntry, SyncState
+from ...domain.models import ActivityRecord, SourceIndexEntry
+from ...services.ports import SyncRepository
+from ...services.state import SyncState
 from ..errors import CacheError
 from . import jsonio, schemas
 
@@ -16,7 +17,7 @@ _ACTIVITIES_ADAPTER = TypeAdapter(list[ActivityRecord])
 _SOURCE_INDEX_ADAPTER = TypeAdapter(list[SourceIndexEntry])
 
 
-class JsonTrainingRepository(TrainingRepository, SyncRepository):
+class JsonTrainingRepository(SyncRepository):
     """Atomically persist one metric-bearing record per accepted activity."""
 
     def __init__(self, cache_dir: Path) -> None:

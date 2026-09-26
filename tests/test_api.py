@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.http.api import build_app
+from training_stats.services.results import SyncResult
 from training_stats.services.training import TrainingStatsService
 
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -39,6 +41,19 @@ def _make_server(tmp_path: Path, files: dict[str, bytes]) -> TrainingStatsServic
 
 def _client(server: TrainingStatsService) -> TestClient:
     return TestClient(build_app(server))
+
+
+def _spy_sync_calls(server: TrainingStatsService) -> Callable[[], int]:
+    """Count how often the underlying sync actually runs."""
+    calls: list[bool] = []
+    original = server.sync_service.sync
+
+    def counting_sync() -> SyncResult:
+        calls.append(True)
+        return original()
+
+    server.sync_service.sync = counting_sync
+    return lambda: len(calls)
 
 
 def _metrics(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -222,6 +237,29 @@ class TestSummaryEndpoints:
         assert response.status_code == 404
         _assert_no_none_fields(response.json())
         assert server.repository.load_sync_state().activities == {}
+
+
+class TestQuerySyncBoundary:
+    def test_each_query_endpoint_syncs_exactly_once(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, _stub_files())
+        sync_calls = _spy_sync_calls(server)
+        with _client(server) as client:
+            assert client.get("/activities").status_code == 200
+            assert sync_calls() == 1
+            assert client.get("/weekly", params={"weeks": 4}).status_code == 200
+            assert sync_calls() == 2
+            assert client.get("/overview", params={"days": 14}).status_code == 200
+            assert sync_calls() == 3
+            assert client.get("/activities/does-not-exist").status_code == 404
+            assert sync_calls() == 3
+
+    def test_invalid_query_is_rejected_before_any_sync(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, _stub_files())
+        sync_calls = _spy_sync_calls(server)
+        with _client(server) as client:
+            assert client.get("/activities", params={"limit": 0}).status_code == 422
+            assert client.get("/weekly", params={"weeks": 0}).status_code == 422
+        assert sync_calls() == 0
 
 
 class TestOpenApi:

@@ -12,11 +12,12 @@ from ..domain.analytics import (
     weekly_summary,
 )
 from ..domain.metrics import MetricReport
+from ..domain.models import ActivityRecord, ActivitySummary
 from ..services.limits import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS
 from .ports import TrainingRepository
 from .results import SyncResult, ThrottledSync
 from .settings import ServiceSettings
-from .state import ActivityRecord, ActivitySummary, SyncState
+from .state import SyncState
 from .sync import SyncService
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,11 @@ class TrainingStatsService:
         end_date: date | None = None,
         sport: str | None = None,
         limit: int = 50,
-        sync_first: bool = True,
     ) -> tuple[ActivitySummary, ...]:
-        """Return metadata for selected activities, newest first."""
-        if sync_first:
-            self.sync_if_due()
+        """Return metadata for selected activities, newest first.
+
+        Cache-only: the calling adapter synchronizes first when it should.
+        """
         _validate_int_range("limit", limit, 1, MAX_LIST_LIMIT)
         state = self.repository.load_sync_state()
         return activity_summaries(
@@ -113,11 +114,11 @@ class TrainingStatsService:
         end_date: date | None = None,
         weeks: int = 8,
         sport: str | None = None,
-        sync_first: bool = True,
     ) -> MetricReport:
-        """Return weekly table metrics over selected activity records."""
-        if sync_first:
-            self.sync_if_due()
+        """Return weekly table metrics over selected activity records.
+
+        Cache-only: the calling adapter synchronizes first when it should.
+        """
         _validate_int_range("weeks", weeks, 1, MAX_WEEKS)
         records = tuple(self.repository.load_sync_state().activities.values())
         return weekly_summary(
@@ -129,12 +130,11 @@ class TrainingStatsService:
             sport=sport,
         )
 
-    def overview(
-        self, days: int = 28, sport: str | None = None, sync_first: bool = True
-    ) -> MetricReport:
-        """Return a generic metric report for current training context."""
-        if sync_first:
-            self.sync_if_due()
+    def overview(self, days: int = 28, sport: str | None = None) -> MetricReport:
+        """Return a generic metric report for current training context.
+
+        Cache-only: the calling adapter synchronizes first when it should.
+        """
         _validate_int_range("days", days, 1, MAX_DAYS)
         state: SyncState = self.repository.load_sync_state()
         return overview_report(

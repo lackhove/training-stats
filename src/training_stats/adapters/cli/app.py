@@ -220,11 +220,7 @@ def list_activities(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(
-        service.list_activities(
-            start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
-        )
-    )
+    _emit(service.list_activities(start_date=start, end_date=end, sport=sport, limit=limit))
 
 
 @app.command
@@ -248,9 +244,7 @@ def weekly(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        service.weekly_summary(
-            start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
-        ),
+        service.weekly_summary(start_date=start, end_date=end, weeks=weeks, sport=sport),
         report_serializer=wire.weekly_report,
     )
 
@@ -267,7 +261,7 @@ def overview(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(service.overview(days=days, sport=sport, sync_first=False))
+    _emit(service.overview(days=days, sport=sport))
 
 
 def _startup_sync(service: TrainingStatsService) -> SyncResult:

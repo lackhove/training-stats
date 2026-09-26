@@ -8,11 +8,18 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ..domain.models import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK, SourceFile
+from ..domain.models import (
+    STATUS_DUPLICATE,
+    STATUS_FAILED,
+    STATUS_OK,
+    ActivityRecord,
+    SourceFile,
+    SourceIndexEntry,
+)
 from .errors import SourceError
 from .ports import ActivitySource, SyncRepository
 from .results import SyncResult
-from .state import ActivityRecord, SourceIndexEntry, SyncState
+from .state import SyncState
 
 if TYPE_CHECKING:
     from .ingest import FileProcessor
@@ -41,6 +48,7 @@ class SyncService:
         started_at = datetime.now(UTC)
         state = self.repository.load_sync_state()
         activities = dict(state.activities)
+        activity_ids = set(activities)
 
         discovered = 0
         processed = 0
@@ -71,20 +79,21 @@ class SyncService:
                     skipped += 1
                     continue
                 try:
-                    content = self._read_content(source_file)
+                    content = source.read_file(source_file)
                 except SourceError as exc:
                     logger.error("cannot read %s/%s: %s", source.name, source_file.path, exc)
                     failed += 1
                     kept_index.append(self._failure_entry(source_file, started_at, str(exc)))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(previous_rows, activities)
+                self._purge_previous(previous_rows, activities, activity_ids)
                 outcome = self.processor.process(
-                    source_file, content, file_hash, set(activities), started_at
+                    source_file, content, file_hash, activity_ids, started_at
                 )
                 kept_index.extend(outcome.index_rows)
                 for activity in outcome.activities:
                     activities[activity.activity_id] = activity
+                    activity_ids.add(activity.activity_id)
                 if any(row.status in {STATUS_OK, STATUS_DUPLICATE} for row in outcome.index_rows):
                     processed += 1
                 else:
@@ -161,13 +170,6 @@ class SyncService:
             error_message=message,
         )
 
-    def _read_content(self, source_file: SourceFile) -> bytes:
-        for source in self.sources:
-            if source.name == source_file.source_name:
-                return source.read_file(source_file)
-        msg = f"source {source_file.source_name!r} is not configured"
-        raise SourceError(msg)
-
     @staticmethod
     def _previous_rows(
         index_rows: list[SourceIndexEntry], source_name: str, path: str
@@ -205,8 +207,11 @@ class SyncService:
 
     @staticmethod
     def _purge_previous(
-        previous_rows: list[SourceIndexEntry], activities: dict[str, ActivityRecord]
+        previous_rows: list[SourceIndexEntry],
+        activities: dict[str, ActivityRecord],
+        activity_ids: set[str],
     ) -> None:
         for row in previous_rows:
             if row.activity_id is not None:
                 activities.pop(row.activity_id, None)
+                activity_ids.discard(row.activity_id)

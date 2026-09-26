@@ -96,6 +96,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         sport: SportQuery = None,
         limit: Annotated[int, Query(gt=0, le=MAX_LIST_LIMIT)] = 50,
     ) -> list[wire.ActivitySummaryWire]:
+        service.sync_if_due()
         return wire.activity_summaries(
             service.list_activities(
                 start_date=start_date, end_date=end_date, sport=sport, limit=limit
@@ -132,6 +133,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         weeks: Annotated[int, Query(gt=0, le=MAX_WEEKS)] = 8,
         sport: SportQuery = None,
     ) -> wire.WeeklyReportWire:
+        service.sync_if_due()
         return wire.weekly_report(
             service.weekly_summary(
                 start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
@@ -156,6 +158,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         days: Annotated[int, Query(gt=0, le=MAX_DAYS)] = 28,
         sport: SportQuery = None,
     ) -> wire.MetricReportWire:
+        service.sync_if_due()
         return wire.metric_report(service.overview(days=days, sport=sport))
 
     return app

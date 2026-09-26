@@ -20,7 +20,7 @@ class LocalDirectorySource(ActivitySource):
     def __init__(
         self, *, name: str, path: Path, recursive: bool = True, follow_symlinks: bool = False
     ) -> None:
-        super().__init__(name)
+        self.name = name
         self.root = path
         self.recursive = recursive
         self.follow_symlinks = follow_symlinks

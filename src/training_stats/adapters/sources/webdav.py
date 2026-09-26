@@ -48,7 +48,7 @@ class WebDAVSource(ActivitySource):
         credentials: WebDAVCredentials,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        super().__init__(config.name)
+        self.name = config.name
         self.config = config
         self._credentials = credentials
         self._transport = transport

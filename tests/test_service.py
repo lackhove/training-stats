@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.cache import schemas
 from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.domain.metrics import Metric, MetricReport, ScalarValue, TableValue, TripPeriod
-from training_stats.domain.models import ActivitySummary
+from training_stats.domain.models import ActivitySummary, SourceFile
 from training_stats.services.results import SyncResult, ThrottledSync
 from training_stats.services.state import SyncState
 from training_stats.services.training import TrainingStatsService
@@ -78,6 +79,46 @@ def _activity_ids(activities: tuple[ActivitySummary, ...]) -> set[str]:
     return {activity.activity_id for activity in activities}
 
 
+def _spy_sync_calls(server: TrainingStatsService) -> Callable[[], int]:
+    """Count how often the underlying sync actually runs."""
+    calls: list[bool] = []
+    original = server.sync_service.sync
+
+    def counting_sync() -> SyncResult:
+        calls.append(True)
+        return original()
+
+    server.sync_service.sync = counting_sync
+    return lambda: len(calls)
+
+
+class RecordingSource(StubSource):
+    """Source that remembers which files were read through it."""
+
+    def __init__(self, name: str = "stub", files: dict[str, bytes] | None = None) -> None:
+        super().__init__(name=name, files=files)
+        self.read_paths: list[str] = []
+
+    def read_file(self, source_file: SourceFile) -> bytes:
+        self.read_paths.append(source_file.path)
+        return super().read_file(source_file)
+
+
+class ForeignNameSource(RecordingSource):
+    """Source whose listed files carry a name no configured source answers to."""
+
+    def list_files(self) -> list[SourceFile]:
+        return [
+            SourceFile(
+                source_name="renamed",
+                path=item.path,
+                size=item.size,
+                modified_at=item.modified_at,
+            )
+            for item in super().list_files()
+        ]
+
+
 def _metric(report: MetricReport, name: str) -> Metric:
     return next(metric for metric in report.metrics if metric.name == name)
 
@@ -106,36 +147,40 @@ class TestServiceOperations:
         assert result.files_processed == 0
         assert result.files_skipped == 2
 
-    def test_list_activities_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
+    def test_sync_if_due_then_list_activities(self, unsynced_server: TrainingStatsService) -> None:
         assert unsynced_server.repository.load_sync_state().activities == {}
+        unsynced_server.sync_if_due()
         activities = unsynced_server.list_activities()
         assert len(_activity_ids(activities)) == 2
         assert len(unsynced_server.repository.load_sync_state().activities) == 2
 
-    def test_list_activities_without_sync(self, unsynced_server: TrainingStatsService) -> None:
-        activities = unsynced_server.list_activities(sync_first=False)
+    def test_list_activities_is_cache_only(self, unsynced_server: TrainingStatsService) -> None:
+        activities = unsynced_server.list_activities()
         assert activities == ()
+        assert unsynced_server.repository.load_sync_state().activities == {}
 
     def test_list_activities_picks_up_new_files(self, server: TrainingStatsService) -> None:
         source = server.sync_service.sources[0]
         assert isinstance(source, StubSource)
         source.files["swim.fit"] = stub_activity_content(T0 + timedelta(days=3), "swimming", 1200.0)
+        server.sync_if_due()
         activities = server.list_activities()
         assert len(_activity_ids(activities)) == 3
         sports = {activity.sport for activity in activities}
         assert sports == {"cycling", "running", "swimming"}
 
-    def test_list_activities_serves_cache_when_sync_fails(
+    def test_list_serves_cache_when_sync_fails(
         self,
         server: TrainingStatsService,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        def broken_sync() -> object:
+        def broken_sync() -> SyncResult:
             raise RuntimeError("disk gone")
 
         monkeypatch.setattr(server.sync_service, "sync", broken_sync)
         with caplog.at_level(logging.WARNING, logger="training_stats.services.training"):
+            server.sync_if_due()
             activities = server.list_activities()
         assert len(_activity_ids(activities)) == 2
         assert any("activity sync failed" in record.message for record in caplog.records)
@@ -147,23 +192,47 @@ class TestServiceOperations:
         _startup_sync(unsynced_server)
         assert len(unsynced_server.repository.load_sync_state().activities) == 2
 
-    def test_weekly_summary_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
+    def test_sync_if_due_then_weekly_summary(self, unsynced_server: TrainingStatsService) -> None:
         assert unsynced_server.repository.load_sync_state().activities == {}
+        unsynced_server.sync_if_due()
         report = unsynced_server.weekly_summary(weeks=4)
         assert report.metrics
 
-    def test_weekly_summary_without_sync(self, unsynced_server: TrainingStatsService) -> None:
-        report = unsynced_server.weekly_summary(weeks=4, sync_first=False)
+    def test_weekly_summary_is_cache_only(self, unsynced_server: TrainingStatsService) -> None:
+        report = unsynced_server.weekly_summary(weeks=4)
         assert all(metric.value is None for metric in report.metrics)
 
-    def test_overview_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
+    def test_sync_if_due_then_overview(self, unsynced_server: TrainingStatsService) -> None:
+        unsynced_server.sync_if_due()
         overview = unsynced_server.overview(days=14)
         assert _scalar(overview, "data_quality.activity_count") == 2
         assert all(not isinstance(metric.period, TripPeriod) for metric in overview.metrics)
 
-    def test_overview_without_sync(self, unsynced_server: TrainingStatsService) -> None:
-        overview = unsynced_server.overview(days=14, sync_first=False)
+    def test_overview_is_cache_only(self, unsynced_server: TrainingStatsService) -> None:
+        overview = unsynced_server.overview(days=14)
         assert _scalar(overview, "data_quality.activity_count") == 0
+
+    def test_queries_never_check_sync_themselves(
+        self, unsynced_server: TrainingStatsService
+    ) -> None:
+        sync_calls = _spy_sync_calls(unsynced_server)
+        with pytest.raises(LookupError):
+            unsynced_server.get_activity("does-not-exist")
+        unsynced_server.list_activities()
+        unsynced_server.weekly_summary(weeks=4)
+        unsynced_server.overview(days=14)
+        assert sync_calls() == 0
+
+    def test_explicit_orchestration_syncs_exactly_once(
+        self, unsynced_server: TrainingStatsService
+    ) -> None:
+        sync_calls = _spy_sync_calls(unsynced_server)
+        unsynced_server.sync_if_due()
+        unsynced_server.list_activities()
+        unsynced_server.weekly_summary(weeks=4)
+        unsynced_server.overview(days=14)
+        assert sync_calls() == 1
+        assert len(unsynced_server.repository.load_sync_state().activities) == 2
 
     def test_get_activity_does_not_sync(self, unsynced_server: TrainingStatsService) -> None:
         with pytest.raises(LookupError, match="not found"):
@@ -243,6 +312,81 @@ class TestServiceOperations:
     def test_overview_invalid_days(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="days"):
             server.overview(days=-1)
+
+
+class TestSyncSourceReads:
+    def test_reads_each_file_from_the_source_that_listed_it(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, {})
+        cloud = RecordingSource(
+            name="cloud",
+            files={"ride.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)},
+        )
+        local = RecordingSource(
+            name="local",
+            files={"run.fit": stub_activity_content(T0 + timedelta(days=1), "running", 900.0)},
+        )
+        server.sync_service.sources = [cloud, local]
+
+        result = server.sync_if_due()
+
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+        assert cloud.read_paths == ["ride.fit"]
+        assert local.read_paths == ["run.fit"]
+
+    def test_read_uses_the_in_scope_source_without_a_name_relookup(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, {})
+        source = ForeignNameSource(
+            name="stub",
+            files={"ride.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)},
+        )
+        server.sync_service.sources = [source]
+
+        result = server.sync_if_due()
+
+        assert isinstance(result, SyncResult)
+        assert result.files_failed == 0
+        assert source.read_paths == ["ride.fit"]
+        assert len(server.repository.load_sync_state().activities) == 1
+
+
+class TestSharedActivityIdSet:
+    def test_duplicate_detected_across_files_in_one_sync(self, tmp_path: Path) -> None:
+        content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        server = _make_server(tmp_path, {"one.fit": content, "two.fit": content})
+
+        result = server.sync_if_due()
+
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+        assert result.duplicates_detected == 1
+        state = server.repository.load_sync_state()
+        assert len(state.activities) == 1
+        assert sorted(row.status for row in state.index_rows) == ["duplicate", "ok"]
+
+    def test_changed_file_keeps_the_id_set_in_sync(self, tmp_path: Path) -> None:
+        original = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        server = _make_server(tmp_path, {"a.fit": original})
+        server.sync_if_due()
+
+        source = server.sync_service.sources[0]
+        assert isinstance(source, StubSource)
+        # a.fit now holds a new activity while c.fit still carries the purged one.
+        source.files["a.fit"] = stub_activity_content(
+            T0 + timedelta(days=1), "cycling", 1800.0, 20000.0
+        )
+        source.files["c.fit"] = original
+        result = server.sync_if_due()
+
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+        assert result.duplicates_detected == 0
+        state = server.repository.load_sync_state()
+        assert len(state.activities) == 2
+        assert {record.start_time for record in state.activities.values()} == {
+            T0,
+            T0 + timedelta(days=1),
+        }
 
 
 class TestSyncThrottle:
