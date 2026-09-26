@@ -5,8 +5,8 @@ steps and all metric definitions.
 
 - Sources: local directories and Nextcloud via WebDAV (read FIT files only)
 - Language: Python 3.12+, everything managed through `uv`
-- Cache: Polars frames persisted as Parquet (per-activity facts + derived
-  metrics, never raw time series; period aggregates derived on read)
+- Cache: atomic JSON records at ActivityRecord grain (per-activity metrics,
+  never raw time series; period aggregates derived on read)
 - Interface: verb-based CLI (Rich tables on a TTY, JSON when piped or via
   `--json`) and FastAPI REST API with OpenAPI schema
 
@@ -18,20 +18,20 @@ steps and all metric definitions.
 adapters/sources + adapters/fit -> services -> domain analytics
                  adapters/cache <- services
 adapters/bootstrap wires services to adapters; adapters/http and adapters/cli
-map domain results to transport output.
+serialize generic MetricReport values at the output boundary.
 ```
 
 | Package | Responsibility |
 |---|---|
-| `domain/` | Domain dataclasses/settings, canonical Polars frame contracts, FIT timeline repair and pure analytics |
+| `domain/` | Domain dataclasses/settings, normalized FIT types, timeline repair, Metric types, and pure analytics |
 | `services/` | Ports and use cases (`TrainingStatsService`, `SyncService`, `FileProcessor`); no concrete adapters |
-| `adapters/cache/` | Unified Parquet schema, serialization, atomic I/O, repository implementation and app-wide lock |
+| `adapters/cache/` | Domain-record JSON codec, atomic I/O, repository implementation and app-wide lock |
 | `adapters/fit/` | `FitDecodeParser` and raw FIT value normalization |
 | `adapters/sources/` | `LocalDirectorySource` and `WebDAVSource` implementations |
 | `adapters/config.py` | TOML/environment loading and secret resolution; maps domain athlete/quality settings |
-| `adapters/http/` | FastAPI application, auth and wire response mapping |
-| `adapters/cli/` | cyclopts CLI; TTY detection + global `--json`, Rich rendering and stderr diagnostics |
-| `adapters/wire.py` | Pydantic transport models shared by HTTP and CLI JSON output |
+| `adapters/http/` | FastAPI application and auth |
+| `adapters/cli/` | cyclopts CLI; generic shape-based Rich rendering and stderr diagnostics |
+| `adapters/wire.py` | Generic Pydantic metric/report transport models shared by HTTP and CLI JSON |
 | `adapters/bootstrap.py` | Composition root wiring concrete adapters to application-service ports |
 | `errors.py` | Typed exception hierarchy (`TrainingStatsError` base) |
 
@@ -41,11 +41,11 @@ map domain results to transport output.
    re-derived from the repaired record timeline (see §3).
 2. No raw time-series persistence — record samples live in a transient
    Polars frame during processing and are discarded. Only coarse derived
-   aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages).
-   Period aggregates (daily/weekly, training form) are **never persisted**;
-    they are derived on read by `domain/analytics/` over the lazy activity frame.
+   aggregates are cached (5-bpm HR histogram, 10-min weighted HR averages,
+   binned heatmaps). Period aggregates (daily/weekly, training form) are
+   **never persisted**; they are derived on read by `domain/analytics/`.
 3. Secrets only from environment variables (`SecretStr`, never logged).
-4. Atomic cache writes only (tmp file + fsync + `os.replace`); exactly one
+4. Atomic JSON cache writes only (tmp file + fsync + `os.replace`); exactly one
    process operates on the cache at a time via the app-wide flock
     (`adapters/cache/locking.py`), held for the process lifetime.
 5. Incremental sync: size + mtime skip re-reads; downloaded candidates are
@@ -67,12 +67,12 @@ Everything non-secret lives in a TOML file (see `config.example.toml`):
   `heart_rate_zones` (five validated, non-overlapping `(min, max)` bpm bounds)
 - `[[sources]]` — one or more `local` or `webdav` sources; WebDAV
   credentials are referenced by *environment variable name*
-- `[quality]` — repair and metric thresholds (defaults below, §3.2)
+- `[quality]` — repair, sensor-coverage, and speed-threshold settings
 - `[cache]` — directory and lock timeout
 
 The analysis version (see §10) is owned by the code, not the config: it is
 the reprocessing switch — when parsing or metric semantics change, the
-version is bumped and the next sync reprocesses every file (current: `"5"`).
+version is bumped and the next sync reprocesses every file (current: `"6"`).
 
 ---
 
@@ -125,10 +125,13 @@ They are exposed in activity details and data-quality summaries.
 
 ### 3.4 Statistics (`domain/analytics/`)
 
-All user-visible statistics are derived in the analysis module from repaired
-record samples and pause intervals. FIT session aggregates are not used as
-fallbacks. Start time is the first record timestamp; duration is the record
-span and therefore includes pauses. Moving time excludes pauses, and
+Analytics is a collection of stateless functions. Per-trip functions accept a
+`ParsedActivity` (including its transient Polars record frame) and return one
+or more immutable `Metric` objects. Public summary functions compose these
+metric functions and return `MetricReport`; services provide cache records and
+configuration and perform sync/validation only. FIT session aggregates are not
+used as fallbacks. Start time is the first record timestamp; duration is the
+record span and therefore includes pauses. Moving time excludes pauses, and
 `paused_time_s = duration_s − moving_time_s`. Distance and elevation gain are
 derived from active record intervals. Sport and sub-sport come from raw
 session metadata.
@@ -165,7 +168,7 @@ treated as active for its full record span.
 
 ### 4.1 Sync Flow (`services/sync.py` + `services/ingest.py` + `adapters/cache/repository.py`)
 
-1. Load source index + activity/metrics stores (in memory) via
+1. Load source index + per-activity metric records (in memory) via
    `repository.load_sync_state()`.
 2. List all files from all enabled sources.
 3. Skip files matching size + mtime + version from the previous sync
@@ -174,10 +177,10 @@ treated as active for its full record span.
    delegate to `ingest.FileProcessor` — parse, repair, compute metrics,
    index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` and retained as
-   source-only rows (no activity fields) in the unified table.
-6. `repository.save_sync_snapshot()` prunes orphan store rows (no `ok`
-   index row) and writes the unified cache file (`training_cache.parquet`)
-   and `metadata.json` atomically under the app-wide cache lock.
+   source-index outcomes without an ActivityRecord.
+6. `repository.save_sync_snapshot()` prunes orphan activity records (no `ok`
+   index row) and writes the JSON cache snapshot (`training_cache.json`) and
+   `metadata.json` atomically under the app-wide cache lock.
    Daily/weekly aggregates are **never written**: they are derived on read
    (§6) strictly from rows with activity data.
 
@@ -189,16 +192,13 @@ down) is reported in `source_errors` without aborting other sources.
 
 | File | Content |
 |---|---|
-| `training_cache.parquet` | One row per accepted activity: identity, start time, sport, duration/moving/paused, distance, elevation, HR, speeds, segment fields, repair flags, derived metrics (§5), and source-index fields (hashes, size/mtime, per-file repair flags, status). Histograms, HR buckets, and flags use native nested Parquet values. Failed reads, duplicates, and files with no retained segments are source-only rows (null `start_time`) |
-| `metadata.json` | last sync time |
+| `training_cache.json` | Snapshot with one ActivityRecord and per-trip Metric collection per accepted activity, plus source-index outcomes |
+| `metadata.json` | Last successful sync time |
 
-Daily and weekly summaries and the training-form curve are **not stored**:
-`domain/analytics/daily.py` groups the lazy activity frame on read,
-`domain/analytics/weekly.py` rolls up daily rows, and
-`domain/analytics/fitness.py` folds the form curve (§6–7). The repository
-exposes domain-shaped `activities_scan()` and `source_index_scan()` frames;
-list/get/data-quality queries and row mapping live in
-`domain/analytics/activities.py`.
+Daily and weekly summaries and the training-form curve are **not stored**;
+the analytics report functions derive them from cached ActivityRecords on
+read. Cache serialization uses domain dataclasses and is independent from the
+Pydantic API wire models.
 
 Statuses: `ok`, `duplicate`, `failed`. Row key: `(source_name, source_path, segment_index)`.
 
@@ -290,25 +290,23 @@ time, distance, elevation gain, avg HR, max HR, and avg speed.
 
 ### 6.1 Daily (`daily.py`)
 
-`summarize_daily` consumes the **lazy activity frame** and pushes the
-group-by down to Polars: grouped by **local calendar date** (configured
-timezone) × sport. Totals: activity count, duration, distance, elevation,
-zone seconds, load, `hard_activity_count` (load ≥ 150.0), longest activity
-(duration + id). `select_daily` filters by date/sport and merges across
-sports on request (`sport="all"`).
+`daily_summary` projects cached records into a transient Polars frame and
+returns one table metric per measure, grouped by **local calendar date**
+(configured timezone) × sport. Totals include activity count, duration,
+distance, elevation, zone seconds, load, `hard_activity_count` (load ≥ 150.0),
+and longest activity.
 
 ### 6.2 Weekly (`weekly.py`)
 
-Daily rows rolled up by **ISO week** (Monday start) × sport, with a
-`comparison_vs_prev_week` block (load, duration, distance of the previous
-ISO week, `None` when absent).
+Weekly metrics roll daily totals up by **ISO week** (Monday start) × sport.
+Previous-week comparisons are emitted as table metrics with missing cells when
+there is no prior week.
 
-### 6.3 Trends (`trends.py`)
+### 6.3 Trends
 
-`training_trends(metric, days, sport)` builds a daily series for one of
-`duration | distance | elevation | load | activities` plus `total`, `mean`,
-and a direction classified by comparing first-half vs second-half means:
-`change_pct > +5% → increasing`, `< −5% → decreasing`, else `stable`.
+Daily and weekly trend outputs are `TableValue` metrics with date/week axes.
+The same report shape supports metrics added later without a trend-specific
+wire or renderer model.
 
 ---
 
@@ -346,7 +344,8 @@ Initial conditions CTL = ATL = 0 on the day before the first activity.
 
 ## 8. Data Quality Signals
 
-`training://data-quality` and `DataQuality`:
+The overview report exposes data-quality metrics over all cached
+activity/source history:
 
 | Signal | Meaning |
 |---|---|
@@ -357,8 +356,11 @@ Initial conditions CTL = ATL = 0 on the day before the first activity.
 | `discarded_segment_count` | Short segments dropped by segmentation |
 | `duplicate_activity_count` | Exact-duplicate files excluded from counting |
 
-Per-activity `data_hygiene_flags` (in `get_activity`) expose the specific
-repair outcomes so the LLM can reason about data trustworthiness.
+Wire names are namespaced, for example `data_quality.activity_count` and
+`data_quality.mean_hr_coverage_ratio`.
+
+Per-activity repair flags are exposed as metrics so clients can reason about
+data trustworthiness.
 
 ---
 
@@ -369,10 +371,10 @@ repair outcomes so the LLM can reason about data trustworthiness.
 
 | Command | Purpose |
 |---|---|
-| `list [--start? --end? --sport? --limit? --no-sync]` | Syncs sources first, then compact summaries (newest first), incl. `local_start_time`, `moving_time_s` |
-| `show <activity-id>` | Full record: zones, histogram, 10-min buckets, drift, decoupling, load, paused time, hygiene flags |
-| `weekly [--start? --end? --weeks? --sport? --no-sync]` | ISO-week totals with previous-week comparison |
-| `overview [--days? --sport? --no-sync]` | Compact coaching bundle: profile, recent activities, weeklies, daily series, zone distribution, form + form history, quality, latest activity |
+| `list [--start? --end? --sport? --limit? --no-sync]` | Generic trip-metric report, newest first |
+| `show <activity-id>` | One activity's metric report |
+| `weekly [--start? --end? --weeks? --sport? --no-sync]` | ISO-week table metrics |
+| `overview [--days? --sport? --no-sync]` | Generic coaching report: profile, trends, form, readiness, and quality metrics |
 
 **REST** (same service layer; OpenAPI at `/openapi.json`)
 
@@ -383,9 +385,10 @@ repair outcomes so the LLM can reason about data trustworthiness.
 | `GET /weekly` | As `weekly`; synchronizes if due |
 | `GET /overview` | As `overview`; synchronizes if due |
 
-The overview's daily series carries per-(date, sport) totals for every
-metric (duration, distance, elevation, load, activities, zone seconds), so
-any metric trend is a filter and projection over it.
+All metric commands return one generic MetricReport envelope. Each Metric is
+self-describing through its stable name, period, shape, unit, missing reason,
+kind, and optional calculation provenance. Adding a scalar/table/matrix metric
+does not require route or Rich renderer changes.
 
 `list`, `weekly` and `overview` synchronize *if due*: a real sync runs
 only when the last successful one is older than
@@ -403,17 +406,17 @@ contain raw time-series data.
 
 ---
 
-## 10. Cache Schemas & Versioning Notes
+## 10. Cache Format & Versioning Notes
 
-- All Parquet writes are atomic; reads of missing files return empty frames
-  (lazy scans return an empty frame with the full schema).
-- The cache layout changed to a single merged activity table; there is no
-  automatic migration — delete stale `activity_metrics.parquet`,
-  `daily_metrics.parquet`, `weekly_metrics.parquet` (and the old
-  `sync.lock`) and re-sync.
+- The JSON cache is written atomically (temporary file + fsync + replace).
+- Cache records are ActivityRecord-grain; metrics are a typed domain collection
+  serialized inside each record. Source outcomes are stored separately in the
+  snapshot. Period reports are derived on read.
+- There is no backward migration path. Delete `training_cache.json` and re-sync
+  to build a fresh snapshot after a cache-format or analysis-version change.
 - Bumping the internal `ANALYSIS_VERSION_VALUE` in `adapters/cache/schemas.py`
-  (currently `"4"`) forces full reprocessing on the next sync; activity IDs
-  are re-derived deterministically.
+  forces full reprocessing on the next sync; activity IDs are re-derived
+  deterministically.
 - History: v2 (histogram + 10-min averages + drift), v3 (clock-correction
   start times), v4 (timeline repair, segment splits, records-derived moving
   time, UTC-canonical activity IDs).

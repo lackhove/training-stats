@@ -11,6 +11,7 @@ from tests.conftest import make_athlete
 from training_stats.domain.analytics.segments import SegmentAnalysis, analyze_segments
 from training_stats.domain.fit.repair import repair_timeline
 from training_stats.domain.fit.types import FitData
+from training_stats.domain.metrics import ScalarValue, TableValue
 from training_stats.domain.settings import QualityConfig
 
 START = datetime(2026, 9, 17, 8, 0, tzinfo=UTC)
@@ -187,10 +188,14 @@ class TestPauseAwareStatistics:
         assert activity.avg_speed_mps == pytest.approx(5.0)
         assert activity.max_speed_mps == pytest.approx(5.0)
         assert len(activity.pause_intervals) == 1
-        assert metrics.hr_zone_1_s == pytest.approx(120.0)
-        assert metrics.hr_zone_2_s == pytest.approx(120.0)
-        assert metrics.hr_zone_5_s == 0.0
-        assert metrics.hr_coverage_ratio == pytest.approx(1.0)
+        zones = next(metric for metric in metrics if metric.name == "heart_rate.zone_time")
+        coverage = next(metric for metric in metrics if metric.name == "heart_rate.coverage")
+        assert isinstance(zones.value, TableValue)
+        assert zones.value.values[0] == pytest.approx(120.0)
+        assert zones.value.values[1] == pytest.approx(120.0)
+        assert zones.value.values[4] == 0.0
+        assert isinstance(coverage.value, ScalarValue)
+        assert coverage.value.value == pytest.approx(1.0)
 
     def test_speed_fallback_detects_pause_when_timer_events_are_absent(self) -> None:
         result = _analyze(_paused_activity(timer_events=False))

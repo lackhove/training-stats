@@ -97,8 +97,18 @@ class SyncService:
                 len(source_errors),
             )
         else:
+            accepted_ids = {
+                row.activity_id
+                for row in kept_index
+                if row.status == STATUS_OK and row.activity_id is not None
+            }
+            persisted_activities = {
+                activity_id: activity
+                for activity_id, activity in state.activities.items()
+                if activity_id in accepted_ids
+            }
             self.repository.save_sync_snapshot(
-                SyncState(index_rows=kept_index, activities=state.activities),
+                SyncState(index_rows=kept_index, activities=persisted_activities),
                 last_sync=started_at,
             )
             logger.info(

@@ -19,11 +19,11 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 from cyclopts.exceptions import CycloptsError
-from pydantic import BaseModel
 from rich.console import Console
 
 from ... import __version__
 from ...domain.errors import TrainingStatsError
+from ...domain.metrics import MetricReport
 from ...services.results import SyncResult, ThrottledSync
 from ...services.training import TrainingStatsService
 from .. import wire
@@ -127,24 +127,18 @@ def _service(config_path: Path | None) -> TrainingStatsService:
     return _service_context(config_path)[1]
 
 
-def _dump(payload: BaseModel | Sequence[BaseModel]) -> object:
-    if isinstance(payload, BaseModel):
-        return payload.model_dump(mode="json")
-    return [item.model_dump(mode="json") for item in payload]
-
-
 def _emit(
-    payload: BaseModel | Sequence[BaseModel],
+    payload: MetricReport,
     renderer: Callable[[object, Console], None],
     *,
     force_json: bool,
 ) -> None:
-    """Render a wire model as a Rich view when stdout is a TTY, else as JSON."""
-    data = _dump(payload)
+    """Render a generic metric wire report as Rich when stdout is a TTY."""
     if not force_json and sys.stdout.isatty():
-        renderer(data, Console())
+        renderer(payload, Console())
     else:
-        print(json.dumps(data, indent=2))
+        wire_payload = wire.metric_report(payload)
+        print(json.dumps(wire_payload.model_dump(mode="json"), indent=2))
 
 
 @app.meta.default
@@ -221,13 +215,10 @@ def list_activities(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        [
-            wire.activity_summary(item)
-            for item in service.list_activities(
-                start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
-            )
-        ],
-        cli_output.render_list,
+        service.list_activities(
+            start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
+        ),
+        cli_output.render_report,
         force_json=json_output,
     )
 
@@ -236,8 +227,8 @@ def list_activities(
 def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
     """Show one activity with metrics, zones, load and data quality."""
     _emit(
-        wire.activity_details(_service(config).get_activity(activity_id)),
-        cli_output.render_show,
+        _service(config).get_activity(activity_id),
+        cli_output.render_report,
         force_json=json_output,
     )
 
@@ -257,13 +248,10 @@ def weekly(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        [
-            wire.weekly_row(row)
-            for row in service.weekly_summary(
-                start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
-            )
-        ],
-        cli_output.render_weekly,
+        service.weekly_summary(
+            start_date=start, end_date=end, weeks=weeks, sport=sport, sync_first=False
+        ),
+        cli_output.render_report,
         force_json=json_output,
     )
 
@@ -281,8 +269,8 @@ def overview(
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
     _emit(
-        wire.overview(service.overview(days=days, sport=sport, sync_first=False)),
-        cli_output.render_overview,
+        service.overview(days=days, sport=sport, sync_first=False),
+        cli_output.render_report,
         force_json=json_output,
     )
 

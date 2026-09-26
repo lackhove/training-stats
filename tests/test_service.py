@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +11,10 @@ import pytest
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.cache import schemas
+from training_stats.adapters.cache.repository import JsonTrainingRepository
+from training_stats.domain.metrics import Metric, MetricReport, ScalarValue, TableValue, TripPeriod
 from training_stats.services.results import SyncResult, ThrottledSync
+from training_stats.services.state import SyncState
 from training_stats.services.training import TrainingStatsService
 
 # Fixture activities anchored to "today" so overview windows match.
@@ -53,8 +55,24 @@ def _make_throttled_server(tmp_path: Path, interval_s: float = 10.0) -> Training
 
 def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
     stamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    (cache_dir / schemas.METADATA_FILE).write_text(json.dumps({"last_sync": stamp.isoformat()}))
+    JsonTrainingRepository(cache_dir).save_sync_snapshot(SyncState([], {}), last_sync=stamp)
+
+
+def _activity_ids(report: MetricReport) -> set[str]:
+    return {
+        metric.period.activity_id
+        for metric in report.metrics
+        if isinstance(metric.period, TripPeriod)
+    }
+
+
+def _metric(report: MetricReport, name: str) -> Metric:
+    return next(metric for metric in report.metrics if metric.name == name)
+
+
+def _scalar(report: MetricReport, name: str) -> object:
+    value = _metric(report, name).value
+    return value.value if isinstance(value, ScalarValue) else None
 
 
 @pytest.fixture
@@ -77,22 +95,27 @@ class TestServiceOperations:
         assert result.files_skipped == 2
 
     def test_list_activities_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
-        assert unsynced_server.repository.activities_scan().collect().is_empty()
+        assert unsynced_server.repository.load_sync_state().activities == {}
         activities = unsynced_server.list_activities()
-        assert len(activities) == 2
-        assert not unsynced_server.repository.activities_scan().collect().is_empty()
+        assert len(_activity_ids(activities)) == 2
+        assert len(unsynced_server.repository.load_sync_state().activities) == 2
 
     def test_list_activities_without_sync(self, unsynced_server: TrainingStatsService) -> None:
         activities = unsynced_server.list_activities(sync_first=False)
-        assert activities == []
+        assert activities.metrics == ()
 
     def test_list_activities_picks_up_new_files(self, server: TrainingStatsService) -> None:
         source = server.sync_service.sources[0]
         assert isinstance(source, StubSource)
         source.files["swim.fit"] = stub_activity_content(T0 + timedelta(days=3), "swimming", 1200.0)
         activities = server.list_activities()
-        assert len(activities) == 3
-        assert {item.sport for item in activities} == {"cycling", "running", "swimming"}
+        assert len(_activity_ids(activities)) == 3
+        sports = {
+            metric.value.value
+            for metric in activities.metrics
+            if metric.name == "activity.sport" and isinstance(metric.value, ScalarValue)
+        }
+        assert sports == {"cycling", "running", "swimming"}
 
     def test_list_activities_serves_cache_when_sync_fails(
         self,
@@ -106,59 +129,58 @@ class TestServiceOperations:
         monkeypatch.setattr(server.sync_service, "sync", broken_sync)
         with caplog.at_level(logging.WARNING, logger="training_stats.services.training"):
             activities = server.list_activities()
-        assert len(activities) == 2
+        assert len(_activity_ids(activities)) == 2
         assert any("activity sync failed" in record.message for record in caplog.records)
 
     def test_startup_sync_populates_cache(self, unsynced_server: TrainingStatsService) -> None:
         from training_stats.adapters.cli.app import _startup_sync
 
-        assert unsynced_server.repository.activities_scan().collect().is_empty()
+        assert unsynced_server.repository.load_sync_state().activities == {}
         _startup_sync(unsynced_server)
-        assert unsynced_server.repository.activities_scan().collect().height == 2
+        assert len(unsynced_server.repository.load_sync_state().activities) == 2
 
     def test_weekly_summary_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
-        assert unsynced_server.repository.activities_scan().collect().is_empty()
-        rows = unsynced_server.weekly_summary(weeks=4)
-        assert len(rows) == 2
+        assert unsynced_server.repository.load_sync_state().activities == {}
+        report = unsynced_server.weekly_summary(weeks=4)
+        assert report.metrics
 
     def test_weekly_summary_without_sync(self, unsynced_server: TrainingStatsService) -> None:
-        assert unsynced_server.weekly_summary(weeks=4, sync_first=False) == []
+        report = unsynced_server.weekly_summary(weeks=4, sync_first=False)
+        assert all(metric.value is None for metric in report.metrics)
 
     def test_overview_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
         overview = unsynced_server.overview(days=14)
-        assert overview.data_quality.activity_count == 2
-        assert len(overview.daily_series) == 2
+        assert _scalar(overview, "data_quality.activity_count") == 2
+        assert len(_activity_ids(overview)) == 2
 
     def test_overview_without_sync(self, unsynced_server: TrainingStatsService) -> None:
         overview = unsynced_server.overview(days=14, sync_first=False)
-        assert overview.data_quality.activity_count == 0
+        assert _scalar(overview, "data_quality.activity_count") == 0
 
     def test_get_activity_does_not_sync(self, unsynced_server: TrainingStatsService) -> None:
         with pytest.raises(LookupError, match="not found"):
             unsynced_server.get_activity("does-not-exist")
         # Cache-only: no sync happened, so the store is still empty.
-        assert unsynced_server.repository.activities_scan().collect().is_empty()
+        assert unsynced_server.repository.load_sync_state().activities == {}
 
     def test_list_activities(self, server: TrainingStatsService) -> None:
         activities = server.list_activities()
-        assert len(activities) == 2
-        item = activities[0]
-        assert item.activity_id
-        assert item.start_time is not None
-        assert item.local_start_time != ""
-        assert item.sport
-        assert item.load_value is not None
+        assert len(_activity_ids(activities)) == 2
+        assert _scalar(activities, "activity.sport")
+        assert _scalar(activities, "training_load.hr_trimp") is not None
         # No time-series data may leak into responses.
-        assert not hasattr(item, "records")
+        assert "records" not in str(activities)
 
     def test_list_activities_sport_filter(self, server: TrainingStatsService) -> None:
         activities = server.list_activities(sport="running")
-        assert [item.sport for item in activities] == ["running"]
+        assert len(_activity_ids(activities)) == 1
+        assert _scalar(activities, "activity.sport") == "running"
 
     def test_list_activities_date_filter(self, server: TrainingStatsService) -> None:
         run_day = (T0 + timedelta(days=7)).date()
         activities = server.list_activities(start_date=run_day, end_date=run_day)
-        assert [item.sport for item in activities] == ["running"]
+        assert len(_activity_ids(activities)) == 1
+        assert _scalar(activities, "activity.sport") == "running"
 
     def test_list_activities_invalid_limit(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="limit"):
@@ -166,32 +188,28 @@ class TestServiceOperations:
 
     def test_get_activity(self, server: TrainingStatsService) -> None:
         activities = server.list_activities(limit=1)
-        details = server.get_activity(activities[0].activity_id)
-        assert details.sport == activities[0].sport
-        assert details.hr_zone_1_s >= 0.0
-        assert not hasattr(details, "records")
-        assert details.load_method == "hr_trimp"
-        assert details.local_start_time != ""
-        assert details.paused_time_s is None or details.paused_time_s >= 0.0
-        assert isinstance(details.repair_flags, tuple)
-        if details.decoupling_confidence is not None:
-            assert details.decoupling_confidence
-            assert details.aerobic_decoupling_pct is None or (
-                details.ef_first_half is not None and details.ef_second_half is not None
-            )
+        activity_id = next(iter(_activity_ids(activities)))
+        details = server.get_activity(activity_id)
+        assert _activity_ids(details) == {activity_id}
+        load = _metric(details, "training_load.hr_trimp")
+        assert load.method == "hr_trimp"
+        zones = _metric(details, "heart_rate.zone_time")
+        assert isinstance(zones.value, TableValue)
 
     def test_get_activity_not_found(self, server: TrainingStatsService) -> None:
         with pytest.raises(LookupError, match="not found"):
             server.get_activity("does-not-exist")
 
     def test_weekly_summary(self, server: TrainingStatsService) -> None:
-        rows = server.weekly_summary(weeks=4)
-        assert len(rows) == 2
-        assert rows[0].load_value_prev is None
+        report = server.weekly_summary(weeks=4)
+        assert _metric(report, "activity.distance_by_week").value is not None
+        assert _metric(report, "training_load.hr_trimp_by_week").kind.value == "estimated"
 
     def test_weekly_summary_sport(self, server: TrainingStatsService) -> None:
         rows = server.weekly_summary(weeks=4, sport="cycling")
-        assert [row.sport for row in rows] == ["cycling"]
+        distances = _metric(rows, "activity.distance_by_week")
+        assert isinstance(distances.value, TableValue)
+        assert len(distances.value.axis.values) == 1
 
     def test_weekly_summary_invalid_weeks(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="weeks"):
@@ -199,41 +217,16 @@ class TestServiceOperations:
 
     def test_overview(self, server: TrainingStatsService) -> None:
         overview = server.overview(days=14)
-        assert overview.athlete_profile["max_heart_rate"] == 180
-        assert len(overview.recent_activities) == 2
-        assert overview.latest_activity is not None
-        assert overview.data_quality.activity_count == 2
-        assert overview.period_start
-        assert overview.period_end
-        # The daily series carries every metric; any trend is derivable.
-        assert len(overview.daily_series) == 2
-        day = overview.daily_series[0]
-        assert day.date and day.sport
-        assert day.duration_s >= 0.0
-        assert day.distance_m >= 0.0
-        assert day.load_value >= 0.0
-        assert day.hr_zone_1_s >= 0.0
-        # Form snapshot, form history and tour readiness.
-        assert overview.form.classification in (
-            "fresh",
-            "optimal",
-            "high_fatigue",
-            "overtraining_risk",
-        )
-        assert overview.form.is_warmup in (True, False)
-        assert isinstance(overview.form_history, tuple)
-        point = overview.form_history[0]
-        assert point.date and point.ctl == point.ctl and point.atl == point.atl
-        assert overview.tour_readiness.rolling_7d_km >= 0.0
-        assert overview.tour_readiness.rolling_28d_km >= 0.0
-        assert overview.tour_readiness.days_since_60k is None or (
-            overview.tour_readiness.days_since_60k >= 0
-        )
+        assert _scalar(overview, "athlete_profile.max_heart_rate") == 180
+        assert len(_activity_ids(overview)) == 2
+        assert _scalar(overview, "data_quality.activity_count") == 2
+        assert _scalar(overview, "training_form.ctl") is not None
+        assert _scalar(overview, "tour_readiness.rolling_7d_distance") >= 0.0
         assert "records" not in str(overview)
 
     def test_overview_sport_filter(self, server: TrainingStatsService) -> None:
         overview = server.overview(days=14, sport="cycling")
-        assert {row.sport for row in overview.daily_series} == {"cycling"}
+        assert len(_activity_ids(overview)) == 1
 
     def test_overview_invalid_days(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="days"):

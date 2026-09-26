@@ -6,8 +6,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Protocol
 
-import polars as pl
-
 from ..domain.fit.types import FitData
 from ..domain.models import SourceFile
 from .state import SyncState
@@ -35,11 +33,9 @@ class FitParser(Protocol):
 
 
 class TrainingRepository(Protocol):
-    """Read-side storage port. Frames use the domain activity-frame contract."""
+    """Read-side storage port for decoded domain cache records."""
 
-    def activities_scan(self) -> pl.LazyFrame: ...
-
-    def source_index_scan(self) -> pl.LazyFrame: ...
+    def load_sync_state(self) -> SyncState: ...
 
     def last_sync_stamp(self) -> datetime | None: ...
 

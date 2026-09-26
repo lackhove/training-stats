@@ -12,11 +12,8 @@ import pytest
 from tests.conftest import StubParser, make_app_config, make_record_frame, stub_activity_content
 from tests.test_repository import T0, build_repository, two_files
 from training_stats.domain.analytics.activities import (
-    ActivityMetrics,
-    activity_details,
-    activity_summaries,
     compute_activity_metrics,
-    data_quality,
+    data_quality_metrics,
 )
 from training_stats.domain.analytics.daily import (
     HARD_LOAD_THRESHOLD,
@@ -24,12 +21,20 @@ from training_stats.domain.analytics.daily import (
     select_daily,
     summarize_daily,
 )
+from training_stats.domain.analytics.reports import activity_list_report, activity_report
 from training_stats.domain.analytics.weekly import (
     WeeklySummaryRow,
     aggregate_weekly,
     select_weekly,
 )
 from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
+from training_stats.domain.metrics import (
+    AllTimePeriod,
+    Metric,
+    ScalarValue,
+    TableValue,
+    TripPeriod,
+)
 
 # Columns summarize_daily and its selection helpers consume.
 ACTIVITY_FRAME_SCHEMA: dict[str, pl.DataType] = {
@@ -108,6 +113,18 @@ def _activity_frame(rows: list[dict[str, object]]) -> pl.LazyFrame:
     return pl.DataFrame(rows, schema=ACTIVITY_FRAME_SCHEMA).lazy()
 
 
+def _scalar(metrics: tuple[Metric, ...], name: str) -> object:
+    metric = next(item for item in metrics if item.name == name)
+    value = metric.value
+    return value.value if isinstance(value, ScalarValue) else None
+
+
+def _table(metrics: tuple[Metric, ...], name: str) -> TableValue | None:
+    metric = next(item for item in metrics if item.name == name)
+    value = metric.value
+    return value if isinstance(value, TableValue) else None
+
+
 class TestActivityMetrics:
     def test_zones_and_load(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
@@ -116,40 +133,50 @@ class TestActivityMetrics:
         # 299 in zone 4 (each interval belongs to the zone of its start record).
         activity = _parsed(start, heart_rates=[120] * 300 + [150] * 300)
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        assert metrics.hr_zone_2_s == pytest.approx(300.0)
-        assert metrics.hr_zone_4_s == pytest.approx(299.0)
-        assert metrics.load_value is not None
-        assert metrics.load_value > 0
-        assert metrics.load_method == "hr_trimp"
-        assert metrics.load_confidence == "high"
-        assert metrics.hr_coverage_ratio == pytest.approx(1.0)
+        zones = _table(metrics, "heart_rate.zone_time")
+        assert zones is not None
+        assert zones.values[1] == pytest.approx(300.0)
+        assert zones.values[3] == pytest.approx(299.0)
+        load = next(metric for metric in metrics if metric.name == "training_load.hr_trimp")
+        assert _scalar(metrics, "training_load.hr_trimp") is not None
+        assert float(_scalar(metrics, "training_load.hr_trimp")) > 0
+        assert load.method == "hr_trimp"
+        assert load.confidence == "high"
+        assert _scalar(metrics, "heart_rate.coverage") == pytest.approx(1.0)
 
     def test_no_hr_data(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
         activity = _parsed(datetime(2026, 6, 1, tzinfo=UTC))
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        assert metrics.load_value is None
-        assert metrics.load_method is None
-        assert metrics.hr_coverage_ratio == 0.0
-        assert metrics.hr_histogram_s == {}
-        assert metrics.hr_10min_averages == ()
-        assert metrics.hr_drift_bpm_per_hour is None
+        load = next(metric for metric in metrics if metric.name == "training_load.hr_trimp")
+        histogram = next(metric for metric in metrics if metric.name == "heart_rate.histogram")
+        assert load.value is None
+        assert load.method == "hr_trimp"
+        assert _scalar(metrics, "heart_rate.coverage") == 0.0
+        assert histogram.value is None
+        assert _scalar(metrics, "heart_rate.drift") is None
 
     def test_histogram_and_buckets_present(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
         activity = _parsed(start, heart_rates=[130] * 7200)  # 2 hours at 1 s
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        assert metrics.hr_histogram_s == {"130-134": 7199.0}
-        assert [bucket.start_min for bucket in metrics.hr_10min_averages] == list(range(0, 120, 10))
-        assert metrics.hr_drift_bpm_per_hour is not None
-        assert abs(metrics.hr_drift_bpm_per_hour) < 1e-9  # constant HR: no drift
+        histogram = _table(metrics, "heart_rate.histogram")
+        buckets = _table(metrics, "heart_rate.average_by_10_minutes")
+        assert histogram is not None
+        assert histogram.axis.values == ("130-134",)
+        assert histogram.values == pytest.approx((7199.0,))
+        assert buckets is not None
+        assert buckets.axis.values == tuple(range(0, 120, 10))
+        drift = _scalar(metrics, "heart_rate.drift")
+        assert drift is not None
+        assert abs(float(drift)) < 1e-9  # constant HR: no drift
 
     def test_analysis_version_included(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
         activity = _parsed(datetime(2026, 6, 1, tzinfo=UTC))
         metrics = compute_activity_metrics(activity, config.athlete, "3")
-        assert metrics.analysis_version == "3:1"
+        assert _scalar(metrics, "analysis.version") == "3"
 
     def test_decoupling_computed(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
@@ -178,10 +205,9 @@ class TestActivityMetrics:
             source_path="x",
         )
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        assert metrics.decoupling_confidence == "high"
-        assert metrics.ef_first_half is not None
-        assert metrics.ef_second_half is not None
-        assert metrics.aerobic_decoupling_pct == pytest.approx(0.0)
+        assert _scalar(metrics, "endurance.efficiency_first_half") is not None
+        assert _scalar(metrics, "endurance.efficiency_second_half") is not None
+        assert _scalar(metrics, "endurance.aerobic_decoupling") == pytest.approx(0.0)
 
 
 class TestSummarizeDaily:
@@ -400,26 +426,6 @@ def _weekly(
     )
 
 
-def _metrics(activity_id: str, load: float | None = None) -> ActivityMetrics:
-    return ActivityMetrics(
-        activity_id=activity_id,
-        hr_zone_1_s=0.0,
-        hr_zone_2_s=10.0,
-        hr_zone_3_s=0.0,
-        hr_zone_4_s=0.0,
-        hr_zone_5_s=0.0,
-        hr_coverage_ratio=1.0,
-        hr_histogram_s={},
-        hr_10min_averages=(),
-        hr_drift_bpm_per_hour=None,
-        load_value=load,
-        load_method="hr_trimp" if load else None,
-        load_confidence="high" if load else None,
-        data_completeness=1.0,
-        analysis_version="1:1",
-    )
-
-
 def _daily(date: str, load: float) -> DailySummaryRow:
     return DailySummaryRow(
         date=date,
@@ -454,78 +460,85 @@ def test_stub_parser_roundtrip() -> None:
     assert first.frame.filter(pl.col("message_type") == "record").height > 5
 
 
-# -- cache queries: LazyFrame in, domain rows out ---------------------------
-
-
 CACHE_TZ = ZoneInfo("Europe/Berlin")
 
 
-class TestActivitySummaries:
+class TestActivityMetricReports:
     def test_newest_first(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
-        assert [item.sport for item in summaries] == ["running", "cycling"]
+        records = tuple(repository.load_sync_state().activities.values())
+        report = activity_list_report(records, CACHE_TZ)
+        trip_ids = [
+            metric.period.activity_id
+            for metric in report.metrics
+            if metric.name == "activity.sport" and isinstance(metric.period, TripPeriod)
+        ]
+        assert [
+            next(row.sport for row in records if row.activity_id == item) for item in trip_ids
+        ] == [
+            "running",
+            "cycling",
+        ]
 
     def test_limit(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        assert len(activity_summaries(repository.activities_scan(), CACHE_TZ, limit=1)) == 1
+        records = tuple(repository.load_sync_state().activities.values())
+        report = activity_list_report(records, CACHE_TZ, limit=1)
+        assert len({metric.period.activity_id for metric in report.metrics}) == 1
 
     def test_sport_filter_case_insensitive(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ, sport="RUNNING")
-        assert [item.sport for item in summaries] == ["running"]
+        records = tuple(repository.load_sync_state().activities.values())
+        report = activity_list_report(records, CACHE_TZ, sport="RUNNING")
+        assert len({metric.period.activity_id for metric in report.metrics}) == 1
+        assert _scalar(report.metrics, "activity.sport") == "running"
 
     def test_date_filtering(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
+        records = tuple(repository.load_sync_state().activities.values())
         day = datetime(2026, 6, 3, tzinfo=UTC).date()
-        summaries = activity_summaries(
-            repository.activities_scan(), CACHE_TZ, start_date=day, end_date=day
-        )
-        assert [item.sport for item in summaries] == ["running"]
+        report = activity_list_report(records, CACHE_TZ, start_date=day, end_date=day)
+        assert len({metric.period.activity_id for metric in report.metrics}) == 1
+        assert _scalar(report.metrics, "activity.sport") == "running"
 
-    def test_local_start_time_rendered(self, tmp_path: Path) -> None:
+    def test_activity_report_contains_cached_metrics(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
-        assert all(item.local_start_time != "" for item in summaries)
-
-
-class TestActivityDetails:
-    def test_found(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        summaries = activity_summaries(repository.activities_scan(), CACHE_TZ)
-        details = activity_details(repository.activities_scan(), summaries[0].activity_id, CACHE_TZ)
-        assert details is not None
-        assert details.sport == summaries[0].sport
-        assert details.load_method == "hr_trimp"
-        assert details.source_name == "stub"
-        assert details.hr_zone_1_s >= 0.0
-
-    def test_not_found(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        assert activity_details(repository.activities_scan(), "deadbeef", CACHE_TZ) is None
+        records = tuple(repository.load_sync_state().activities.values())
+        report = activity_report(records, records[0].activity_id)
+        assert report is not None
+        assert all(metric.period.activity_id == records[0].activity_id for metric in report.metrics)
+        assert _scalar(report.metrics, "training_load.hr_trimp") is not None
+        assert activity_report(records, "deadbeef") is None
 
 
 class TestDataQuality:
     def test_values(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
-        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
-        assert quality.activity_count == 2
-        assert quality.failed_file_count == 0
-        assert quality.repaired_file_count == 0
-        assert quality.discarded_segment_count == 0
-        assert quality.duplicate_activity_count == 0
-        assert quality.mean_hr_coverage_ratio is not None
+        state = repository.load_sync_state()
+        metrics = data_quality_metrics(
+            tuple(state.activities.values()), tuple(state.index_rows), AllTimePeriod()
+        )
+        assert _scalar(metrics, "data_quality.activity_count") == 2
+        assert _scalar(metrics, "data_quality.failed_file_count") == 0
+        assert _scalar(metrics, "data_quality.duplicate_activity_count") == 0
+        assert _scalar(metrics, "data_quality.mean_hr_coverage_ratio") is not None
 
     def test_duplicate_activity_counted(self, tmp_path: Path) -> None:
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
         repository = build_repository(tmp_path, {"one.fit": content, "two.fit": content})
-        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
-        assert quality.duplicate_activity_count == 1
-        assert quality.activity_count == 1
+        state = repository.load_sync_state()
+        metrics = data_quality_metrics(
+            tuple(state.activities.values()), tuple(state.index_rows), AllTimePeriod()
+        )
+        assert _scalar(metrics, "data_quality.duplicate_activity_count") == 1
+        assert _scalar(metrics, "data_quality.activity_count") == 1
 
     def test_failed_file_counted(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, {"broken.fit": b"garbage"})
-        quality = data_quality(repository.activities_scan(), repository.source_index_scan())
-        assert quality.activity_count == 0
-        assert quality.failed_file_count == 1
-        assert quality.mean_hr_coverage_ratio is None
+        state = repository.load_sync_state()
+        metrics = data_quality_metrics(
+            tuple(state.activities.values()), tuple(state.index_rows), AllTimePeriod()
+        )
+        assert _scalar(metrics, "data_quality.activity_count") == 0
+        assert _scalar(metrics, "data_quality.failed_file_count") == 1
+        assert _scalar(metrics, "data_quality.mean_hr_coverage_ratio") is None

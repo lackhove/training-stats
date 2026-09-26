@@ -8,7 +8,7 @@ from ..services.ports import ActivitySource, FitParser
 from ..services.settings import ServiceSettings
 from ..services.sync import SyncService
 from ..services.training import TrainingStatsService
-from .cache.repository import ParquetTrainingRepository
+from .cache.repository import JsonTrainingRepository
 from .cache.schemas import ANALYSIS_VERSION_VALUE
 from .config import (
     AppConfig,
@@ -48,7 +48,7 @@ def create_service(config: AppConfig) -> TrainingStatsService:
         quality=config.quality,
         analysis_version=ANALYSIS_VERSION_VALUE,
     )
-    repository = ParquetTrainingRepository(cache_dir=config.cache.directory)
+    repository = JsonTrainingRepository(cache_dir=config.cache.directory)
     sync_service = SyncService(
         sources=sources,
         processor=processor,

@@ -12,7 +12,8 @@ Key properties:
 - **Incremental sync** — new/changed files are detected via file size and
   modification time; unchanged files are never re-read or reprocessed.
 - **No time-series retention** — high-frequency FIT records are used for
-  analytics and then discarded; only aggregates are cached as Parquet files.
+  analytics and then discarded; only per-activity derived metrics are cached
+  in JSON.
 - **Deterministic analytics** — HR zones and load are computed from TOML
   configuration, never invented by an LLM. The load method (`hr_trimp`, a
   Banister-style TRIMP estimate) is stored alongside its version and
@@ -44,22 +45,24 @@ always synchronize, `--no-sync` to never synchronize for one call. On an
 interactive terminal commands render Rich tables and panels; when stdout is
 piped or redirected — or `--json` is given — they print JSON on stdout and
 nothing else, while progress and diagnostics (sync summary, source errors)
-go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
+go to stderr, so piping stays clean: `training-stats list | jq '.metrics[] | select(.name == "activity.sport") | .value.value'`.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `training-stats list [--sport --start --end --limit --no-sync]` | Compact activity summaries, newest first (synchronizes if due) |
-| `training-stats show <activity-id>` | One activity incl. zones, load, data quality (serves cached data) |
-| `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly totals + previous-week comparison (synchronizes if due) |
-| `training-stats overview [--days --sport --no-sync]` | Compact bundle: profile, daily series, weekly summaries, form, quality (synchronizes if due) |
+| `training-stats list [--sport --start --end --limit --no-sync]` | Metric report for matching activities, newest first (synchronizes if due) |
+| `training-stats show <activity-id>` | One activity's metric report (serves cached data) |
+| `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly metrics as tables (synchronizes if due) |
+| `training-stats overview [--days --sport --no-sync]` | Generic coaching metric report (synchronizes if due) |
 | `training-stats server [--host --port]` | Run the REST API (OpenAPI at `/openapi.json`, docs at `/docs`) |
 
 Global options: `--config/-c` and `--json` (before or after the verb),
 `--help`, `--version`.
-The overview's daily series carries per-(date, sport) totals for every metric,
-so any metric trend is a simple filter and projection over it.
+All metric commands return the same report envelope. Each metric includes its
+name, period, value shape, unit, and missing reason when unavailable. Tables
+and matrices are self-describing through their axes; adding metrics that use
+the existing shapes does not require API or Rich renderer changes.
 
 ## Configuration
 
@@ -110,10 +113,10 @@ uv run training-stats server --host 0.0.0.0 --port 8000
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /activities` | Compact activity list (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
-| `GET /activities/{activity_id}` | One activity incl. zones, load, data quality (serves cached data) |
-| `GET /weekly` | Weekly totals + previous-week comparison (synchronizes if due); `weeks`, `sport`, dates |
-| `GET /overview` | Coaching overview (synchronizes if due); `days`, `sport` |
+| `GET /activities` | Generic metric report for matching activities (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
+| `GET /activities/{activity_id}` | One activity's metric report (serves cached data) |
+| `GET /weekly` | Weekly metrics report (synchronizes if due); `weeks`, `sport`, dates |
+| `GET /overview` | Generic coaching metric report (synchronizes if due); `days`, `sport` |
 
 The OpenAPI schema is served at `/openapi.json` (interactive docs at
 `/docs`); response payloads are fully typed, and each syncing endpoint's
@@ -208,17 +211,16 @@ network.
 
 ```text
 data/cache/
-├── training_cache.parquet       # one row per accepted activity: session facts,
-│                                #   derived metrics (nested histogram/buckets)
-│                                #   and its source-index fields;
-│                                #   failed/duplicate source outcomes kept as
-│                                #   rows without activity data
+├── training_cache.json          # activity records with per-trip Metric objects
+│                                # and source-index outcomes
 └── metadata.json                # last sync stamp
 ```
 
-All writes are atomic (temporary file + rename). Daily/weekly summaries and
-the training-form curve are derived on read from the activity table, so they
-are never stored. Exactly one process may operate on the cache at a time:
+The cache is grouped at ActivityRecord grain; failed/duplicate/source-only
+outcomes live in the source-index collection. Daily/weekly summaries and the
+training-form curve are derived on read, not stored. Cache dataclasses are
+serialized independently from API wire models. All writes are atomic
+(temporary file + fsync + rename). Exactly one process may operate on the cache at a time:
 the running server or one CLI command holds an exclusive lock
 (`cache.lock`); while the server runs, CLI commands fail after
 `cache.lock_timeout_seconds` — use the REST API instead.
@@ -229,7 +231,8 @@ by `cache.sync_min_interval_seconds` (default 10 s, anchored at the
 unreachable WebDAV server) is logged and does not abort the remaining
 sources or the response, and a failed sync is never recorded as "recent".
 A full rebuild happens when the internal analysis version in
-`adapters/cache/schemas.py` invalidates derived data on metric semantics changes.
+`adapters/cache/schemas.py` invalidates derived data on metric semantics
+changes; no backward cache migration is maintained.
 
 ## Development
 

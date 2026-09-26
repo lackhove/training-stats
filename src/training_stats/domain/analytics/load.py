@@ -19,6 +19,8 @@ from .heart_rate import ZoneBounds, ZoneResult
 
 LOAD_METHOD = "hr_trimp"
 LOAD_VERSION = "1"
+LOAD_FORMULA = "sum(zone_minutes * coefficient * exp(exponent * heart_rate_reserve_ratio))"
+LOAD_COEFFICIENT_SET = "banister_male"
 # Banister male coefficients; documented as part of the method definition.
 _TRIMP_COEFFICIENT = 0.64
 _TRIMP_EXPONENT = 1.92

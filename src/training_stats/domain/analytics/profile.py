@@ -1,29 +1,72 @@
-"""Athlete profile serialization for the overview bundle."""
+"""Metric functions for configuration-backed athlete profile values."""
 
 from __future__ import annotations
 
+from ..metrics import AllTimePeriod, Axis, Metric, MetricKind, MissingReason
 from ..settings import AthleteConfig
+from .metric_helpers import scalar_metric, table_metric
 
 
-def athlete_profile(athlete: AthleteConfig) -> dict[str, object]:
-    """Return the athlete profile including configuration-dependent metric info."""
-    profile: dict[str, object] = {
-        "max_heart_rate": athlete.max_heart_rate,
-        "resting_heart_rate": athlete.resting_heart_rate,
-        "heart_rate_zones": zone_descriptions(athlete),
-    }
-    if athlete.primary_goal is not None:
-        profile["primary_goal"] = athlete.primary_goal
-    if athlete.weight_kg is not None:
-        profile["weight_kg"] = athlete.weight_kg
-    if athlete.ftp_watts is not None:
-        profile["ftp_watts"] = athlete.ftp_watts
-    return profile
-
-
-def zone_descriptions(athlete: AthleteConfig) -> list[dict[str, object]]:
-    """Describe the configured five-zone heart-rate model."""
-    return [
-        {"zone": zone, "min_bpm": low, "max_bpm": high}
-        for zone, low, high in athlete.heart_rate_zones.as_bounds()
+def athlete_profile(athlete: AthleteConfig) -> tuple[Metric, ...]:
+    """Return stable athlete/profile metrics and configured heart-rate zones."""
+    period = AllTimePeriod()
+    metrics = [
+        scalar_metric(
+            "athlete_profile.max_heart_rate",
+            period,
+            athlete.max_heart_rate,
+            unit="bpm",
+            kind=MetricKind.MEASURED,
+        ),
+        scalar_metric(
+            "athlete_profile.resting_heart_rate",
+            period,
+            athlete.resting_heart_rate,
+            unit="bpm",
+            kind=MetricKind.MEASURED,
+        ),
+        scalar_metric(
+            "athlete_profile.primary_goal",
+            period,
+            athlete.primary_goal,
+            kind=MetricKind.INTERPRETED,
+            missing_reason=MissingReason.NO_DATA,
+        ),
+        scalar_metric(
+            "athlete_profile.weight",
+            period,
+            athlete.weight_kg,
+            unit="kg",
+            kind=MetricKind.MEASURED,
+        ),
+        scalar_metric(
+            "athlete_profile.functional_threshold_power",
+            period,
+            athlete.ftp_watts,
+            unit="W",
+            kind=MetricKind.MEASURED,
+        ),
     ]
+    zones = athlete.heart_rate_zones.as_bounds()
+    axis = Axis(name="heart_rate_zone", values=tuple(f"zone_{zone}" for zone, _, _ in zones))
+    metrics.extend(
+        [
+            table_metric(
+                "athlete_profile.heart_rate_zone_minimum",
+                period,
+                axis,
+                tuple(low for _, low, _ in zones),
+                unit="bpm",
+                kind=MetricKind.MEASURED,
+            ),
+            table_metric(
+                "athlete_profile.heart_rate_zone_maximum",
+                period,
+                axis,
+                tuple(high for _, _, high in zones),
+                unit="bpm",
+                kind=MetricKind.MEASURED,
+            ),
+        ]
+    )
+    return tuple(metrics)

@@ -90,6 +90,8 @@ class QualityConfig:
     forgotten_stop_min_moving_ratio: float = 0.20
     decoupling_min_duration_s: float = 1200.0
     decoupling_min_coverage: float = 0.80
+    speed_thresholds_kmh: tuple[float, ...] = (20.0, 25.0, 30.0, 35.0)
+    cadence_min_coverage: float = 0.50
 
     def __post_init__(self) -> None:
         positive = (
@@ -107,3 +109,9 @@ class QualityConfig:
             value = getattr(self, name)
             if not 0 < value <= 1:
                 raise ValueError(f"quality.{name} must be in (0, 1]")
+        if not 0 <= self.cadence_min_coverage <= 1:
+            raise ValueError("quality.cadence_min_coverage must be in [0, 1]")
+        if any(value < 0 for value in self.speed_thresholds_kmh):
+            raise ValueError("quality.speed_thresholds_kmh values must be non-negative")
+        if tuple(sorted(set(self.speed_thresholds_kmh))) != self.speed_thresholds_kmh:
+            raise ValueError("quality.speed_thresholds_kmh must be strictly increasing")

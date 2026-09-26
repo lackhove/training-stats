@@ -17,4 +17,4 @@ class RemoteFileError(SourceError):
 
 
 class CacheError(TrainingStatsError):
-    """Raised when the Parquet cache cannot be read or written."""
+    """Raised when the JSON cache cannot be read or written."""

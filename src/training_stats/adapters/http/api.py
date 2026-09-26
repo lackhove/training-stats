@@ -83,8 +83,8 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
 
     @app.get(
         "/activities",
-        response_model=list[wire.ActivitySummary],
-        summary="List activity summaries, newest first",
+        response_model=wire.MetricReportWire,
+        summary="List activity metrics, newest first",
         dependencies=route_dependencies,
         tags=["activities"],
         description=(_SYNC_NOTE + " Dates use YYYY-MM-DD format in the configured local timezone."),
@@ -94,29 +94,28 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         end_date: EndDate = None,
         sport: SportQuery = None,
         limit: Annotated[int, Query(gt=0, le=MAX_LIST_LIMIT)] = 50,
-    ) -> list[wire.ActivitySummary]:
-        return [
-            wire.activity_summary(item)
-            for item in service.list_activities(
+    ) -> wire.MetricReportWire:
+        return wire.metric_report(
+            service.list_activities(
                 start_date=start_date, end_date=end_date, sport=sport, limit=limit
             )
-        ]
+        )
 
     @app.get(
         "/activities/{activity_id}",
-        response_model=wire.ActivityDetails,
-        summary="Get one activity with metrics, zones, load and quality",
+        response_model=wire.MetricReportWire,
+        summary="Get one activity's metrics",
         description="Serves cached data; IDs come from /activities.",
         dependencies=route_dependencies,
         tags=["activities"],
     )
-    def get_activity(activity_id: str) -> wire.ActivityDetails:
-        return wire.activity_details(service.get_activity(activity_id))
+    def get_activity(activity_id: str) -> wire.MetricReportWire:
+        return wire.metric_report(service.get_activity(activity_id))
 
     @app.get(
         "/weekly",
-        response_model=list[wire.WeeklyRow],
-        summary="Weekly training totals with previous-week comparisons",
+        response_model=wire.MetricReportWire,
+        summary="Weekly training metrics",
         dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
@@ -129,18 +128,17 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         end_date: EndDate = None,
         weeks: Annotated[int, Query(gt=0, le=MAX_WEEKS)] = 8,
         sport: SportQuery = None,
-    ) -> list[wire.WeeklyRow]:
-        return [
-            wire.weekly_row(row)
-            for row in service.weekly_summary(
+    ) -> wire.MetricReportWire:
+        return wire.metric_report(
+            service.weekly_summary(
                 start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
             )
-        ]
+        )
 
     @app.get(
         "/overview",
-        response_model=wire.Overview,
-        summary="Compact coaching overview",
+        response_model=wire.MetricReportWire,
+        summary="Generic coaching metric report",
         dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
@@ -153,7 +151,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
     def overview(
         days: Annotated[int, Query(gt=0, le=MAX_DAYS)] = 28,
         sport: SportQuery = None,
-    ) -> wire.Overview:
-        return wire.overview(service.overview(days=days, sport=sport))
+    ) -> wire.MetricReportWire:
+        return wire.metric_report(service.overview(days=days, sport=sport))
 
     return app

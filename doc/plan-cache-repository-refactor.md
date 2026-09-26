@@ -3,8 +3,8 @@
 > Status: implemented and overtaken by later work — the write side
 > (`SyncState`/`load_sync_state`/`save_sync_snapshot`) lives in
 > `cache/repository.py` today, derived tables were dropped, and the
-> layering moved further (lazy-frame analytics, coach merged into
-> analytics, app-wide lock). See `AGENTS.md` for the current architecture.
+> architecture has since moved to typed JSON ActivityRecords and MetricReports.
+> See `plan-analytics-rewrite.md` and `AGENTS.md` for the current architecture.
 
 ## Goal
 

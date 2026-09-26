@@ -1,9 +1,10 @@
-"""Tests for the FastAPI REST application."""
+"""Tests for generic MetricReport HTTP responses and OpenAPI schema."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -12,9 +13,7 @@ from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.http.api import build_app
 from training_stats.services.training import TrainingStatsService
 
-# Fixture activities anchored to "today" so overview windows match.
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
-
 EXPECTED_PATHS = {"/activities", "/activities/{activity_id}", "/weekly", "/overview"}
 
 
@@ -42,49 +41,72 @@ def _client(server: TrainingStatsService) -> TestClient:
     return TestClient(build_app(server))
 
 
+def _metrics(report: dict[str, Any]) -> list[dict[str, Any]]:
+    value = report.get("metrics")
+    assert isinstance(value, list)
+    return value
+
+
+def _named(report: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(metric for metric in _metrics(report) if metric["name"] == name)
+
+
+def _trip_ids(report: dict[str, Any]) -> set[str]:
+    return {
+        metric["period"]["activity_id"]
+        for metric in _metrics(report)
+        if metric["period"]["kind"] == "trip"
+    }
+
+
 class TestActivitiesEndpoint:
-    def test_list_syncs_first(self, tmp_path: Path) -> None:
+    def test_list_syncs_first_and_returns_metrics(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         with _client(server) as client:
             response = client.get("/activities")
         assert response.status_code == 200
-        activities = response.json()
-        assert len(activities) == 2
-        assert {item["sport"] for item in activities} == {"cycling", "running"}
-        assert not server.repository.activities_scan().collect().is_empty()
+        report = response.json()
+        assert len(_trip_ids(report)) == 2
+        sports = {
+            metric["value"]["value"]
+            for metric in _metrics(report)
+            if metric["name"] == "activity.sport"
+        }
+        assert sports == {"cycling", "running"}
+        assert len(server.repository.load_sync_state().activities) == 2
 
     def test_list_filters(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/activities", params={"sport": "running"})
-            assert [item["sport"] for item in response.json()] == ["running"]
+            assert {
+                item["value"]["value"]
+                for item in _metrics(response.json())
+                if item["name"] == "activity.sport"
+            } == {"running"}
             run_day = (T0 + timedelta(days=7)).date()
             response = client.get(
                 "/activities",
                 params={"start_date": run_day.isoformat(), "end_date": run_day.isoformat()},
             )
-            assert [item["sport"] for item in response.json()] == ["running"]
+            assert len(_trip_ids(response.json())) == 1
 
-    def test_get_activity(self, tmp_path: Path) -> None:
+    def test_get_activity_and_not_found(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
-            activity_id = client.get("/activities", params={"limit": 1}).json()[0]["activity_id"]
+            activities = client.get("/activities", params={"limit": 1}).json()
+            activity_id = next(iter(_trip_ids(activities)))
             response = client.get(f"/activities/{activity_id}")
+            missing = client.get("/activities/does-not-exist")
         assert response.status_code == 200
-        details = response.json()
-        assert details["load"]["method"] == "hr_trimp"
-        assert set(details["hr_zones_s"]) == {f"zone_{i}" for i in range(1, 6)}
-        assert "records" not in details
-
-    def test_get_activity_not_found(self, tmp_path: Path) -> None:
-        server = _make_server(tmp_path, _stub_files())
-        server.sync_service.sync()
-        with _client(server) as client:
-            response = client.get("/activities/does-not-exist")
-        assert response.status_code == 404
-        assert "not found" in response.json()["detail"]
+        assert _trip_ids(response.json()) == {activity_id}
+        load = _named(response.json(), "training_load.hr_trimp")
+        assert load["method"] == "hr_trimp"
+        assert load["algorithm_version"] == "1"
+        assert _named(response.json(), "heart_rate.zone_time")["value"]["shape"] == "table"
+        assert missing.status_code == 404
 
 
 class TestValidation:
@@ -105,91 +127,63 @@ class TestValidation:
             assert client.get("/overview", params={"days": 0}).status_code == 422
 
 
-class TestWeeklyEndpoint:
-    def test_weekly_rows(self, tmp_path: Path) -> None:
+class TestSummaryEndpoints:
+    def test_weekly_returns_generic_tables(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/weekly", params={"weeks": 4})
         assert response.status_code == 200
-        rows = response.json()
-        assert len(rows) == 2
-        assert rows[0]["comparison_vs_prev_week"]["load_value"] is None
+        distance = _named(response.json(), "activity.distance_by_week")
+        assert distance["value"]["shape"] == "table"
+        assert len(distance["value"]["axis"]["values"]) == 2
 
     def test_weekly_sport_filter(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/weekly", params={"weeks": 4, "sport": "cycling"})
-        assert [row["sport"] for row in response.json()] == ["cycling"]
+        distance = _named(response.json(), "activity.distance_by_week")
+        assert len(distance["value"]["axis"]["values"]) == 1
 
-
-class TestOverviewEndpoint:
-    def test_overview_sections(self, tmp_path: Path) -> None:
+    def test_overview_is_generic_metric_report(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/overview", params={"days": 14})
+        report = response.json()
         assert response.status_code == 200
-        overview = response.json()
-        assert overview["athlete_profile"]["max_heart_rate"] == 180
-        assert len(overview["recent_activities"]) == 2
-        assert overview["data_quality"]["activity_count"] == 2
-        assert len(overview["daily_series"]) == 2
-        assert {"date", "sport", "duration_s", "load_value"} <= set(overview["daily_series"][0])
-        assert overview["form"]["classification"] in (
-            "fresh",
-            "optimal",
-            "high_fatigue",
-            "overtraining_risk",
-        )
-        assert {"ctl", "atl", "tsb", "daily_load"} <= set(overview["form_history"][0])
-        assert {"rolling_7d_km", "rolling_28d_km", "days_since_60k"} <= set(
-            overview["tour_readiness"]
-        )
+        assert len(_trip_ids(report)) == 2
+        assert _named(report, "athlete_profile.max_heart_rate")["value"]["value"] == 180
+        assert _named(report, "data_quality.activity_count")["value"]["value"] == 2
+        assert _named(report, "training_form.ctl")["period"]["kind"] == "snapshot"
 
-    def test_overview_sport_filter(self, tmp_path: Path) -> None:
-        server = _make_server(tmp_path, _stub_files())
-        server.sync_service.sync()
-        with _client(server) as client:
-            response = client.get("/overview", params={"days": 14, "sport": "cycling"})
-        sports = {row["sport"] for row in response.json()["daily_series"]}
-        assert sports == {"cycling"}
-
-
-class TestSyncOnEndpoints:
     def test_weekly_and_overview_sync_first(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         with _client(server) as client:
             weekly = client.get("/weekly", params={"weeks": 4})
             overview = client.get("/overview", params={"days": 14})
-        assert weekly.status_code == 200
-        assert len(weekly.json()) == 2
-        assert overview.json()["data_quality"]["activity_count"] == 2
+        assert _named(weekly.json(), "activity.distance_by_week")["value"] is not None
+        assert _named(overview.json(), "data_quality.activity_count")["value"]["value"] == 2
 
     def test_get_activity_serves_cache_only(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         with _client(server) as client:
             response = client.get("/activities/does-not-exist")
         assert response.status_code == 404
-        assert server.repository.activities_scan().collect().is_empty()
+        assert server.repository.load_sync_state().activities == {}
 
 
 class TestOpenApi:
-    def test_paths_and_schemas(self, tmp_path: Path) -> None:
+    def test_generic_paths_and_metric_shape_schemas(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
-        server.sync_service.sync()
         with _client(server) as client:
             schema = client.get("/openapi.json").json()
         assert set(schema["paths"]) == EXPECTED_PATHS
-        schemas = schema["components"]["schemas"]
-        assert {
-            "ActivitySummary",
-            "ActivityDetails",
-            "WeeklyRow",
-            "Overview",
-        } <= set(schemas)
-        # Typed response payloads instead of loose objects.
-        details = schemas["ActivityDetails"]["properties"]
-        assert details["hr_zones_s"]["$ref"].endswith("HrZones")
-        assert details["load"]["$ref"].endswith("LoadInfo")
+        components = schema["components"]["schemas"]
+        assert "MetricReportWire" in components
+        assert "MetricWire" in components
+        assert "ScalarValueWire" in components
+        assert "TableValueWire" in components
+        assert "MatrixValueWire" in components
+        assert "ActivitySummary" not in components
