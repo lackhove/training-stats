@@ -55,17 +55,24 @@ class JsonTrainingRepository(TrainingRepository, SyncRepository):
         except (TypeError, ValueError) as exc:
             raise CacheError("cannot serialize cache domain records") from exc
         jsonio.write_json_atomic(payload, self.cache_dir / schemas.CACHE_FILE)
+        self.save_sync_stamp(last_sync=last_sync)
+
+    def save_sync_stamp(self, *, last_sync: datetime) -> None:
+        """Record a successful sync stamp without serializing the snapshot."""
         jsonio.write_json_atomic(
-            {"last_sync": last_sync.isoformat()}, self.cache_dir / schemas.METADATA_FILE
+            {
+                "format_version": schemas.CACHE_FORMAT_VERSION,
+                "last_sync": last_sync.isoformat(),
+            },
+            self.cache_dir / schemas.METADATA_FILE,
         )
 
     def last_sync_stamp(self) -> datetime | None:
-        """Read the successful-sync throttle stamp."""
-        snapshot = jsonio.read_json(self.cache_dir / schemas.CACHE_FILE)
-        if snapshot is None or snapshot.get("format_version") != schemas.CACHE_FORMAT_VERSION:
-            return None
+        """Read the throttle stamp from metadata alone; never open the snapshot."""
         metadata = jsonio.read_json(self.cache_dir / schemas.METADATA_FILE)
-        value = metadata.get("last_sync") if metadata is not None else None
+        if metadata is None or metadata.get("format_version") != schemas.CACHE_FORMAT_VERSION:
+            return None
+        value = metadata.get("last_sync")
         if not isinstance(value, str):
             return None
         try:

@@ -6,12 +6,44 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
+from training_stats.adapters.cache import jsonio
 from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.adapters.cache.schemas import CACHE_FILE, CACHE_FORMAT_VERSION, METADATA_FILE
 from training_stats.services.sync import SyncService
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+
+
+def spy_on_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record every JSON file the cache layer opens."""
+    seen: list[Path] = []
+    original = jsonio.read_json
+
+    def spy(path: Path) -> dict[str, object] | None:
+        seen.append(path)
+        return original(path)
+
+    monkeypatch.setattr(jsonio, "read_json", spy)
+    return seen
+
+
+def _cache_with_snapshot(tmp_path: Path) -> Path:
+    """A cache directory holding a valid, current-format (but empty) snapshot."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / CACHE_FILE).write_text(
+        json.dumps(
+            {
+                "format_version": CACHE_FORMAT_VERSION,
+                "activities": [],
+                "source_index": [],
+            }
+        )
+    )
+    return cache_dir
 
 
 def build_repository(tmp_path: Path, files: dict[str, bytes]) -> JsonTrainingRepository:
@@ -98,8 +130,62 @@ class TestJsonCache:
         assert repository.load_sync_state().activities == {}
         assert repository.load_sync_state().index_rows == []
 
-    def test_metadata_file_keeps_only_sync_stamp(self, tmp_path: Path) -> None:
+    def test_metadata_file_keeps_stamp_and_format_version(self, tmp_path: Path) -> None:
         build_repository(tmp_path, two_files())
         metadata = json.loads((tmp_path / "cache" / METADATA_FILE).read_text())
-        assert set(metadata) == {"last_sync"}
+        assert set(metadata) == {"last_sync", "format_version"}
+        assert metadata["format_version"] == CACHE_FORMAT_VERSION
         assert datetime.fromisoformat(metadata["last_sync"]).tzinfo is not None
+
+
+class TestLastSyncStamp:
+    def test_reads_metadata_without_opening_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repository = JsonTrainingRepository(cache_dir=tmp_path / "cache")
+        repository.save_sync_stamp(last_sync=T0)
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() == T0
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_legacy_metadata_without_version_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_dir = _cache_with_snapshot(tmp_path)
+        (cache_dir / METADATA_FILE).write_text(json.dumps({"last_sync": T0.isoformat()}))
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() is None
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_format_version_mismatch_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_dir = _cache_with_snapshot(tmp_path)
+        (cache_dir / METADATA_FILE).write_text(
+            json.dumps(
+                {
+                    "last_sync": T0.isoformat(),
+                    "format_version": CACHE_FORMAT_VERSION + 1,
+                }
+            )
+        )
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() is None
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_absent_metadata_returns_none(self, tmp_path: Path) -> None:
+        assert JsonTrainingRepository(cache_dir=tmp_path / "cache").last_sync_stamp() is None
+
+    def test_corrupt_metadata_returns_none(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / METADATA_FILE).write_text("not json at all")
+        assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is None
+
+    def test_naive_timestamp_is_read_as_utc(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        repository.save_sync_stamp(last_sync=T0.replace(tzinfo=None))
+        assert repository.last_sync_stamp() == T0

@@ -178,22 +178,25 @@ treated as active for its full record span.
    index one row per segment.
 5. Duplicate segments are marked `status="duplicate"` and retained as
    source-index outcomes without an ActivityRecord.
-6. `repository.save_sync_snapshot()` prunes orphan activity records (no `ok`
-   index row) and writes the JSON cache snapshot (`training_cache.json`) and
-   `metadata.json` atomically under the app-wide cache lock.
+6. The repository prunes orphan activity records (no `ok` index row) and
+   writes the JSON cache snapshot (`training_cache.json`) only when its state
+   changed. Every successful sync atomically updates `metadata.json` under the
+   app-wide cache lock; an unchanged sync does not rewrite the snapshot.
    Daily/weekly aggregates are **never written**: they are derived on read
    (§6) strictly from rows with activity data.
 
 Failure isolation: an unreadable/unparseable file gets a `failed` index row
 with the error message; the sync continues. A failing *source* (e.g. WebDAV
-down) is reported in `source_errors` without aborting other sources.
+down) is reported in `source_errors` without aborting other sources. Its
+previous cached rows are retained because a failed listing cannot establish
+that its files were deleted.
 
 ### 4.2 Cache Files
 
 | File | Content |
 |---|---|
 | `training_cache.json` | Snapshot with one ActivityRecord and per-trip Metric collection per accepted activity, plus source-index outcomes |
-| `metadata.json` | Last successful sync time |
+| `metadata.json` | Last successful sync time and cache format version |
 
 Daily and weekly summaries and the training-form curve are **not stored**;
 the analytics report functions derive them from cached ActivityRecords on

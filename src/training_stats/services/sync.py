@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections import Counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,7 @@ class SyncService:
         """Process new and changed files; isolate failures by source and file."""
         started_at = datetime.now(UTC)
         state = self.repository.load_sync_state()
+        activities = dict(state.activities)
 
         discovered = 0
         processed = 0
@@ -49,6 +51,7 @@ class SyncService:
         segments_discarded = 0
         sources_listed = 0
         source_errors: list[str] = []
+        failed_sources: set[str] = set()
         kept_index: list[SourceIndexEntry] = []
 
         for source in self.sources:
@@ -57,6 +60,7 @@ class SyncService:
             except SourceError as exc:
                 logger.error("source %s failed to list files: %s", source.name, exc)
                 source_errors.append(f"{source.name}: {exc}")
+                failed_sources.add(source.name)
                 continue
             sources_listed += 1
             discovered += len(files)
@@ -74,13 +78,13 @@ class SyncService:
                     kept_index.append(self._failure_entry(source_file, started_at, str(exc)))
                     continue
                 file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(previous_rows, state.activities)
+                self._purge_previous(previous_rows, activities)
                 outcome = self.processor.process(
-                    source_file, content, file_hash, set(state.activities), started_at
+                    source_file, content, file_hash, set(activities), started_at
                 )
                 kept_index.extend(outcome.index_rows)
                 for activity in outcome.activities:
-                    state.activities[activity.activity_id] = activity
+                    activities[activity.activity_id] = activity
                 if any(row.status in {STATUS_OK, STATUS_DUPLICATE} for row in outcome.index_rows):
                     processed += 1
                 else:
@@ -96,6 +100,8 @@ class SyncService:
                 len(source_errors),
             )
         else:
+            # A source that failed to list is not evidence of deletion: carry its rows over.
+            kept_index.extend(row for row in state.index_rows if row.source_name in failed_sources)
             accepted_ids = {
                 row.activity_id
                 for row in kept_index
@@ -103,13 +109,14 @@ class SyncService:
             }
             persisted_activities = {
                 activity_id: activity
-                for activity_id, activity in state.activities.items()
+                for activity_id, activity in activities.items()
                 if activity_id in accepted_ids
             }
-            self.repository.save_sync_snapshot(
-                SyncState(index_rows=kept_index, activities=persisted_activities),
-                last_sync=started_at,
-            )
+            snapshot = SyncState(index_rows=kept_index, activities=persisted_activities)
+            if self._state_unchanged(state, snapshot):
+                self.repository.save_sync_stamp(last_sync=started_at)
+            else:
+                self.repository.save_sync_snapshot(snapshot, last_sync=started_at)
             logger.info(
                 "sync complete: %d discovered, %d processed, %d skipped, %d failed, "
                 "%d duplicates, %d repaired files, %d discarded segments",
@@ -168,6 +175,13 @@ class SyncService:
         return [
             row for row in index_rows if row.source_name == source_name and row.source_path == path
         ]
+
+    @staticmethod
+    def _state_unchanged(previous: SyncState, current: SyncState) -> bool:
+        """True when activities match and index rows differ at most in order."""
+        if previous.activities != current.activities:
+            return False
+        return Counter(previous.index_rows) == Counter(current.index_rows)
 
     def _metadata_unchanged(
         self, previous_rows: list[SourceIndexEntry], source_file: SourceFile

@@ -111,7 +111,9 @@ These are core design decisions — do not violate them casually:
 - **No stored period aggregates.** Daily/weekly summaries and training form
   are derived on read by `domain/analytics/`. The cache snapshot contains one
   `ActivityRecord` with its per-trip metric collection per accepted activity,
-  plus source-index outcomes; `metadata.json` holds the sync throttle stamp.
+  plus source-index outcomes; `metadata.json` holds the sync throttle stamp
+  and cache format version. Unchanged syncs update metadata without rewriting
+  the snapshot.
 - **Secrets only from environment variables.** The TOML file stores the
   *names* of env vars (`username_env`/`password_env`). Values are wrapped in
   `SecretStr`/`WebDAVCredentials` and must never leak into logs, `repr`,

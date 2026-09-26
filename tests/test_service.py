@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,6 +58,20 @@ def _make_throttled_server(tmp_path: Path, interval_s: float = 10.0) -> Training
 def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
     stamp = datetime.now(UTC) - timedelta(seconds=age_seconds)
     JsonTrainingRepository(cache_dir).save_sync_snapshot(SyncState([], {}), last_sync=stamp)
+
+
+def _write_valid_snapshot(cache_dir: Path) -> None:
+    """An empty current-format snapshot, so throttling depends on metadata alone."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / schemas.CACHE_FILE).write_text(
+        json.dumps(
+            {
+                "format_version": schemas.CACHE_FORMAT_VERSION,
+                "activities": [],
+                "source_index": [],
+            }
+        )
+    )
 
 
 def _activity_ids(activities: tuple[ActivitySummary, ...]) -> set[str]:
@@ -295,6 +310,33 @@ class TestSyncThrottle:
         (cache_dir / schemas.METADATA_FILE).write_text("not json at all")
         result = server.sync_if_due()
         assert isinstance(result, SyncResult)
+
+    def test_legacy_metadata_without_version_syncs(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        cache_dir = tmp_path / "cache"
+        _write_valid_snapshot(cache_dir)
+        (cache_dir / schemas.METADATA_FILE).write_text(
+            json.dumps({"last_sync": datetime.now(UTC).isoformat()})
+        )
+        result = server.sync_if_due()
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+
+    def test_metadata_format_version_mismatch_syncs(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        cache_dir = tmp_path / "cache"
+        _write_valid_snapshot(cache_dir)
+        (cache_dir / schemas.METADATA_FILE).write_text(
+            json.dumps(
+                {
+                    "last_sync": datetime.now(UTC).isoformat(),
+                    "format_version": schemas.CACHE_FORMAT_VERSION + 1,
+                }
+            )
+        )
+        result = server.sync_if_due()
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
 
 
 class TestCreateServer:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,7 @@ from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.adapters.errors import CacheError
 from training_stats.domain.models import SourceFile
 from training_stats.services.errors import SourceError
+from training_stats.services.state import SyncState
 from training_stats.services.sync import SyncService
 
 T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
@@ -53,6 +54,53 @@ class CountingSource(StubSource):
     def read_file(self, source_file: SourceFile) -> bytes:
         self.read_count += 1
         return super().read_file(source_file)
+
+
+class OfflineSource(StubSource):
+    """A configured source whose directory listing is unavailable."""
+
+    def list_files(self) -> list[SourceFile]:
+        raise SourceError("offline")
+
+
+def make_multi_source_sync(tmp_path: Path, sources: list[StubSource]) -> SyncService:
+    cache_dir = tmp_path / "cache"
+    config = make_app_config(cache_dir, tmp_path / "src")
+    return SyncService(
+        sources=sources,
+        processor=make_processor(athlete=config.athlete, analysis_version="1"),
+        repository=JsonTrainingRepository(cache_dir),
+        analysis_version="1",
+    )
+
+
+def two_stub_sources() -> tuple[StubSource, StubSource]:
+    cloud = StubSource(
+        name="cloud",
+        files={"ride.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)},
+    )
+    local = StubSource(
+        name="local",
+        files={"run.fit": stub_activity_content(T0 + timedelta(days=1), "running", 900.0, 10000.0)},
+    )
+    return cloud, local
+
+
+def count_snapshot_writes(monkeypatch: pytest.MonkeyPatch) -> list[SyncState]:
+    """Record every full-snapshot write performed by the repository."""
+    calls: list[SyncState] = []
+    original = JsonTrainingRepository.save_sync_snapshot
+
+    def counting(self: JsonTrainingRepository, state: SyncState, *, last_sync: datetime) -> None:
+        calls.append(state)
+        original(self, state, last_sync=last_sync)
+
+    monkeypatch.setattr(JsonTrainingRepository, "save_sync_snapshot", counting)
+    return calls
+
+
+def metadata_stamp(cache_dir: Path) -> str:
+    return str(json.loads((cache_dir / schemas.METADATA_FILE).read_text())["last_sync"])
 
 
 class TestAtomicJson:
@@ -107,6 +155,26 @@ class TestIncrementalSync:
         service.sync()
         service.sync()
         assert source.read_count == 1
+
+    def test_noop_sync_updates_only_stamp_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, one_file())
+        assert service.sync().files_processed == 1
+        snapshot_path = cache_dir / schemas.CACHE_FILE
+        snapshot_bytes = snapshot_path.read_bytes()
+        snapshot_mtime = snapshot_path.stat().st_mtime_ns
+        writes = count_snapshot_writes(monkeypatch)
+
+        result = service.sync()
+
+        assert result.files_skipped == 1
+        assert result.files_processed == 0
+        assert result.cache_updated_at is not None
+        assert writes == []
+        assert snapshot_path.read_bytes() == snapshot_bytes
+        assert snapshot_path.stat().st_mtime_ns == snapshot_mtime
+        assert metadata_stamp(cache_dir) == result.cache_updated_at.isoformat()
 
     def test_content_change_reprocesses_activity(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file())
@@ -190,10 +258,6 @@ class TestIncrementalSync:
         cache_before = (cache_dir / schemas.CACHE_FILE).read_bytes()
         metadata_before = (cache_dir / schemas.METADATA_FILE).read_bytes()
 
-        class OfflineSource(StubSource):
-            def list_files(self) -> list[SourceFile]:
-                raise SourceError("offline")
-
         config = make_app_config(cache_dir, tmp_path / "src")
         offline = SyncService(
             sources=[OfflineSource(name=source.name)],
@@ -212,3 +276,65 @@ class TestIncrementalSync:
         content = (cache_dir / schemas.CACHE_FILE).read_text()
         assert '"timestamp"' not in content
         assert '"records":' not in content
+
+
+class TestMixedSourceListingFailure:
+    def test_failed_source_keeps_rows_while_listed_source_changes(self, tmp_path: Path) -> None:
+        cloud, local = two_stub_sources()
+        first = make_multi_source_sync(tmp_path, [cloud, local]).sync()
+        assert first.files_processed == 2
+        cache_dir = tmp_path / "cache"
+        prior = JsonTrainingRepository(cache_dir).load_sync_state()
+        preserved = next(
+            record for record in prior.activities.values() if record.sport == "running"
+        )
+        stale_id = next(
+            record.activity_id for record in prior.activities.values() if record.sport == "cycling"
+        )
+
+        cloud.files = {
+            "century.fit": stub_activity_content(
+                T0 + timedelta(days=2), "cycling", 7200.0, 200000.0
+            )
+        }
+        service = make_multi_source_sync(tmp_path, [cloud, OfflineSource(name="local")])
+        result = service.sync()
+
+        assert result.cache_updated_at is not None
+        assert result.source_errors == ("local: offline",)
+        assert result.files_discovered == 1
+        assert result.files_processed == 1
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        assert state.activities[preserved.activity_id] == preserved
+        assert stale_id not in state.activities
+        local_rows = [row for row in state.index_rows if row.source_name == "local"]
+        cloud_rows = [row for row in state.index_rows if row.source_name == "cloud"]
+        assert [(row.source_path, row.status) for row in local_rows] == [("run.fit", "ok")]
+        assert [row.source_path for row in cloud_rows] == ["century.fit"]
+        assert len(state.activities) == 2
+
+    def test_failed_source_with_unchanged_peer_only_updates_stamp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cloud, local = two_stub_sources()
+        assert make_multi_source_sync(tmp_path, [cloud, local]).sync().files_processed == 2
+        cache_dir = tmp_path / "cache"
+        snapshot_path = cache_dir / schemas.CACHE_FILE
+        snapshot_bytes = snapshot_path.read_bytes()
+        snapshot_mtime = snapshot_path.stat().st_mtime_ns
+        prior = JsonTrainingRepository(cache_dir).load_sync_state()
+        writes = count_snapshot_writes(monkeypatch)
+
+        service = make_multi_source_sync(tmp_path, [cloud, OfflineSource(name="local")])
+        result = service.sync()
+
+        assert result.cache_updated_at is not None
+        assert result.files_skipped == 1
+        assert result.source_errors == ("local: offline",)
+        assert writes == []
+        assert snapshot_path.read_bytes() == snapshot_bytes
+        assert snapshot_path.stat().st_mtime_ns == snapshot_mtime
+        assert metadata_stamp(cache_dir) == result.cache_updated_at.isoformat()
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        assert state.activities == prior.activities
+        assert state.index_rows == prior.index_rows
