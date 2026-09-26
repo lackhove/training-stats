@@ -53,7 +53,12 @@ class TestJsonCache:
         assert len(payload["activities"]) == 2
         assert len(payload["source_index"]) == 2
         assert all(item["metrics"] for item in payload["activities"])
-        assert "records" not in path.read_text()
+        assert all(
+            metric["description"].strip()
+            for activity in payload["activities"]
+            for metric in activity["metrics"]
+        )
+        assert '"records":' not in path.read_text()
 
         state = repository.load_sync_state()
         assert {record.sport for record in state.activities.values()} == {"cycling", "running"}

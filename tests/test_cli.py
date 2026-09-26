@@ -150,7 +150,7 @@ class TestShowCommand:
         details = _stdout_payload(capsys)
         assert _trip_ids(details) == {activity_id}
         assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
-        assert "records" not in str(details)
+        assert "records" not in details
 
     def test_show_unknown_activity(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]

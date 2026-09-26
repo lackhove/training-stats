@@ -60,9 +60,10 @@ go to stderr, so piping stays clean: `training-stats list | jq '.metrics[] | sel
 Global options: `--config/-c` and `--json` (before or after the verb),
 `--help`, `--version`.
 All metric commands return the same report envelope. Each metric includes its
-name, period, value shape, unit, and missing reason when unavailable. Tables
-and matrices are self-describing through their axes; adding metrics that use
-the existing shapes does not require API or Rich renderer changes.
+stable name, required human-readable description, period, value shape, unit,
+and missing reason when unavailable. Tables and matrices are self-describing
+through their axes; adding metrics that use the existing shapes does not
+require API or Rich renderer changes.
 
 ## Configuration
 

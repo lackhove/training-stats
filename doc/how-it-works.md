@@ -72,7 +72,7 @@ Everything non-secret lives in a TOML file (see `config.example.toml`):
 
 The analysis version (see §10) is owned by the code, not the config: it is
 the reprocessing switch — when parsing or metric semantics change, the
-version is bumped and the next sync reprocesses every file (current: `"6"`).
+version is bumped and the next sync reprocesses every file (current: `"8"`).
 
 ---
 
@@ -386,9 +386,10 @@ data trustworthiness.
 | `GET /overview` | As `overview`; synchronizes if due |
 
 All metric commands return one generic MetricReport envelope. Each Metric is
-self-describing through its stable name, period, shape, unit, missing reason,
-kind, and optional calculation provenance. Adding a scalar/table/matrix metric
-does not require route or Rich renderer changes.
+self-describing through its stable name, required human-readable description,
+period, shape, unit, missing reason, kind, and optional calculation provenance.
+Adding a scalar/table/matrix metric does not require route or Rich renderer
+changes.
 
 `list`, `weekly` and `overview` synchronize *if due*: a real sync runs
 only when the last successful one is older than

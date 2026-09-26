@@ -26,7 +26,7 @@ from training_stats.domain.metrics import (
 
 def _render(report: MetricReport) -> str:
     output = StringIO()
-    render_report(report, Console(file=output, force_terminal=False, color_system=None))
+    render_report(report, Console(file=output, width=180, force_terminal=False, color_system=None))
     return output.getvalue()
 
 
@@ -45,6 +45,7 @@ def test_scalar_and_missing_metrics_are_generic() -> None:
         (
             Metric(
                 "custom.unknown_measure",
+                "The number of unknown widgets measured during a trip.",
                 period,
                 ScalarValue(12.5),
                 MetricKind.ESTIMATED,
@@ -53,6 +54,7 @@ def test_scalar_and_missing_metrics_are_generic() -> None:
             ),
             Metric(
                 "custom.unavailable_measure",
+                "Number of widgets when sensor data is available.",
                 period,
                 None,
                 MetricKind.MEASURED,
@@ -64,6 +66,7 @@ def test_scalar_and_missing_metrics_are_generic() -> None:
     output = _render(report)
     assert "Custom Unknown Measure" in output
     assert "12.50 widgets" in output
+    assert "The number of unknown widgets measured during a trip." in output
     assert "confidence medium" in output
     assert "No Data" in output
 
@@ -73,6 +76,7 @@ def test_table_uses_axis_and_unknown_unit_fallback() -> None:
         (
             Metric(
                 "distance.over_days",
+                "Recorded distance on each date in the requested range.",
                 DateRangePeriod(date(2026, 6, 1), date(2026, 6, 2), "UTC"),
                 TableValue(
                     Axis("date", (date(2026, 6, 1), date(2026, 6, 2))),
@@ -85,6 +89,7 @@ def test_table_uses_axis_and_unknown_unit_fallback() -> None:
     )
     output = _render(report)
     assert "Distance Over Days" in output
+    assert "Recorded distance on each date" in output
     assert "2026-06-01" in output
     assert "1,000 furlongs" in output
 
@@ -94,6 +99,7 @@ def test_matrix_renders_axes_and_cell_measure() -> None:
         (
             Metric(
                 "speed.cadence.distribution",
+                "Duration in each binned speed and cadence combination.",
                 TripPeriod("ride-2", datetime(2026, 6, 1, tzinfo=UTC)),
                 MatrixValue(
                     x_axis=Axis("speed", (AxisBin("10\u201315", 10.0, 15.0),), "km/h"),
@@ -107,6 +113,7 @@ def test_matrix_renders_axes_and_cell_measure() -> None:
     )
     output = _render(report)
     assert "Speed Cadence Distribution" in output
+    assert "Duration in each binned speed and cadence combination." in output
     assert "10\u201315 km/h" in output
     assert "80\u201390 rpm" in output
     assert "0:42" in output

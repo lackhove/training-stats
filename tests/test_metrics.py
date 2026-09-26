@@ -31,21 +31,25 @@ from training_stats.domain.models import ActivityRecord
 def test_metric_requires_value_or_reason() -> None:
     period = AllTimePeriod()
     with pytest.raises(ValueError, match="either a value or a missing reason"):
-        Metric("missing-both", period, None, MetricKind.MEASURED)
+        Metric("missing-both", "A missing test metric.", period, None, MetricKind.MEASURED)
     with pytest.raises(ValueError, match="either a value or a missing reason"):
         Metric(
             "missing-neither",
+            "A metric with conflicting value and reason.",
             period,
             ScalarValue(0),
             MetricKind.MEASURED,
             missing_reason=MissingReason.NO_DATA,
         )
+    with pytest.raises(ValueError, match="description must not be empty"):
+        Metric("blank-description", "   ", period, ScalarValue(0), MetricKind.MEASURED)
 
 
 def test_activity_record_trip_period_must_match_id() -> None:
     start = datetime(2026, 6, 1, tzinfo=UTC)
     metric = Metric(
         "distance",
+        "Recorded distance for one trip.",
         TripPeriod("different-ride", start),
         ScalarValue(1000.0),
         MetricKind.MEASURED,
@@ -58,10 +62,11 @@ def test_activity_record_rejects_period_aggregates() -> None:
     start = datetime(2026, 6, 1, tzinfo=UTC)
     metric = Metric(
         "distance-by-day",
+        "Recorded distance for each day.",
         DateRangePeriod(date(2026, 6, 1), date(2026, 6, 2), "UTC"),
         TableValue(Axis("date", ("2026-06-01",)), (1000.0,)),
         MetricKind.CALCULATED,
-        "m",
+        unit="m",
     )
     with pytest.raises(ValueError, match="must use their ActivityRecord trip period"):
         ActivityRecord("ride-1", start, "cycling", None, 0, 1, (), "local", "x.fit", "1", (metric,))
@@ -83,6 +88,7 @@ def test_domain_report_json_round_trip_all_shapes_and_periods() -> None:
         (
             Metric(
                 "load",
+                "Banister heart-rate training-load estimate.",
                 trip,
                 ScalarValue(123.0),
                 MetricKind.ESTIMATED,
@@ -93,13 +99,15 @@ def test_domain_report_json_round_trip_all_shapes_and_periods() -> None:
             ),
             Metric(
                 "daily-distance",
+                "Recorded distance on each day.",
                 window,
                 TableValue(Axis("date", ("2026-06-01",)), (1000.0,)),
                 MetricKind.CALCULATED,
-                "m",
+                unit="m",
             ),
             Metric(
                 "heatmap",
+                "Time spent in each speed and cadence bin.",
                 trip,
                 MatrixValue(
                     Axis("speed", (AxisBin("5-10", 5.0, 10.0),), "km/h"),
@@ -107,16 +115,23 @@ def test_domain_report_json_round_trip_all_shapes_and_periods() -> None:
                     ((42.0,),),
                 ),
                 MetricKind.CALCULATED,
-                "s",
+                unit="s",
             ),
             Metric(
                 "unavailable",
+                "Unavailable measured input.",
                 SnapshotPeriod(date(2026, 6, 1)),
                 None,
                 MetricKind.MEASURED,
                 missing_reason=MissingReason.NO_DATA,
             ),
-            Metric("history", AllTimePeriod(), ScalarValue("all"), MetricKind.INTERPRETED),
+            Metric(
+                "history",
+                "A label for the full history scope.",
+                AllTimePeriod(),
+                ScalarValue("all"),
+                MetricKind.INTERPRETED,
+            ),
         )
     )
     adapter = TypeAdapter(MetricReport)
@@ -132,6 +147,7 @@ def test_wire_report_has_discriminated_shape_contract() -> None:
         (
             Metric(
                 "metric.with.new.name",
+                "Human-readable description for an arbitrary metric.",
                 TripPeriod("ride-2", datetime(2026, 6, 1, tzinfo=UTC)),
                 ScalarValue(2),
                 MetricKind.MEASURED,
@@ -144,3 +160,6 @@ def test_wire_report_has_discriminated_shape_contract() -> None:
     dumped = wire.model_dump(mode="json")
     assert dumped["metrics"][0]["value"]["shape"] == "scalar"
     assert dumped["metrics"][0]["period"]["kind"] == "trip"
+    assert (
+        dumped["metrics"][0]["description"] == "Human-readable description for an arbitrary metric."
+    )

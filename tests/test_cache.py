@@ -211,4 +211,4 @@ class TestIncrementalSync:
         service.sync()
         content = (cache_dir / schemas.CACHE_FILE).read_text()
         assert '"timestamp"' not in content
-        assert '"records"' not in content
+        assert '"records":' not in content

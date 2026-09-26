@@ -85,30 +85,94 @@ def compute_activity_metrics(
             "analysis.version",
             period,
             analysis_version,
+            description="Analysis code version used to derive this activity's metrics.",
             kind=MetricKind.INTERPRETED,
         ),
-        scalar_metric("activity.sport", period, activity.sport, kind=MetricKind.INTERPRETED),
         scalar_metric(
-            "activity.sub_sport", period, activity.sub_sport, kind=MetricKind.INTERPRETED
-        ),
-        scalar_metric("activity.duration", period, activity.duration_s, unit="s", kind=kind),
-        scalar_metric("activity.moving_time", period, activity.moving_time_s, unit="s", kind=kind),
-        scalar_metric("activity.paused_time", period, activity.paused_time_s, unit="s", kind=kind),
-        scalar_metric("activity.distance", period, activity.distance_m, unit="m", kind=kind),
-        scalar_metric(
-            "activity.elevation_gain", period, activity.elevation_gain_m, unit="m", kind=kind
+            "activity.sport",
+            period,
+            activity.sport,
+            description="Sport category reported for this activity.",
+            kind=MetricKind.INTERPRETED,
         ),
         scalar_metric(
-            "activity.average_heart_rate", period, activity.avg_hr, unit="bpm", kind=kind
+            "activity.sub_sport",
+            period,
+            activity.sub_sport,
+            description="Sub-sport category reported for this activity.",
+            kind=MetricKind.INTERPRETED,
         ),
         scalar_metric(
-            "activity.maximum_heart_rate", period, activity.max_hr, unit="bpm", kind=kind
+            "activity.duration",
+            period,
+            activity.duration_s,
+            description="Elapsed time from the first to last record, including pauses.",
+            unit="s",
+            kind=kind,
         ),
         scalar_metric(
-            "activity.average_speed", period, activity.avg_speed_mps, unit="m/s", kind=kind
+            "activity.moving_time",
+            period,
+            activity.moving_time_s,
+            description="Time classified as moving, excluding paused intervals.",
+            unit="s",
+            kind=kind,
         ),
         scalar_metric(
-            "activity.maximum_speed", period, activity.max_speed_mps, unit="m/s", kind=kind
+            "activity.paused_time",
+            period,
+            activity.paused_time_s,
+            description="Time excluded from moving statistics as paused.",
+            unit="s",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.distance",
+            period,
+            activity.distance_m,
+            description="Distance derived from active record intervals.",
+            unit="m",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.elevation_gain",
+            period,
+            activity.elevation_gain_m,
+            description="Positive elevation gain derived from active records.",
+            unit="m",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.average_heart_rate",
+            period,
+            activity.avg_hr,
+            description="Time-weighted average heart rate over valid samples.",
+            unit="bpm",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.maximum_heart_rate",
+            period,
+            activity.max_hr,
+            description="Maximum valid heart-rate sample during the activity.",
+            unit="bpm",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.average_speed",
+            period,
+            activity.avg_speed_mps,
+            description="Average speed derived from distance and moving time or active intervals.",
+            unit="m/s",
+            kind=kind,
+        ),
+        scalar_metric(
+            "activity.maximum_speed",
+            period,
+            activity.max_speed_mps,
+            description="Maximum valid speed sample during the activity.",
+            unit="m/s",
+            kind=kind,
         ),
     ]
 
@@ -122,6 +186,7 @@ def compute_activity_metrics(
                 "heart_rate.coverage",
                 period,
                 zone_result.hr_coverage_ratio,
+                description="Share of active time covered by valid heart-rate samples.",
                 unit="ratio",
                 kind=MetricKind.CALCULATED,
                 time_basis=TimeBasis.ACTIVE_TIME,
@@ -131,6 +196,7 @@ def compute_activity_metrics(
                 period,
                 zone_axis,
                 zone_result.zone_seconds,
+                description="Active time assigned to each configured heart-rate zone.",
                 unit="s",
                 missing_reason=(
                     MissingReason.NO_DATA if zone_result.valid_hr_time_s <= 0.0 else None
@@ -148,6 +214,7 @@ def compute_activity_metrics(
             period,
             Axis(name="heart_rate_bin", values=tuple(histogram)),
             histogram_values,
+            description="Active time accumulated in five-beat-per-minute heart-rate bins.",
             unit="s",
             missing_reason=MissingReason.NO_DATA if not histogram else None,
             time_basis=TimeBasis.ACTIVE_TIME,
@@ -162,6 +229,7 @@ def compute_activity_metrics(
                 period,
                 bucket_axis,
                 tuple(bucket.avg_hr for bucket in buckets),
+                description="Time-weighted average heart rate in consecutive ten-minute windows.",
                 unit="bpm",
                 missing_reason=MissingReason.NO_DATA if not buckets else None,
                 time_basis=TimeBasis.ACTIVE_TIME,
@@ -171,6 +239,7 @@ def compute_activity_metrics(
                 period,
                 bucket_axis,
                 tuple(bucket.hr_time_s for bucket in buckets),
+                description="Valid heart-rate time contributing to each ten-minute average.",
                 unit="s",
                 missing_reason=MissingReason.NO_DATA if not buckets else None,
                 time_basis=TimeBasis.ACTIVE_TIME,
@@ -184,6 +253,7 @@ def compute_activity_metrics(
                 "heart_rate.drift",
                 period,
                 hr_drift_bpm_per_hour(buckets),
+                description="Heart-rate change per hour estimated from ten-minute averages.",
                 unit="bpm/h",
                 kind=MetricKind.CALCULATED,
                 missing_reason=MissingReason.INSUFFICIENT_DATA,
@@ -193,6 +263,7 @@ def compute_activity_metrics(
                 "training_load.hr_trimp",
                 period,
                 load_value,
+                description="Banister HR load estimated from time in configured zones.",
                 kind=MetricKind.ESTIMATED,
                 unit="TRIMP",
                 missing_reason=MissingReason.NO_DATA,
@@ -210,6 +281,7 @@ def compute_activity_metrics(
                 "data.completeness",
                 period,
                 _completeness(activity),
+                description="Fraction of seven key activity fields present in the FIT data.",
                 unit="ratio",
                 kind=MetricKind.CALCULATED,
             ),
@@ -218,16 +290,32 @@ def compute_activity_metrics(
 
     decoupling_reason = _decoupling_missing_reason(decoupling.confidence)
     decoupling_confidence = Confidence.HIGH if decoupling.confidence == "high" else None
-    for name, value, unit in (
-        ("endurance.efficiency_first_half", decoupling.ef_first_half, "km/h/bpm"),
-        ("endurance.efficiency_second_half", decoupling.ef_second_half, "km/h/bpm"),
-        ("endurance.aerobic_decoupling", decoupling.aerobic_decoupling_pct, "%"),
+    for name, description, value, unit in (
+        (
+            "endurance.efficiency_first_half",
+            "Speed-to-heart-rate efficiency in the first half of valid moving time.",
+            decoupling.ef_first_half,
+            "km/h/bpm",
+        ),
+        (
+            "endurance.efficiency_second_half",
+            "Speed-to-heart-rate efficiency in the second half of valid moving time.",
+            decoupling.ef_second_half,
+            "km/h/bpm",
+        ),
+        (
+            "endurance.aerobic_decoupling",
+            "Percent change in speed-to-heart-rate efficiency between equal moving-time halves.",
+            decoupling.aerobic_decoupling_pct,
+            "%",
+        ),
     ):
         metrics.append(
             scalar_metric(
                 name,
                 period,
                 value,
+                description=description,
                 unit=unit,
                 kind=MetricKind.CALCULATED,
                 missing_reason=decoupling_reason,
@@ -292,24 +380,60 @@ def data_quality_metrics(
         )
     mean_coverage = sum(coverage) / len(coverage) if coverage else None
     mean_completeness = sum(completeness) / len(completeness) if completeness else None
-    values: tuple[tuple[str, int | float | None, str], ...] = (
-        ("activity_count", len(records), "activities"),
-        ("mean_hr_coverage_ratio", mean_coverage, "ratio"),
-        ("mean_data_completeness", mean_completeness, "ratio"),
-        ("failed_file_count", failed_count, "files"),
-        ("repaired_file_count", sum(repaired for repaired, _ in files.values()), "files"),
-        ("discarded_segment_count", sum(discarded for _, discarded in files.values()), "segments"),
-        ("duplicate_activity_count", duplicate_count, "activities"),
+    values: tuple[tuple[str, str, int | float | None, str], ...] = (
+        (
+            "activity_count",
+            "Number of accepted activities in this cache scope.",
+            len(records),
+            "activities",
+        ),
+        (
+            "mean_hr_coverage_ratio",
+            "Mean share of active time covered by valid heart-rate samples.",
+            mean_coverage,
+            "ratio",
+        ),
+        (
+            "mean_data_completeness",
+            "Mean fraction of key activity fields present in the source data.",
+            mean_completeness,
+            "ratio",
+        ),
+        (
+            "failed_file_count",
+            "Number of source files that failed to parse or read.",
+            failed_count,
+            "files",
+        ),
+        (
+            "repaired_file_count",
+            "Number of source files with one or more repair flags.",
+            sum(repaired for repaired, _ in files.values()),
+            "files",
+        ),
+        (
+            "discarded_segment_count",
+            "Number of short activity segments discarded during ingestion.",
+            sum(discarded for _, discarded in files.values()),
+            "segments",
+        ),
+        (
+            "duplicate_activity_count",
+            "Number of duplicate activity segments excluded from analysis.",
+            duplicate_count,
+            "activities",
+        ),
     )
     return tuple(
         scalar_metric(
             f"data_quality.{name}",
             period,
             value,
+            description=description,
             unit=unit,
             kind=MetricKind.CALCULATED,
         )
-        for name, value, unit in values
+        for name, description, value, unit in values
     )
 
 

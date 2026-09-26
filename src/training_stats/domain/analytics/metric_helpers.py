@@ -23,6 +23,7 @@ def scalar_metric(
     period: Period,
     value: MetricScalar | None,
     *,
+    description: str,
     kind: MetricKind = MetricKind.MEASURED,
     unit: str | None = None,
     missing_reason: MissingReason = MissingReason.NO_DATA,
@@ -36,6 +37,7 @@ def scalar_metric(
     """Build a scalar metric, converting ``None`` to an explicit missing value."""
     return Metric(
         name=name,
+        description=description,
         period=period,
         value=ScalarValue(value) if value is not None else None,
         kind=kind,
@@ -56,6 +58,7 @@ def table_metric(
     axis: Axis,
     values: tuple[MetricScalar | None, ...],
     *,
+    description: str,
     kind: MetricKind = MetricKind.CALCULATED,
     unit: str | None = None,
     missing_reason: MissingReason | None = None,
@@ -70,6 +73,7 @@ def table_metric(
     if missing_reason is not None:
         return Metric(
             name=name,
+            description=description,
             period=period,
             value=None,
             kind=kind,
@@ -84,6 +88,7 @@ def table_metric(
         )
     return Metric(
         name=name,
+        description=description,
         period=period,
         value=TableValue(axis=axis, values=values),
         kind=kind,

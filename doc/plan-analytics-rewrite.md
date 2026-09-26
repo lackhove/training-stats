@@ -18,9 +18,9 @@
 
 Create immutable domain types, independent of Pydantic and adapters:
 
-- `Metric`: stable name, period, value or missing reason, kind, optional unit,
-  and optional method, algorithm version, confidence, formula, coefficient set,
-  and time basis.
+- `Metric`: stable name, required human-readable description, period, value or
+  missing reason, kind, optional unit, and optional method, algorithm version,
+  confidence, formula, coefficient set, and time basis.
 - Metric value variants: scalar, one-axis table, or two-axis matrix. A heatmap
   is two axes plus a cell measure.
 - Period variants: trip, date range, point-in-time snapshot, and all-time.
@@ -28,9 +28,10 @@ Create immutable domain types, independent of Pydantic and adapters:
 - `MetricReport`: an ordered collection of metrics.
 
 Use string enums for finite semantic vocabularies and `Literal` discriminators
-for period and value variants. Enforce that a missing metric has a reason and a
-present metric has a value. Zero is a present value. The metric unit applies to
-table/matrix cells; each axis may have its own unit.
+for period and value variants. Enforce a non-empty metric description and that
+a missing metric has a reason while a present metric has a value. Zero is a
+present value. The metric unit applies to table/matrix cells; each axis may
+have its own unit.
 
 For `hr_trimp`, retain the estimated kind, `hr_trimp` method, algorithm version,
 confidence, formula, and coefficient set where applicable.
@@ -77,7 +78,9 @@ The cache adapter serializes/validates domain records using an explicit codec or
 a Pydantic `TypeAdapter` over domain dataclasses. API wire Pydantic models are
 not the cache schema. Preserve atomic temporary-file writes, `fsync`,
 `os.replace`, and the process-wide cache lock. Keep sync-throttle metadata
-separate as appropriate.
+separate as appropriate. Because descriptions are required fields in cached
+metrics, changing that record shape bumps the cache format and triggers a fresh
+source sync rather than attempting a migration.
 
 The ingest path remains: parse FIT, repair/segment into `ParsedActivity`,
 compute metrics, and persist the resulting activity record. New metrics can be
@@ -116,7 +119,8 @@ Replace field- and endpoint-specific metric renderers with one generic
 - Tables render from their axis and values.
 - Matrices render as heatmaps with axis labels and cell units.
 - Missing metrics remain visible with their missing reason.
-- Names are humanized automatically; known units receive generic formatting,
+- Descriptions are displayed from the metric; names are humanized automatically.
+  Known units receive generic formatting,
   with a value-plus-unit fallback for unfamiliar units.
 - Period, kind, confidence, and provenance render from metric metadata.
 

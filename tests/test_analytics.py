@@ -133,6 +133,7 @@ class TestActivityMetrics:
         # 299 in zone 4 (each interval belongs to the zone of its start record).
         activity = _parsed(start, heart_rates=[120] * 300 + [150] * 300)
         metrics = compute_activity_metrics(activity, config.athlete, "1")
+        assert all(metric.description.strip() for metric in metrics)
         zones = _table(metrics, "heart_rate.zone_time")
         assert zones is not None
         assert zones.values[1] == pytest.approx(300.0)

@@ -67,6 +67,7 @@ class TestActivitiesEndpoint:
         assert response.status_code == 200
         report = response.json()
         assert len(_trip_ids(report)) == 2
+        assert all(metric["description"].strip() for metric in _metrics(report))
         sports = {
             metric["value"]["value"]
             for metric in _metrics(report)
@@ -187,3 +188,4 @@ class TestOpenApi:
         assert "TableValueWire" in components
         assert "MatrixValueWire" in components
         assert "ActivitySummary" not in components
+        assert "description" in components["MetricWire"]["required"]

@@ -107,6 +107,7 @@ class MetricWire(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    description: str
     period: PeriodWire
     value: MetricValueWire | None
     kind: MetricKind

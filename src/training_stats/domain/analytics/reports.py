@@ -170,6 +170,7 @@ def overview_report(
             period,
             Axis(name="heart_rate_zone", values=tuple(zone_values)),
             tuple(zone_values.values()),
+            description="Total active time in each configured heart-rate zone for this overview.",
             unit="s",
             time_basis=TimeBasis.ACTIVE_TIME,
             kind=MetricKind.CALCULATED,
@@ -185,52 +186,59 @@ def _weekly_metrics(
     rows: Sequence[WeeklySummaryRow], period: DateRangePeriod
 ) -> tuple[Metric, ...]:
     axis = Axis(name="week_start", values=tuple(row.week_start for row in rows))
-    specs: tuple[tuple[str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
+    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
         (
             "activity.count_by_week",
+            "Number of accepted activities that started in each ISO week.",
             "activities",
             tuple(row.activity_count for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.duration_by_week",
+            "Total elapsed activity duration in each ISO week.",
             "s",
             tuple(row.duration_s for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.distance_by_week",
+            "Total recorded distance in each ISO week.",
             "m",
             tuple(row.distance_m for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.elevation_gain_by_week",
+            "Total positive elevation gain in each ISO week.",
             "m",
             tuple(row.elevation_gain_m for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "training_load.hr_trimp_by_week",
+            "Sum of estimated Banister heart-rate load in each ISO week.",
             "TRIMP",
             tuple(row.load_value for row in rows),
             MetricKind.ESTIMATED,
         ),
         (
             "activity.hard_count_by_week",
+            "Number of activities meeting the hard-load threshold in each ISO week.",
             "activities",
             tuple(row.hard_activity_count for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.longest_duration_by_week",
+            "Elapsed duration of the longest activity in each ISO week.",
             "s",
             tuple(row.longest_activity_s for row in rows),
             MetricKind.CALCULATED,
         ),
     )
     metrics = []
-    for name, unit, values, kind in specs:
+    for name, description, unit, values, kind in specs:
         load_provenance = name == "training_load.hr_trimp_by_week"
         metrics.append(
             table_metric(
@@ -238,6 +246,7 @@ def _weekly_metrics(
                 period,
                 axis,
                 values,
+                description=description,
                 unit=unit,
                 kind=kind,
                 missing_reason=MissingReason.NO_DATA if not rows else None,
@@ -254,6 +263,7 @@ def _weekly_metrics(
                 period,
                 axis,
                 tuple(row.zone_seconds()[f"zone_{zone}"] for row in rows),
+                description=f"Active time spent in configured heart-rate zone {zone} per ISO week.",
                 unit="s",
                 kind=MetricKind.CALCULATED,
                 missing_reason=MissingReason.NO_DATA if not rows else None,
@@ -272,6 +282,7 @@ def _weekly_metrics(
                     else None
                     for row in rows
                 ),
+                description="Distance difference from the previous ISO week.",
                 unit="m",
                 missing_reason=MissingReason.NO_DATA if not rows else None,
             ),
@@ -285,6 +296,7 @@ def _weekly_metrics(
                     else None
                     for row in rows
                 ),
+                description="Estimated Banister load difference from the previous ISO week.",
                 unit="TRIMP",
                 kind=MetricKind.ESTIMATED,
                 missing_reason=MissingReason.NO_DATA if not rows else None,
@@ -296,40 +308,45 @@ def _weekly_metrics(
 
 def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> tuple[Metric, ...]:
     axis = Axis(name="date", values=tuple(row.date for row in rows))
-    specs: tuple[tuple[str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
+    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
         (
             "activity.count_by_day",
+            "Number of accepted activities that started on each local date.",
             "activities",
             tuple(row.activity_count for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.duration_by_day",
+            "Total elapsed activity duration on each local date.",
             "s",
             tuple(row.duration_s for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.distance_by_day",
+            "Total recorded distance on each local date.",
             "m",
             tuple(row.distance_m for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "activity.elevation_gain_by_day",
+            "Total positive elevation gain on each local date.",
             "m",
             tuple(row.elevation_gain_m for row in rows),
             MetricKind.CALCULATED,
         ),
         (
             "training_load.hr_trimp_by_day",
+            "Sum of estimated Banister heart-rate load on each local date.",
             "TRIMP",
             tuple(row.load_value for row in rows),
             MetricKind.ESTIMATED,
         ),
     )
     metrics = []
-    for name, unit, values, kind in specs:
+    for name, description, unit, values, kind in specs:
         load_provenance = name == "training_load.hr_trimp_by_day"
         metrics.append(
             table_metric(
@@ -337,6 +354,7 @@ def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> 
                 period,
                 axis,
                 values,
+                description=description,
                 unit=unit,
                 kind=kind,
                 missing_reason=MissingReason.NO_DATA if not rows else None,
@@ -353,6 +371,7 @@ def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> 
     metrics.append(
         Metric(
             name="heart_rate.zone_matrix_by_day",
+            description="Active time in each configured heart-rate zone on each local date.",
             period=period,
             value=None,
             kind=MetricKind.CALCULATED,
@@ -361,13 +380,21 @@ def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> 
             time_basis=TimeBasis.ACTIVE_TIME,
         )
         if not rows
-        else _matrix_metric("heart_rate.zone_matrix_by_day", period, axis, zone_axis, matrix_values)
+        else _matrix_metric(
+            "heart_rate.zone_matrix_by_day",
+            "Active time in each configured heart-rate zone on each local date.",
+            period,
+            axis,
+            zone_axis,
+            matrix_values,
+        )
     )
     return tuple(metrics)
 
 
 def _matrix_metric(
     name: str,
+    description: str,
     period: DateRangePeriod,
     x_axis: Axis,
     y_axis: Axis,
@@ -375,6 +402,7 @@ def _matrix_metric(
 ) -> Metric:
     return Metric(
         name=name,
+        description=description,
         period=period,
         value=MatrixValue(x_axis=x_axis, y_axis=y_axis, values=values),
         kind=MetricKind.CALCULATED,
@@ -385,21 +413,62 @@ def _matrix_metric(
 
 def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tuple[Metric, ...]:
     snapshot = SnapshotPeriod(at=today)
-    values: tuple[tuple[str, MetricScalar, str], ...] = (
-        ("training_form.ctl", result.current_ctl, "TRIMP"),
-        ("training_form.atl", result.current_atl, "TRIMP"),
-        ("training_form.tsb", result.current_tsb, "TRIMP"),
-        ("training_form.classification", result.form_classification, ""),
-        ("training_form.is_warmup", result.is_warmup, ""),
-        ("training_form.load_confidence_ratio", result.load_confidence_ratio, "ratio"),
-        ("tour_readiness.rolling_7d_distance", result.rolling_7d_distance_km, "km"),
-        ("tour_readiness.rolling_28d_distance", result.rolling_28d_distance_km, "km"),
+    values: tuple[tuple[str, str, MetricScalar, str], ...] = (
+        (
+            "training_form.ctl",
+            "Current chronic training load (42-day EWMA).",
+            result.current_ctl,
+            "TRIMP",
+        ),
+        (
+            "training_form.atl",
+            "Current acute training load (7-day EWMA).",
+            result.current_atl,
+            "TRIMP",
+        ),
+        (
+            "training_form.tsb",
+            "Current training stress balance: CTL minus ATL.",
+            result.current_tsb,
+            "TRIMP",
+        ),
+        (
+            "training_form.classification",
+            "Interpretation of the current training stress balance.",
+            result.form_classification,
+            "",
+        ),
+        (
+            "training_form.is_warmup",
+            "Whether the training-form history has fewer than 42 days.",
+            result.is_warmup,
+            "",
+        ),
+        (
+            "training_form.load_confidence_ratio",
+            "Share of total load from high-confidence activities.",
+            result.load_confidence_ratio,
+            "ratio",
+        ),
+        (
+            "tour_readiness.rolling_7d_distance",
+            "Distance accumulated in the seven days through the snapshot date.",
+            result.rolling_7d_distance_km,
+            "km",
+        ),
+        (
+            "tour_readiness.rolling_28d_distance",
+            "Distance accumulated in the 28 days through the snapshot date.",
+            result.rolling_28d_distance_km,
+            "km",
+        ),
     )
     metrics = [
         scalar_metric(
             name,
             snapshot,
             value,
+            description=description,
             unit=unit,
             kind=(
                 MetricKind.INTERPRETED
@@ -407,13 +476,14 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
                 else MetricKind.CALCULATED
             ),
         )
-        for name, value, unit in values
+        for name, description, value, unit in values
     ]
     metrics.append(
         scalar_metric(
             "tour_readiness.days_since_60k_ride",
             snapshot,
             result.days_since_60k_ride,
+            description="Calendar days since the most recent activity covering at least 60 km.",
             unit="days",
             kind=MetricKind.CALCULATED,
             missing_reason=MissingReason.NO_DATA,
@@ -426,11 +496,15 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
             timezone=timezone,
         )
         axis = Axis(name="date", values=tuple(point.date for point in result.trend_points))
-        for name, attr in (
-            ("training_form.ctl_by_day", "ctl"),
-            ("training_form.atl_by_day", "atl"),
-            ("training_form.tsb_by_day", "tsb"),
-            ("training_load.daily_hr_trimp", "daily_load"),
+        for name, description, attr in (
+            ("training_form.ctl_by_day", "Chronic training load by local calendar date.", "ctl"),
+            ("training_form.atl_by_day", "Acute training load by local calendar date.", "atl"),
+            ("training_form.tsb_by_day", "Training stress balance by local calendar date.", "tsb"),
+            (
+                "training_load.daily_hr_trimp",
+                "Estimated Banister heart-rate load by local calendar date.",
+                "daily_load",
+            ),
         ):
             load_provenance = name == "training_load.daily_hr_trimp"
             metrics.append(
@@ -439,6 +513,7 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
                     period,
                     axis,
                     tuple(getattr(point, attr) for point in result.trend_points),
+                    description=description,
                     unit="TRIMP",
                     kind=MetricKind.CALCULATED,
                     method=MetricMethod.HR_TRIMP if load_provenance else None,

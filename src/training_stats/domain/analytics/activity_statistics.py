@@ -952,6 +952,7 @@ def _append_rows(
                     period,
                     axis,
                     typed_values,
+                    description=_table_description((*path, key), axis_key),
                     unit=_unit((*path, key)),
                     kind=MetricKind.CALCULATED,
                     time_basis=basis,
@@ -1036,6 +1037,7 @@ def _append_heatmap(
         metrics.append(
             Metric(
                 name=".".join((*path, measure)),
+                description=_heatmap_description(path, measure),
                 period=period,
                 value=MatrixValue(
                     x_axis=Axis(name="x", values=x_bins),
@@ -1071,6 +1073,7 @@ def _append_table(
                 unit=_unit(path),
             ),
             typed_values,
+            description=_table_description(path, path[-1] if path else "index"),
             unit=_unit(path),
             kind=MetricKind.CALCULATED,
             time_basis=basis,
@@ -1092,6 +1095,7 @@ def _append_scalar(
                 ".".join(path),
                 period,
                 value,
+                description=_scalar_description(path),
                 unit=_unit(path),
                 kind=(
                     MetricKind.INTERPRETED
@@ -1149,3 +1153,64 @@ def _reason(value: object) -> MissingReason:
         except ValueError:
             return MissingReason.INSUFFICIENT_DATA
     return MissingReason.NO_DATA
+
+
+def _scalar_description(path: tuple[str, ...]) -> str:
+    leaf = path[-1] if path else "metric"
+    context_parts = [part for part in path[2:-1] if part not in {"overall", "pedaling"}]
+    context = " ".join(_humanize(part) for part in context_parts) or "activity"
+    if leaf == "mean":
+        return f"Time-weighted mean of valid {context} samples during the activity."
+    if leaf == "median":
+        return f"Duration-weighted median of valid {context} samples during the activity."
+    if leaf == "standard_deviation":
+        return f"Duration-weighted variation in valid {context} samples during the activity."
+    if leaf.startswith("p") and leaf[1:].isdigit():
+        return f"Duration-weighted {leaf[1:]}th percentile of valid {context} samples."
+    if leaf == "valid_sample_count":
+        return f"Number of valid {context} samples used in the distribution."
+    if leaf == "valid_time_s":
+        return f"Duration of valid {context} measurements used in the distribution."
+    if leaf == "available":
+        return f"Whether {context} data meets the configured availability requirements."
+    if "coverage" in leaf or leaf.endswith("_ratio"):
+        return f"Share of {context} time covered by valid measurements."
+    return f"{_humanize(leaf)} for {context} during the activity."
+
+
+def _table_description(path: tuple[str, ...], axis_name: str) -> str:
+    context_parts = [
+        part.removesuffix("_s") for part in path[2:] if part not in {"items", "overall", "pedaling"}
+    ]
+    context = " ".join(_humanize(part) for part in context_parts) or "activity metric"
+    if axis_name == "threshold_kmh":
+        return "Time spent at or above each configured speed threshold."
+    if axis_name == "band":
+        return "Time accumulated in each cadence band."
+    if axis_name == "start_min":
+        return f"{context} measured in consecutive ten-minute activity windows."
+    if axis_name == "start_s":
+        return f"{context} measured in consecutive elapsed-time windows."
+    if axis_name == "date":
+        return f"{context} measured for each date."
+    if axis_name == "bin":
+        if "histogram" in path:
+            return "Time-weighted heart-rate distribution across five-beat-per-minute bins."
+        return f"Time-weighted distribution of {context} across sensor bins."
+    return f"{context} values grouped by {_humanize(axis_name)}."
+
+
+def _heatmap_description(path: tuple[str, ...], measure: str) -> str:
+    axes = {
+        "heart_rate_speed": "heart rate and speed",
+        "heart_rate_cadence": "heart rate and cadence",
+        "speed_cadence": "speed and cadence",
+    }.get(path[-1], _humanize(path[-1]))
+    if measure == "duration_s":
+        return f"Duration accumulated in each binned {axes} combination."
+    return f"Count of valid sensor intervals in each binned {axes} combination."
+
+
+def _humanize(value: str) -> str:
+    cleaned = value.removesuffix("_statistics").removesuffix("_s")
+    return " ".join(part.replace("_", " ") for part in cleaned.split("_")).strip()

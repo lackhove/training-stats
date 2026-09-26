@@ -148,6 +148,7 @@ class Metric:
     """One named metric over a period, with an explicit shape and provenance."""
 
     name: str
+    description: str
     period: Period
     value: MetricValue | None
     kind: MetricKind
@@ -163,6 +164,9 @@ class Metric:
     def __post_init__(self) -> None:
         if not self.name:
             msg = "metric name must not be empty"
+            raise ValueError(msg)
+        if not self.description.strip():
+            msg = "metric description must not be empty"
             raise ValueError(msg)
         if (self.value is None) == (self.missing_reason is None):
             msg = "metric must have either a value or a missing reason"

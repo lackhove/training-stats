@@ -71,6 +71,8 @@ The cache adapter loads typed domain records from JSON. Analytics owns filtering
 and aggregation and returns immutable `Metric`/`MetricReport` dataclasses.
 Polars frames are transient inputs/projections only; analytics performs no
 cache I/O and takes no locks.
+Every metric has a stable name and a required human-readable description;
+presentation uses the description stored on the metric rather than a name map.
 
 **Serialization convention:** services return domain models; serialize only at
 the edges. HTTP and CLI JSON use the generic Pydantic contracts in

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from rich import box
-from rich.console import Console, RenderableType
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -51,14 +51,14 @@ def render_report(payload: object, console: Console) -> None:
                 console.print(
                     _panel(
                         f"{format_name(metric.name)} · {period_label}",
-                        _table(metric),
+                        Group(Text(metric.description, style="dim"), _table(metric)),
                     )
                 )
             elif isinstance(metric.value, MatrixValue):
                 console.print(
                     _panel(
                         f"{format_name(metric.name)} · {period_label}",
-                        _matrix(metric),
+                        Group(Text(metric.description, style="dim"), _matrix(metric)),
                     )
                 )
 
@@ -117,7 +117,7 @@ def _group_periods(metrics: tuple[Metric, ...]) -> list[tuple[object, list[Metri
 
 def _scalar_table(metrics: list[Metric]) -> Table:
     table = Table(box=box.SIMPLE_HEAVY, pad_edge=False, header_style="bold")
-    table.add_column("Metric", overflow="fold")
+    table.add_column("Metric / description", overflow="fold")
     table.add_column("Value", justify="right")
     table.add_column("Kind", no_wrap=True)
     table.add_column("Details", overflow="fold")
@@ -128,12 +128,10 @@ def _scalar_table(metrics: list[Metric]) -> Table:
         else:
             scalar = metric.value.value if isinstance(metric.value, ScalarValue) else None
             value = Text(format_scalar(scalar, metric.unit))
-        table.add_row(
-            format_name(metric.name),
-            value,
-            metric.kind.value,
-            _provenance(metric),
-        )
+        label = Text(format_name(metric.name), style="bold")
+        label.append("\n")
+        label.append(metric.description, style="dim")
+        table.add_row(label, value, metric.kind.value, _provenance(metric))
     return table
 
 

@@ -169,7 +169,7 @@ class TestServiceOperations:
         assert _scalar(activities, "activity.sport")
         assert _scalar(activities, "training_load.hr_trimp") is not None
         # No time-series data may leak into responses.
-        assert "records" not in str(activities)
+        assert not hasattr(activities, "records")
 
     def test_list_activities_sport_filter(self, server: TrainingStatsService) -> None:
         activities = server.list_activities(sport="running")
@@ -222,7 +222,7 @@ class TestServiceOperations:
         assert _scalar(overview, "data_quality.activity_count") == 2
         assert _scalar(overview, "training_form.ctl") is not None
         assert _scalar(overview, "tour_readiness.rolling_7d_distance") >= 0.0
-        assert "records" not in str(overview)
+        assert not hasattr(overview, "records")
 
     def test_overview_sport_filter(self, server: TrainingStatsService) -> None:
         overview = server.overview(days=14, sport="cycling")

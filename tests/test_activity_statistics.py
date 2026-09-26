@@ -175,6 +175,7 @@ class TestDetailedActivityStatistics:
             _activity(), make_athlete(), QualityConfig(decoupling_min_duration_s=600.0)
         )
         assert all(metric.period.activity_id == "activity-statistics" for metric in metrics)
+        assert all(metric.description.strip() for metric in metrics)
         assert any(metric.name == "activity.statistics.speed_statistics.mean" for metric in metrics)
         heatmap = next(
             metric
