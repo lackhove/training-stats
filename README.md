@@ -45,13 +45,13 @@ always synchronize, `--no-sync` to never synchronize for one call. On an
 interactive terminal commands render Rich tables and panels; when stdout is
 piped or redirected — or `--json` is given — they print JSON on stdout and
 nothing else, while progress and diagnostics (sync summary, source errors)
-go to stderr, so piping stays clean: `training-stats list | jq '.metrics[] | select(.name == "activity.sport") | .value.value'`.
+go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `training-stats list [--sport --start --end --limit --no-sync]` | Metric report for matching activities, newest first (synchronizes if due) |
+| `training-stats list [--sport --start --end --limit --no-sync]` | Matching activity records without metrics, newest first (synchronizes if due) |
 | `training-stats show <activity-id>` | One activity's metric report (serves cached data) |
 | `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly metrics as tables (synchronizes if due) |
 | `training-stats overview [--days --sport --no-sync]` | Generic coaching metric report (synchronizes if due) |
@@ -59,11 +59,12 @@ go to stderr, so piping stays clean: `training-stats list | jq '.metrics[] | sel
 
 Global options: `--config/-c` and `--json` (before or after the verb),
 `--help`, `--version`.
-All metric commands return the same report envelope. Each metric includes its
-stable name, required human-readable description, period, value shape, unit,
-and missing reason when unavailable. Tables and matrices are self-describing
-through their axes; adding metrics that use the existing shapes does not
-require API or Rich renderer changes.
+`list` returns an array of activity records without their `metrics` field.
+`show`, `weekly`, and `overview` return the metric-report envelope. Each metric
+includes its stable name, required human-readable description, period, value
+shape, unit, and missing reason when unavailable. Tables and matrices are
+self-describing through their axes; adding metrics that use the existing shapes
+does not require API or Rich renderer changes.
 
 ## Configuration
 
@@ -114,7 +115,7 @@ uv run training-stats server --host 0.0.0.0 --port 8000
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /activities` | Generic metric report for matching activities (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
+| `GET /activities` | Activity records without metrics, newest first (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
 | `GET /activities/{activity_id}` | One activity's metric report (serves cached data) |
 | `GET /weekly` | Weekly metrics report (synchronizes if due); `weeks`, `sport`, dates |
 | `GET /overview` | Generic coaching metric report (synchronizes if due); `days`, `sport` |

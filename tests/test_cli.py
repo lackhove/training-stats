@@ -89,6 +89,11 @@ def _trip_ids(report: object) -> set[str]:
     }
 
 
+def _activity_ids(activities: object) -> set[str]:
+    assert isinstance(activities, list)
+    return {str(activity["activity_id"]) for activity in activities}
+
+
 def _metric(report: object, name: str) -> dict[str, object]:
     return next(metric for metric in _metrics(report) if metric["name"] == name)
 
@@ -100,12 +105,21 @@ class TestListCommand:
         assert main(["--config", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
         activities = json.loads(captured.out)
-        assert len(_trip_ids(activities)) == 2
-        assert {
-            metric["value"]["value"]
-            for metric in _metrics(activities)
-            if metric["name"] == "activity.sport"
-        } == {"cycling"}
+        assert len(_activity_ids(activities)) == 2
+        assert all("metrics" not in activity for activity in activities)
+        assert set(activities[0]) == {
+            "activity_id",
+            "start_time",
+            "sport",
+            "sub_sport",
+            "segment_index",
+            "segment_count",
+            "repair_flags",
+            "source_name",
+            "source_path",
+            "analysis_version",
+        }
+        assert {activity["sport"] for activity in activities} == {"cycling"}
         # Sync feedback goes to stderr; stdout stays pure JSON.
         assert "syncing sources..." in captured.err
         assert "sync: 2 found, 2 new, 0 unchanged, 0 failed" in captured.err
@@ -113,27 +127,27 @@ class TestListCommand:
         # Second run: unchanged files are skipped via content hashes.
         assert main(["--config", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
-        assert len(_trip_ids(json.loads(captured.out))) == 2
+        assert len(_activity_ids(json.loads(captured.out))) == 2
         assert "sync: 2 found, 0 new, 2 unchanged, 0 failed" in captured.err
 
     def test_config_before_command(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list"]) == 0
-        assert len(_trip_ids(_stdout_payload(capsys))) == 2
+        assert len(_activity_ids(_stdout_payload(capsys))) == 2
 
     def test_no_sync_serves_empty_cache(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list", "--no-sync"]) == 0
         captured = capsys.readouterr()
-        assert json.loads(captured.out) == {"metrics": []}
+        assert json.loads(captured.out) == []
         assert "sync" not in captured.err
 
     def test_sport_filter(self, config_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["-c", str(config_path), "list", "--sport", "cycling"]) == 0
         activities = _stdout_payload(capsys)
-        assert len(_trip_ids(activities)) == 2
+        assert len(_activity_ids(activities)) == 2
 
     def test_limit_type_error(self, config_path: Path) -> None:
         assert main(["-c", str(config_path), "list", "--limit", "abc"]) == 2
@@ -144,7 +158,7 @@ class TestShowCommand:
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list", "--limit", "1"]) == 0
-        activity_id = next(iter(_trip_ids(_stdout_payload(capsys))))
+        activity_id = next(iter(_activity_ids(_stdout_payload(capsys))))
 
         assert main(["-c", str(config_path), "show", activity_id]) == 0
         details = _stdout_payload(capsys)
@@ -217,7 +231,7 @@ class TestSyncThrottleFeedback:
         second = capsys.readouterr()
         assert "sync: skipped (last sync" in second.err
         assert "syncing sources..." not in second.err
-        assert len(_trip_ids(json.loads(second.out))) == 2
+        assert len(_activity_ids(json.loads(second.out))) == 2
 
     def test_zero_interval_reports_real_sync(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -283,8 +297,9 @@ class TestInteractiveOutput:
     ) -> None:
         assert main(["-c", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
-        assert "Metrics" in captured.out
+        assert "Activities" in captured.out
         assert "cycling" in captured.out
+        assert "Training Load" not in captured.out
         with pytest.raises(json.JSONDecodeError):
             json.loads(captured.out)
         assert "sync: 2 found" in captured.err
@@ -309,10 +324,10 @@ class TestInteractiveOutput:
         interactive: None,
     ) -> None:
         assert main(["-c", str(config_path), "--json", "list"]) == 0
-        assert len(_trip_ids(json.loads(capsys.readouterr().out))) == 2
+        assert len(_activity_ids(json.loads(capsys.readouterr().out))) == 2
 
         assert main(["-c", str(config_path), "list", "--json"]) == 0
-        assert len(_trip_ids(json.loads(capsys.readouterr().out))) == 2
+        assert len(_activity_ids(json.loads(capsys.readouterr().out))) == 2
 
     def test_domain_error_is_json_even_interactive(
         self,

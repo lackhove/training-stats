@@ -24,6 +24,7 @@ from rich.console import Console
 from ... import __version__
 from ...domain.errors import TrainingStatsError
 from ...domain.metrics import MetricReport
+from ...domain.models import ActivitySummary
 from ...services.results import SyncResult, ThrottledSync
 from ...services.training import TrainingStatsService
 from .. import wire
@@ -128,17 +129,22 @@ def _service(config_path: Path | None) -> TrainingStatsService:
 
 
 def _emit(
-    payload: MetricReport,
+    payload: MetricReport | tuple[ActivitySummary, ...],
     renderer: Callable[[object, Console], None],
     *,
     force_json: bool,
 ) -> None:
-    """Render a generic metric wire report as Rich when stdout is a TTY."""
+    """Render a metric report or activity list as Rich when stdout is a TTY."""
     if not force_json and sys.stdout.isatty():
         renderer(payload, Console())
+    elif isinstance(payload, MetricReport):
+        report_payload = wire.metric_report(payload).model_dump(mode="json")
+        print(json.dumps(report_payload, indent=2))
     else:
-        wire_payload = wire.metric_report(payload)
-        print(json.dumps(wire_payload.model_dump(mode="json"), indent=2))
+        activities_payload = [
+            activity.model_dump(mode="json") for activity in wire.activity_summaries(payload)
+        ]
+        print(json.dumps(activities_payload, indent=2))
 
 
 @app.meta.default
@@ -218,7 +224,7 @@ def list_activities(
         service.list_activities(
             start_date=start, end_date=end, sport=sport, limit=limit, sync_first=False
         ),
-        cli_output.render_report,
+        cli_output.render_activity_list,
         force_json=json_output,
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Annotated, Literal
 
@@ -15,6 +16,22 @@ from ..domain.metrics import (
     MissingReason,
     TimeBasis,
 )
+from ..domain.models import ActivitySummary
+
+
+class ActivitySummaryWire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    activity_id: str
+    start_time: datetime
+    sport: str
+    sub_sport: str | None
+    segment_index: int
+    segment_count: int
+    repair_flags: list[str]
+    source_name: str
+    source_path: str
+    analysis_version: str
 
 
 class TripPeriodWire(BaseModel):
@@ -129,9 +146,19 @@ class MetricReportWire(BaseModel):
 
 METRIC_REPORT_ADAPTER = TypeAdapter(MetricReportWire)
 _DOMAIN_REPORT_ADAPTER = TypeAdapter(MetricReport)
+ACTIVITY_SUMMARIES_ADAPTER = TypeAdapter(list[ActivitySummaryWire])
+_DOMAIN_ACTIVITY_SUMMARIES_ADAPTER = TypeAdapter(list[ActivitySummary])
 
 
 def metric_report(report: MetricReport) -> MetricReportWire:
     """Validate and map a domain report into its generic transport model."""
     payload = _DOMAIN_REPORT_ADAPTER.dump_python(report, mode="json")
     return METRIC_REPORT_ADAPTER.validate_python(payload)
+
+
+def activity_summaries(
+    summaries: Sequence[ActivitySummary],
+) -> list[ActivitySummaryWire]:
+    """Validate and map activity summaries into their transport models."""
+    payload = _DOMAIN_ACTIVITY_SUMMARIES_ADAPTER.dump_python(list(summaries), mode="json")
+    return ACTIVITY_SUMMARIES_ADAPTER.validate_python(payload)

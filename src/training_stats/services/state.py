@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..domain.frames import SourceStatus
-from ..domain.models import ActivityRecord, SourceIndexEntry
+from ..domain.models import ActivityRecord, ActivitySummary, SourceIndexEntry
 
-__all__ = ["ActivityRecord", "SourceIndexEntry", "SourceStatus", "SyncState"]
+__all__ = ["ActivityRecord", "ActivitySummary", "SourceIndexEntry", "SourceStatus", "SyncState"]
 
 
 @dataclass(frozen=True)

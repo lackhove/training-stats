@@ -23,9 +23,40 @@ from ...domain.metrics import (
     TableValue,
     TripPeriod,
 )
+from ...domain.models import ActivitySummary
 
 _EM_DASH = "\u2014"
 _HEAT_COLORS = ("blue", "cyan", "green", "yellow", "red")
+
+
+def render_activity_list(payload: object, console: Console) -> None:
+    """Render compact activity metadata as a Rich table."""
+    if not isinstance(payload, tuple):
+        console.print(Text("Invalid activity list.", style="red"))
+        return
+    activities = tuple(activity for activity in payload if isinstance(activity, ActivitySummary))
+    if len(activities) != len(payload):
+        console.print(Text("Invalid activity list.", style="red"))
+        return
+    if not activities:
+        console.print(Text("No activities found.", style="dim"))
+        return
+
+    table = Table(title="Activities", box=box.SIMPLE_HEAVY, pad_edge=False, header_style="bold")
+    table.add_column("Activity ID", no_wrap=True)
+    table.add_column("Started", no_wrap=True)
+    table.add_column("Sport")
+    table.add_column("Sub-sport")
+    table.add_column("Segment", justify="right", no_wrap=True)
+    for activity in activities:
+        table.add_row(
+            activity.activity_id,
+            activity.start_time.isoformat(sep=" ", timespec="minutes"),
+            activity.sport,
+            activity.sub_sport or _EM_DASH,
+            f"{activity.segment_index + 1}/{activity.segment_count}",
+        )
+    console.print(table)
 
 
 def render_report(payload: object, console: Console) -> None:

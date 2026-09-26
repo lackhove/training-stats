@@ -7,8 +7,8 @@ import time
 from datetime import UTC, date, datetime
 
 from ..domain.analytics import (
-    activity_list_report,
     activity_report,
+    activity_summaries,
     overview_report,
     weekly_summary,
 )
@@ -17,7 +17,7 @@ from ..services.limits import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS
 from .ports import TrainingRepository
 from .results import SyncResult, ThrottledSync
 from .settings import ServiceSettings
-from .state import SyncState
+from .state import ActivitySummary, SyncState
 from .sync import SyncService
 
 logger = logging.getLogger(__name__)
@@ -86,13 +86,13 @@ class TrainingStatsService:
         sport: str | None = None,
         limit: int = 50,
         sync_first: bool = True,
-    ) -> MetricReport:
-        """Return trip metrics for selected activities, newest first."""
+    ) -> tuple[ActivitySummary, ...]:
+        """Return metadata for selected activities, newest first."""
         if sync_first:
             self.sync_if_due()
         _validate_int_range("limit", limit, 1, MAX_LIST_LIMIT)
         state = self.repository.load_sync_state()
-        return activity_list_report(
+        return activity_summaries(
             tuple(state.activities.values()),
             self.tz,
             start_date=start_date,

@@ -7,7 +7,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from training_stats.adapters.cli.output import format_duration, render_report
+from training_stats.adapters.cli.output import format_duration, render_activity_list, render_report
 from training_stats.domain.metrics import (
     Axis,
     AxisBin,
@@ -22,12 +22,39 @@ from training_stats.domain.metrics import (
     TableValue,
     TripPeriod,
 )
+from training_stats.domain.models import ActivitySummary
 
 
 def _render(report: MetricReport) -> str:
     output = StringIO()
     render_report(report, Console(file=output, width=180, force_terminal=False, color_system=None))
     return output.getvalue()
+
+
+def test_activity_list_renders_metadata_without_metrics() -> None:
+    output = StringIO()
+    render_activity_list(
+        (
+            ActivitySummary(
+                activity_id="ride-1",
+                start_time=datetime(2026, 6, 1, 10, tzinfo=UTC),
+                sport="cycling",
+                sub_sport="road",
+                segment_index=0,
+                segment_count=1,
+                repair_flags=(),
+                source_name="local",
+                source_path="ride.fit",
+                analysis_version="1",
+            ),
+        ),
+        Console(file=output, width=120, force_terminal=False, color_system=None),
+    )
+    rendered = output.getvalue()
+    assert "ride-1" in rendered
+    assert "cycling" in rendered
+    assert "1/1" in rendered
+    assert "training_load" not in rendered
 
 
 def test_duration_formatting() -> None:

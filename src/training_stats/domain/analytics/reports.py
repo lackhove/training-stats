@@ -1,4 +1,4 @@
-"""Public metric-report summaries composed from pure analytics functions."""
+"""Public activity and metric summaries composed from pure analytics functions."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from ..metrics import (
     SnapshotPeriod,
     TimeBasis,
 )
-from ..models import ActivityRecord, SourceIndexEntry, TrainingFormResult
+from ..models import ActivityRecord, ActivitySummary, SourceIndexEntry, TrainingFormResult
 from ..settings import AthleteConfig
 from .activities import data_quality_metrics
 from .daily import DailySummaryRow, select_daily, summarize_daily
@@ -49,6 +49,49 @@ def activity_list_report(
     limit: int = 50,
 ) -> MetricReport:
     """Return selected activity metrics, newest trip first."""
+    selected = _select_activities(
+        records,
+        tz,
+        start_date=start_date,
+        end_date=end_date,
+        sport=sport,
+        limit=limit,
+    )
+    return MetricReport(metrics=tuple(metric for record in selected for metric in record.metrics))
+
+
+def activity_summaries(
+    records: Sequence[ActivityRecord],
+    tz: tzinfo,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    sport: str | None = None,
+    limit: int = 50,
+) -> tuple[ActivitySummary, ...]:
+    """Return selected activity metadata, newest first, without their metrics."""
+    return tuple(
+        ActivitySummary.from_record(record)
+        for record in _select_activities(
+            records,
+            tz,
+            start_date=start_date,
+            end_date=end_date,
+            sport=sport,
+            limit=limit,
+        )
+    )
+
+
+def _select_activities(
+    records: Sequence[ActivityRecord],
+    tz: tzinfo,
+    *,
+    start_date: date | None,
+    end_date: date | None,
+    sport: str | None,
+    limit: int,
+) -> list[ActivityRecord]:
     selected = [
         record
         for record in records
@@ -56,9 +99,7 @@ def activity_list_report(
         and (sport is None or record.sport.casefold() == sport.casefold())
     ]
     selected.sort(key=lambda record: (record.start_time, record.activity_id), reverse=True)
-    return MetricReport(
-        metrics=tuple(metric for record in selected[:limit] for metric in record.metrics)
-    )
+    return selected[:limit]
 
 
 def weekly_summary(

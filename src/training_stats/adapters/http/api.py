@@ -83,8 +83,8 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
 
     @app.get(
         "/activities",
-        response_model=wire.MetricReportWire,
-        summary="List activity metrics, newest first",
+        response_model=list[wire.ActivitySummaryWire],
+        summary="List activities, newest first",
         dependencies=route_dependencies,
         tags=["activities"],
         description=(_SYNC_NOTE + " Dates use YYYY-MM-DD format in the configured local timezone."),
@@ -94,8 +94,8 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         end_date: EndDate = None,
         sport: SportQuery = None,
         limit: Annotated[int, Query(gt=0, le=MAX_LIST_LIMIT)] = 50,
-    ) -> wire.MetricReportWire:
-        return wire.metric_report(
+    ) -> list[wire.ActivitySummaryWire]:
+        return wire.activity_summaries(
             service.list_activities(
                 start_date=start_date, end_date=end_date, sport=sport, limit=limit
             )

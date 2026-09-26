@@ -13,6 +13,7 @@ from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.cache import schemas
 from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.domain.metrics import Metric, MetricReport, ScalarValue, TableValue, TripPeriod
+from training_stats.domain.models import ActivitySummary
 from training_stats.services.results import SyncResult, ThrottledSync
 from training_stats.services.state import SyncState
 from training_stats.services.training import TrainingStatsService
@@ -58,12 +59,14 @@ def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
     JsonTrainingRepository(cache_dir).save_sync_snapshot(SyncState([], {}), last_sync=stamp)
 
 
-def _activity_ids(report: MetricReport) -> set[str]:
-    return {
-        metric.period.activity_id
-        for metric in report.metrics
-        if isinstance(metric.period, TripPeriod)
-    }
+def _activity_ids(report: MetricReport | tuple[ActivitySummary, ...]) -> set[str]:
+    if isinstance(report, MetricReport):
+        return {
+            metric.period.activity_id
+            for metric in report.metrics
+            if isinstance(metric.period, TripPeriod)
+        }
+    return {activity.activity_id for activity in report}
 
 
 def _metric(report: MetricReport, name: str) -> Metric:
@@ -102,7 +105,7 @@ class TestServiceOperations:
 
     def test_list_activities_without_sync(self, unsynced_server: TrainingStatsService) -> None:
         activities = unsynced_server.list_activities(sync_first=False)
-        assert activities.metrics == ()
+        assert activities == ()
 
     def test_list_activities_picks_up_new_files(self, server: TrainingStatsService) -> None:
         source = server.sync_service.sources[0]
@@ -110,11 +113,7 @@ class TestServiceOperations:
         source.files["swim.fit"] = stub_activity_content(T0 + timedelta(days=3), "swimming", 1200.0)
         activities = server.list_activities()
         assert len(_activity_ids(activities)) == 3
-        sports = {
-            metric.value.value
-            for metric in activities.metrics
-            if metric.name == "activity.sport" and isinstance(metric.value, ScalarValue)
-        }
+        sports = {activity.sport for activity in activities}
         assert sports == {"cycling", "running", "swimming"}
 
     def test_list_activities_serves_cache_when_sync_fails(
@@ -166,21 +165,20 @@ class TestServiceOperations:
     def test_list_activities(self, server: TrainingStatsService) -> None:
         activities = server.list_activities()
         assert len(_activity_ids(activities)) == 2
-        assert _scalar(activities, "activity.sport")
-        assert _scalar(activities, "training_load.hr_trimp") is not None
-        # No time-series data may leak into responses.
-        assert not hasattr(activities, "records")
+        assert activities[0].sport == "running"
+        assert all(not hasattr(activity, "metrics") for activity in activities)
+        assert all(not hasattr(activity, "records") for activity in activities)
 
     def test_list_activities_sport_filter(self, server: TrainingStatsService) -> None:
         activities = server.list_activities(sport="running")
         assert len(_activity_ids(activities)) == 1
-        assert _scalar(activities, "activity.sport") == "running"
+        assert activities[0].sport == "running"
 
     def test_list_activities_date_filter(self, server: TrainingStatsService) -> None:
         run_day = (T0 + timedelta(days=7)).date()
         activities = server.list_activities(start_date=run_day, end_date=run_day)
         assert len(_activity_ids(activities)) == 1
-        assert _scalar(activities, "activity.sport") == "running"
+        assert activities[0].sport == "running"
 
     def test_list_activities_invalid_limit(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="limit"):

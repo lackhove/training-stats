@@ -59,46 +59,61 @@ def _trip_ids(report: dict[str, Any]) -> set[str]:
     }
 
 
+def _activity_ids(activities: list[dict[str, Any]]) -> set[str]:
+    return {activity["activity_id"] for activity in activities}
+
+
 class TestActivitiesEndpoint:
-    def test_list_syncs_first_and_returns_metrics(self, tmp_path: Path) -> None:
+    def test_list_syncs_first_and_returns_activity_summaries(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         with _client(server) as client:
             response = client.get("/activities")
         assert response.status_code == 200
-        report = response.json()
-        assert len(_trip_ids(report)) == 2
-        assert all(metric["description"].strip() for metric in _metrics(report))
-        sports = {
-            metric["value"]["value"]
-            for metric in _metrics(report)
-            if metric["name"] == "activity.sport"
+        activities = response.json()
+        assert len(_activity_ids(activities)) == 2
+        assert all("metrics" not in activity for activity in activities)
+        assert set(activities[0]) == {
+            "activity_id",
+            "start_time",
+            "sport",
+            "sub_sport",
+            "segment_index",
+            "segment_count",
+            "repair_flags",
+            "source_name",
+            "source_path",
+            "analysis_version",
         }
+        sports = {activity["sport"] for activity in activities}
         assert sports == {"cycling", "running"}
         assert len(server.repository.load_sync_state().activities) == 2
+
+    def test_empty_list_is_an_empty_array(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path, {})
+        with _client(server) as client:
+            response = client.get("/activities")
+        assert response.status_code == 200
+        assert response.json() == []
 
     def test_list_filters(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/activities", params={"sport": "running"})
-            assert {
-                item["value"]["value"]
-                for item in _metrics(response.json())
-                if item["name"] == "activity.sport"
-            } == {"running"}
+            assert {item["sport"] for item in response.json()} == {"running"}
             run_day = (T0 + timedelta(days=7)).date()
             response = client.get(
                 "/activities",
                 params={"start_date": run_day.isoformat(), "end_date": run_day.isoformat()},
             )
-            assert len(_trip_ids(response.json())) == 1
+            assert len(_activity_ids(response.json())) == 1
 
     def test_get_activity_and_not_found(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
             activities = client.get("/activities", params={"limit": 1}).json()
-            activity_id = next(iter(_trip_ids(activities)))
+            activity_id = next(iter(_activity_ids(activities)))
             response = client.get(f"/activities/{activity_id}")
             missing = client.get("/activities/does-not-exist")
         assert response.status_code == 200
@@ -187,5 +202,11 @@ class TestOpenApi:
         assert "ScalarValueWire" in components
         assert "TableValueWire" in components
         assert "MatrixValueWire" in components
-        assert "ActivitySummary" not in components
+        assert "ActivitySummaryWire" in components
+        assert (
+            schema["paths"]["/activities"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["items"]["$ref"]
+            == "#/components/schemas/ActivitySummaryWire"
+        )
         assert "description" in components["MetricWire"]["required"]
