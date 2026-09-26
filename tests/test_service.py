@@ -59,14 +59,8 @@ def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
     JsonTrainingRepository(cache_dir).save_sync_snapshot(SyncState([], {}), last_sync=stamp)
 
 
-def _activity_ids(report: MetricReport | tuple[ActivitySummary, ...]) -> set[str]:
-    if isinstance(report, MetricReport):
-        return {
-            metric.period.activity_id
-            for metric in report.metrics
-            if isinstance(metric.period, TripPeriod)
-        }
-    return {activity.activity_id for activity in report}
+def _activity_ids(activities: tuple[ActivitySummary, ...]) -> set[str]:
+    return {activity.activity_id for activity in activities}
 
 
 def _metric(report: MetricReport, name: str) -> Metric:
@@ -150,7 +144,7 @@ class TestServiceOperations:
     def test_overview_syncs_first(self, unsynced_server: TrainingStatsService) -> None:
         overview = unsynced_server.overview(days=14)
         assert _scalar(overview, "data_quality.activity_count") == 2
-        assert len(_activity_ids(overview)) == 2
+        assert all(not isinstance(metric.period, TripPeriod) for metric in overview.metrics)
 
     def test_overview_without_sync(self, unsynced_server: TrainingStatsService) -> None:
         overview = unsynced_server.overview(days=14, sync_first=False)
@@ -218,7 +212,7 @@ class TestServiceOperations:
     def test_overview(self, server: TrainingStatsService) -> None:
         overview = server.overview(days=14)
         assert _scalar(overview, "athlete_profile.max_heart_rate") == 180
-        assert len(_activity_ids(overview)) == 2
+        assert all(not isinstance(metric.period, TripPeriod) for metric in overview.metrics)
         assert _scalar(overview, "data_quality.activity_count") == 2
         assert _scalar(overview, "training_form.ctl") is not None
         assert _scalar(overview, "tour_readiness.rolling_7d_distance") >= 0.0
@@ -226,7 +220,10 @@ class TestServiceOperations:
 
     def test_overview_sport_filter(self, server: TrainingStatsService) -> None:
         overview = server.overview(days=14, sport="cycling")
-        assert len(_activity_ids(overview)) == 1
+        distance = _metric(overview, "activity.distance_by_day")
+        assert isinstance(distance.value, TableValue)
+        assert len(distance.value.axis.values) == 1
+        assert all(not isinstance(metric.period, TripPeriod) for metric in overview.metrics)
 
     def test_overview_invalid_days(self, server: TrainingStatsService) -> None:
         with pytest.raises(ValueError, match="days"):

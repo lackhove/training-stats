@@ -51,14 +51,6 @@ def _named(report: dict[str, Any], name: str) -> dict[str, Any]:
     return next(metric for metric in _metrics(report) if metric["name"] == name)
 
 
-def _trip_ids(report: dict[str, Any]) -> set[str]:
-    return {
-        metric["period"]["activity_id"]
-        for metric in _metrics(report)
-        if metric["period"]["kind"] == "trip"
-    }
-
-
 def _activity_ids(activities: list[dict[str, Any]]) -> set[str]:
     return {activity["activity_id"] for activity in activities}
 
@@ -205,7 +197,7 @@ class TestSummaryEndpoints:
         report = response.json()
         _assert_no_none_fields(report)
         assert response.status_code == 200
-        assert len(_trip_ids(report)) == 2
+        assert all(metric["period"]["kind"] != "trip" for metric in report["metrics"])
         assert _named(report, "athlete_profile.max_heart_rate")["value"]["value"] == 180
         assert _named(report, "data_quality.activity_count")["value"]["value"] == 2
         assert _named(report, "training_form.ctl")["period"]["kind"] == "snapshot"
@@ -219,6 +211,7 @@ class TestSummaryEndpoints:
         _assert_no_none_fields(overview.json())
         assert weekly.json()["period"]["kind"] == "date_range"
         assert all("period" not in metric for metric in weekly.json()["metrics"])
+        assert all(metric["period"]["kind"] != "trip" for metric in overview.json()["metrics"])
         assert _named(weekly.json(), "activity.distance_by_week")["value"] is not None
         assert _named(overview.json(), "data_quality.activity_count")["value"]["value"] == 2
 

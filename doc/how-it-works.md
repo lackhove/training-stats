@@ -359,8 +359,8 @@ activity/source history:
 Wire names are namespaced, for example `data_quality.activity_count` and
 `data_quality.mean_hr_coverage_ratio`.
 
-Per-activity repair flags are exposed as metrics so clients can reason about
-data trustworthiness.
+Per-activity repair flags are available in activity detail records; the
+overview exposes aggregate repair and data-quality signals.
 
 ---
 

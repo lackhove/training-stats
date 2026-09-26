@@ -146,7 +146,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         dependencies=route_dependencies,
         tags=["aggregates"],
         description=(
-            _SYNC_NOTE + " Athlete profile, recent activities, weekly "
+            _SYNC_NOTE + " Athlete profile, aggregate activity trends, weekly "
             "summaries, daily series (per-(date, sport) totals for every "
             "metric), zone distribution, training form with history, tour "
             "readiness and data quality."

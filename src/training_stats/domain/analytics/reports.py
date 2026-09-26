@@ -160,7 +160,7 @@ def overview_report(
     sport: str | None = None,
     today: date | None = None,
 ) -> MetricReport:
-    """Compose current activity, trend, form, profile, and quality metrics."""
+    """Compose aggregate activity, trend, form, profile, and quality metrics."""
     if today is None:
         today = datetime.now(tz).date()
     period_start = today - timedelta(days=max(days, 1) - 1)
@@ -180,23 +180,6 @@ def overview_report(
         else period
     )
     form = training_form_from(frame, tz=tz, days=days, sport=sport, today=today)
-    latest = sorted(
-        (
-            record
-            for record in records
-            if sport is None or record.sport.casefold() == sport.casefold()
-        ),
-        key=lambda record: (record.start_time, record.activity_id),
-        reverse=True,
-    )
-    recent = activity_list_report(
-        records,
-        tz,
-        start_date=period_start,
-        end_date=today,
-        sport=sport,
-        limit=5,
-    )
 
     metrics: list[Metric] = []
     metrics.extend(athlete_profile(athlete))
@@ -217,9 +200,6 @@ def overview_report(
             kind=MetricKind.CALCULATED,
         )
     )
-    metrics.extend(recent.metrics)
-    if latest:
-        metrics.extend(latest[0].metrics)
     return MetricReport(metrics=tuple(metrics))
 
 

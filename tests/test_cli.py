@@ -212,6 +212,7 @@ class TestOverviewCommand:
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
         overview = _stdout_payload(capsys)
         _assert_no_none_fields(overview)
+        assert all(metric["period"]["kind"] != "trip" for metric in overview["metrics"])
         assert _metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
         assert _metric(overview, "data_quality.activity_count")["value"]["value"] == 2
         assert _metric(overview, "training_form.ctl_by_day")["value"]["shape"] == "table"
