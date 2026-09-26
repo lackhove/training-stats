@@ -188,10 +188,12 @@ class TestServiceOperations:
         activities = server.list_activities(limit=1)
         activity_id = next(iter(_activity_ids(activities)))
         details = server.get_activity(activity_id)
-        assert _activity_ids(details) == {activity_id}
-        load = _metric(details, "training_load.hr_trimp")
+        assert details.activity_id == activity_id
+        assert details.sport
+        assert details.metrics
+        load = next(metric for metric in details.metrics if metric.name == "training_load.hr_trimp")
         assert load.method == "hr_trimp"
-        zones = _metric(details, "heart_rate.zone_time")
+        zones = next(metric for metric in details.metrics if metric.name == "heart_rate.zone_time")
         assert isinstance(zones.value, TableValue)
 
     def test_get_activity_not_found(self, server: TrainingStatsService) -> None:

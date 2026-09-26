@@ -23,7 +23,7 @@ from ...domain.metrics import (
     TableValue,
     TripPeriod,
 )
-from ...domain.models import ActivitySummary
+from ...domain.models import ActivityRecord, ActivitySummary
 
 _EM_DASH = "\u2014"
 _HEAT_COLORS = ("blue", "cyan", "green", "yellow", "red")
@@ -55,6 +55,15 @@ def render_activity_list(payload: object, console: Console) -> None:
             activity.sub_sport or _EM_DASH,
         )
     console.print(table)
+
+
+def render_activity_detail(payload: object, console: Console) -> None:
+    """Render an activity header followed by its metrics."""
+    if not isinstance(payload, ActivityRecord):
+        console.print(Text("Invalid activity record.", style="red"))
+        return
+    render_activity_list((ActivitySummary.from_record(payload),), console)
+    render_report(MetricReport(metrics=payload.metrics), console)
 
 
 def render_report(payload: object, console: Console) -> None:

@@ -126,7 +126,20 @@ class TestActivitiesEndpoint:
         assert response.status_code == 200
         report = response.json()
         _assert_no_none_fields(report)
-        assert _trip_ids(report) == {activity_id}
+        assert report["activity_id"] == activity_id
+        assert set(report) == {
+            "activity_id",
+            "start_time",
+            "sport",
+            "segment_index",
+            "segment_count",
+            "repair_flags",
+            "source_name",
+            "source_path",
+            "analysis_version",
+            "metrics",
+        }
+        assert all("period" not in metric for metric in report["metrics"])
         load = _named(report, "training_load.hr_trimp")
         assert load["method"] == "hr_trimp"
         assert load["algorithm_version"] == "1"
@@ -225,6 +238,8 @@ class TestOpenApi:
         assert "TableValueWire" in components
         assert "MatrixValueWire" in components
         assert "ActivitySummaryWire" in components
+        assert "ActivityRecordWire" in components
+        assert "ActivityMetricWire" in components
         assert set(components["ActivitySummaryWire"]["properties"]) == {
             "activity_id",
             "start_time",
@@ -236,6 +251,32 @@ class TestOpenApi:
                 "application/json"
             ]["schema"]["items"]["$ref"]
             == "#/components/schemas/ActivitySummaryWire"
+        )
+        assert (
+            schema["paths"]["/activities/{activity_id}"]["get"]["responses"]["200"]["content"][
+                "application/json"
+            ]["schema"]["$ref"]
+            == "#/components/schemas/ActivityRecordWire"
+        )
+        assert set(components["ActivityRecordWire"]["properties"]) == {
+            "activity_id",
+            "start_time",
+            "sport",
+            "sub_sport",
+            "segment_index",
+            "segment_count",
+            "repair_flags",
+            "source_name",
+            "source_path",
+            "analysis_version",
+            "metrics",
+        }
+        assert set(components["ActivityMetricWire"]["properties"]) == set(
+            components["MetricWire"]["properties"]
+        ) - {"period"}
+        assert (
+            components["ActivityRecordWire"]["properties"]["metrics"]["items"]["$ref"]
+            == "#/components/schemas/ActivityMetricWire"
         )
         assert "description" in components["MetricWire"]["required"]
         assert set(components["ActivitySummaryWire"]["required"]) == {

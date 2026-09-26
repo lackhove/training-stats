@@ -104,15 +104,15 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
 
     @app.get(
         "/activities/{activity_id}",
-        response_model=wire.MetricReportWire,
+        response_model=wire.ActivityRecordWire,
         response_model_exclude_none=True,
-        summary="Get one activity's metrics",
-        description="Serves cached data; IDs come from /activities.",
+        summary="Get one complete activity record",
+        description="Serves cached data; IDs come from /activities. Includes the metrics.",
         dependencies=route_dependencies,
         tags=["activities"],
     )
-    def get_activity(activity_id: str) -> wire.MetricReportWire:
-        return wire.metric_report(service.get_activity(activity_id))
+    def get_activity(activity_id: str) -> wire.ActivityRecordWire:
+        return wire.activity_record(service.get_activity(activity_id))
 
     @app.get(
         "/weekly",

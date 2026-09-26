@@ -7,7 +7,6 @@ import time
 from datetime import UTC, date, datetime
 
 from ..domain.analytics import (
-    activity_report,
     activity_summaries,
     overview_report,
     weekly_summary,
@@ -17,7 +16,7 @@ from ..services.limits import MAX_DAYS, MAX_LIST_LIMIT, MAX_WEEKS
 from .ports import TrainingRepository
 from .results import SyncResult, ThrottledSync
 from .settings import ServiceSettings
-from .state import ActivitySummary, SyncState
+from .state import ActivityRecord, ActivitySummary, SyncState
 from .sync import SyncService
 
 logger = logging.getLogger(__name__)
@@ -101,15 +100,13 @@ class TrainingStatsService:
             limit=limit,
         )
 
-    def get_activity(self, activity_id: str) -> MetricReport:
-        """Return one activity's cached metrics."""
-        report = activity_report(
-            tuple(self.repository.load_sync_state().activities.values()), activity_id
-        )
-        if report is None:
+    def get_activity(self, activity_id: str) -> ActivityRecord:
+        """Return one complete activity record from the cache."""
+        record = self.repository.load_sync_state().activities.get(activity_id)
+        if record is None:
             msg = f"activity not found: {activity_id!r}"
             raise LookupError(msg)
-        return report
+        return record
 
     def weekly_summary(
         self,

@@ -81,14 +81,6 @@ def _metrics(report: object) -> list[dict[str, object]]:
     return metrics
 
 
-def _trip_ids(report: object) -> set[str]:
-    return {
-        str(metric["period"]["activity_id"])
-        for metric in _metrics(report)
-        if isinstance(metric.get("period"), dict) and metric["period"].get("kind") == "trip"
-    }
-
-
 def _activity_ids(activities: object) -> set[str]:
     assert isinstance(activities, list)
     return {str(activity["activity_id"]) for activity in activities}
@@ -169,7 +161,11 @@ class TestShowCommand:
         assert main(["-c", str(config_path), "show", activity_id]) == 0
         details = _stdout_payload(capsys)
         _assert_no_none_fields(details)
-        assert _trip_ids(details) == {activity_id}
+        assert details["activity_id"] == activity_id
+        assert "start_time" in details
+        assert "sport" in details
+        assert "metrics" in details
+        assert all("period" not in metric for metric in details["metrics"])
         assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
         assert "records" not in details
 
@@ -314,6 +310,22 @@ class TestInteractiveOutput:
         with pytest.raises(json.JSONDecodeError):
             json.loads(captured.out)
         assert "sync: 2 found" in captured.err
+
+    def test_show_renders_activity_header_and_metrics(
+        self,
+        config_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        interactive: None,
+    ) -> None:
+        assert main(["-c", str(config_path), "--json", "list", "--limit", "1"]) == 0
+        activity_id = next(iter(_activity_ids(_stdout_payload(capsys))))
+
+        assert main(["-c", str(config_path), "show", activity_id]) == 0
+        output = capsys.readouterr().out
+        assert "Activities" in output
+        assert activity_id in output
+        assert "Metrics" in output
+        assert "Training Load" in output
 
     def test_overview_renders_panels(
         self,

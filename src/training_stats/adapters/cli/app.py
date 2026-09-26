@@ -24,7 +24,7 @@ from rich.console import Console
 from ... import __version__
 from ...domain.errors import TrainingStatsError
 from ...domain.metrics import MetricReport
-from ...domain.models import ActivitySummary
+from ...domain.models import ActivityRecord, ActivitySummary
 from ...services.results import SyncResult, ThrottledSync
 from ...services.training import TrainingStatsService
 from .. import wire
@@ -129,23 +129,26 @@ def _service(config_path: Path | None) -> TrainingStatsService:
 
 
 def _emit(
-    payload: MetricReport | tuple[ActivitySummary, ...],
+    payload: MetricReport | ActivityRecord | tuple[ActivitySummary, ...],
     renderer: Callable[[object, Console], None],
     *,
     force_json: bool,
 ) -> None:
-    """Render a metric report or activity list as Rich when stdout is a TTY."""
+    """Render metrics, an activity record, or an activity list."""
     if not force_json and sys.stdout.isatty():
         renderer(payload, Console())
     elif isinstance(payload, MetricReport):
         report_payload = wire.metric_report(payload).model_dump(mode="json", exclude_none=True)
         print(json.dumps(report_payload, indent=2))
-    else:
+    elif isinstance(payload, tuple):
         activities_payload = [
             activity.model_dump(mode="json", exclude_none=True)
             for activity in wire.activity_summaries(payload)
         ]
         print(json.dumps(activities_payload, indent=2))
+    else:
+        activity_payload = wire.activity_record(payload).model_dump(mode="json", exclude_none=True)
+        print(json.dumps(activity_payload, indent=2))
 
 
 @app.meta.default
@@ -232,10 +235,10 @@ def list_activities(
 
 @app.command
 def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
-    """Show one activity with metrics, zones, load and data quality."""
+    """Show one activity record with its metrics."""
     _emit(
         _service(config).get_activity(activity_id),
-        cli_output.render_report,
+        cli_output.render_activity_detail,
         force_json=json_output,
     )
 
