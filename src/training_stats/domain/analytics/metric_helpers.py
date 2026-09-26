@@ -8,7 +8,6 @@ from ..metrics import (
     Metric,
     MetricKind,
     MetricMethod,
-    MetricReport,
     MetricScalar,
     MissingReason,
     Period,
@@ -100,8 +99,3 @@ def table_metric(
         formula=formula,
         coefficient_set=coefficient_set,
     )
-
-
-def report(*metrics: Metric) -> MetricReport:
-    """Create an ordered report from metric function results."""
-    return MetricReport(metrics=tuple(metrics))

@@ -42,9 +42,6 @@ class HrBucketAvg:
     avg_hr: float
     hr_time_s: float
 
-    def to_dict(self) -> dict[str, object]:
-        return {"start_min": self.start_min, "avg_hr": self.avg_hr, "hr_time_s": self.hr_time_s}
-
 
 def build_zone_bounds(bpm_bounds: list[tuple[int, int, int]]) -> list[ZoneBounds]:
     """Create :class:`ZoneBounds` from validated ``(zone, min, max)`` tuples."""

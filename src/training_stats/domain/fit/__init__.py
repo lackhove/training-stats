@@ -8,7 +8,6 @@ from .types import (
     ParsedActivity,
     PauseInterval,
     TimerEvent,
-    empty_fit_data_frame,
     empty_records,
 )
 
@@ -19,7 +18,6 @@ __all__ = [
     "ParsedActivity",
     "PauseInterval",
     "TimerEvent",
-    "empty_fit_data_frame",
     "empty_records",
     "repair_timeline",
 ]

@@ -41,11 +41,6 @@ def empty_records() -> pl.DataFrame:
     return pl.DataFrame(schema=RECORD_SCHEMA)
 
 
-def empty_fit_data_frame() -> pl.DataFrame:
-    """Return an empty frame for normalized raw FIT messages."""
-    return pl.DataFrame(schema=FitData.SCHEMA)
-
-
 @dataclass(frozen=True, slots=True)
 class TimerEvent:
     """Normalized timer event decoded from a FIT event message."""

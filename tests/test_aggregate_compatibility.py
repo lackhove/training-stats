@@ -15,7 +15,7 @@ import pytest
 from tests.conftest import make_athlete
 from training_stats.domain.analytics.daily import summarize_daily
 from training_stats.domain.analytics.fitness import training_form_from
-from training_stats.domain.analytics.reports import daily_summary, overview_report, weekly_summary
+from training_stats.domain.analytics.reports import overview_report, weekly_summary
 from training_stats.domain.metrics import (
     AllTimePeriod,
     Axis,
@@ -490,63 +490,6 @@ class TestWeeklyReportParity:
         assert all(
             metric.period
             == DateRangePeriod(start=date(2026, 6, 15), end=date(2026, 6, 21), timezone=str(TZ))
-            for metric in report.metrics
-        )
-
-
-class TestDailyReportParity:
-    def test_values_and_period(self) -> None:
-        report = daily_summary(
-            RECORDS, TZ, start_date=date(2026, 5, 28), end_date=date(2026, 6, 15)
-        )
-        assert _names(report) == DAILY_NAMES
-        axis = ("2026-05-28", "2026-06-02", "2026-06-12")
-        assert _table(report, "activity.count_by_day") == (axis, (1, 5, 1))
-        assert _table(report, "activity.duration_by_day") == (axis, (7200.0, 9000.0, 7200.0))
-        assert _table(report, "activity.distance_by_day") == (axis, (90_000.0, 150_000.0, 80_000.0))
-        assert _table(report, "activity.elevation_gain_by_day") == (axis, (300.0, 170.0, 120.0))
-        assert _table(report, "training_load.hr_trimp_by_day") == (axis, (200.0, 459.0, 220.0))
-        assert _matrix(report, "heart_rate.zone_matrix_by_day") == (
-            axis,
-            ("zone_1", "zone_2", "zone_3", "zone_4", "zone_5"),
-            (
-                (0.0, 160.0, 0.0),
-                (100.0, 270.0, 0.0),
-                (200.0, 380.0, 1000.0),
-                (300.0, 450.0, 2000.0),
-                (400.0, 550.0, 1000.0),
-            ),
-        )
-        assert all(
-            metric.period
-            == DateRangePeriod(start=date(2026, 5, 28), end=date(2026, 6, 15), timezone=str(TZ))
-            for metric in report.metrics
-        )
-
-    def test_sport_filter_keeps_per_sport_rows(self) -> None:
-        report = daily_summary(
-            RECORDS, TZ, start_date=date(2026, 6, 1), end_date=date(2026, 6, 3), sport="CYCLING"
-        )
-        assert _table(report, "activity.count_by_day") == (("2026-06-02",), (4,))
-        assert _table(report, "activity.duration_by_day") == (("2026-06-02",), (7200.0,))
-        assert _matrix(report, "heart_rate.zone_matrix_by_day")[2] == (
-            (150.0,),
-            (250.0,),
-            (350.0,),
-            (450.0,),
-            (550.0,),
-        )
-
-    def test_empty_report(self) -> None:
-        report = daily_summary((), TZ, start_date=date(2026, 6, 1), end_date=date(2026, 6, 3))
-        assert _names(report) == DAILY_NAMES
-        for name in DAILY_NAMES:
-            metric = _metric(report, name)
-            assert metric.value is None
-            assert metric.missing_reason is MissingReason.NO_DATA
-        assert all(
-            metric.period
-            == DateRangePeriod(start=date(2026, 6, 1), end=date(2026, 6, 3), timezone=str(TZ))
             for metric in report.metrics
         )
 

@@ -30,35 +30,6 @@ from .profile import athlete_profile
 from .weekly import WeeklySummaryRow, daily_to_weekly, select_weekly
 
 
-def activity_report(records: Sequence[ActivityRecord], activity_id: str) -> MetricReport | None:
-    """Return the cached per-trip metric collection for one activity."""
-    record = next((item for item in records if item.activity_id == activity_id), None)
-    if record is None:
-        return None
-    return MetricReport(metrics=record.metrics)
-
-
-def activity_list_report(
-    records: Sequence[ActivityRecord],
-    tz: tzinfo,
-    *,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    sport: str | None = None,
-    limit: int = 50,
-) -> MetricReport:
-    """Return selected activity metrics, newest trip first."""
-    selected = _select_activities(
-        records,
-        tz,
-        start_date=start_date,
-        end_date=end_date,
-        sport=sport,
-        limit=limit,
-    )
-    return MetricReport(metrics=tuple(metric for record in selected for metric in record.metrics))
-
-
 def activity_summaries(
     records: Sequence[ActivityRecord],
     tz: tzinfo,
@@ -128,25 +99,6 @@ def weekly_summary(
     ) + timedelta(days=6)
     period = DateRangePeriod(start=start_date or first, end=end_date or last, timezone=str(tz))
     return MetricReport(metrics=_weekly_metrics(rows, period))
-
-
-def daily_summary(
-    records: Sequence[ActivityRecord],
-    tz: tzinfo,
-    *,
-    start_date: date,
-    end_date: date,
-    sport: str | None = None,
-) -> MetricReport:
-    """Summarize daily activity metrics over an inclusive date range."""
-    rows = select_daily(
-        summarize_daily(records, tz),
-        start_date=start_date,
-        end_date=end_date,
-        sport=sport,
-    )
-    period = DateRangePeriod(start=start_date, end=end_date, timezone=str(tz))
-    return MetricReport(metrics=_daily_metrics(rows, period))
 
 
 def overview_report(

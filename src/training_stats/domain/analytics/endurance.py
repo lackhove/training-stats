@@ -51,9 +51,9 @@ def compute_aerobic_decoupling(
 ) -> DecouplingResult:
     """Compute efficiency factor drift across two equal moving-time halves.
 
-    Intervals crossing segment breaks or capped gaps (> max_interval_s) are
-    excluded. Moving intervals require speed >= moving_speed_threshold_mps.
-    Returns clean None values with descriptive confidence on quality failure.
+    Intervals crossing capped gaps (> max_interval_s) are excluded. Moving
+    intervals require speed >= moving_speed_threshold_mps. Returns clean None
+    values with descriptive confidence on quality failure.
     """
     if records.height < 2 or "timestamp" not in records.columns:
         return _empty_decoupling(CONFIDENCE_INSUFFICIENT_DURATION)
@@ -64,16 +64,6 @@ def compute_aerobic_decoupling(
         return _empty_decoupling(CONFIDENCE_INSUFFICIENT_DURATION)
 
     frame = interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
-
-    # Exclude segment breaks if a segment column is present
-    if "segment" in records.columns:
-        frame = frame.with_columns(
-            (records["segment"].shift(-1) == records["segment"]).alias("same_segment")
-        ).filter(pl.col("same_segment").fill_null(False))
-    elif "segment_index" in records.columns:
-        frame = frame.with_columns(
-            (records["segment_index"].shift(-1) == records["segment_index"]).alias("same_segment")
-        ).filter(pl.col("same_segment").fill_null(False))
 
     # Exclude intervals crossing capped gaps or out-of-order timestamps
     valid_intervals = frame.filter(

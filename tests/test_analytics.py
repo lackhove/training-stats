@@ -22,7 +22,6 @@ from training_stats.domain.analytics.daily import (
     summarize_daily,
 )
 from training_stats.domain.analytics.metric_helpers import table_metric
-from training_stats.domain.analytics.reports import activity_list_report, activity_report
 from training_stats.domain.analytics.weekly import (
     WeeklySummaryRow,
     aggregate_weekly,
@@ -575,57 +574,6 @@ def test_stub_parser_roundtrip() -> None:
     second = parser.parse(content, SourceFile(source_name="s", path="a.fit"))
     assert first.frame.equals(second.frame)
     assert first.frame.filter(pl.col("message_type") == "record").height > 5
-
-
-CACHE_TZ = ZoneInfo("Europe/Berlin")
-
-
-class TestActivityMetricReports:
-    def test_newest_first(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        records = tuple(repository.load_sync_state().activities.values())
-        report = activity_list_report(records, CACHE_TZ)
-        trip_ids = [
-            metric.period.activity_id
-            for metric in report.metrics
-            if metric.name == "activity.sport" and isinstance(metric.period, TripPeriod)
-        ]
-        assert [
-            next(row.sport for row in records if row.activity_id == item) for item in trip_ids
-        ] == [
-            "running",
-            "cycling",
-        ]
-
-    def test_limit(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        records = tuple(repository.load_sync_state().activities.values())
-        report = activity_list_report(records, CACHE_TZ, limit=1)
-        assert len({metric.period.activity_id for metric in report.metrics}) == 1
-
-    def test_sport_filter_case_insensitive(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        records = tuple(repository.load_sync_state().activities.values())
-        report = activity_list_report(records, CACHE_TZ, sport="RUNNING")
-        assert len({metric.period.activity_id for metric in report.metrics}) == 1
-        assert _scalar(report.metrics, "activity.sport") == "running"
-
-    def test_date_filtering(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        records = tuple(repository.load_sync_state().activities.values())
-        day = datetime(2026, 6, 3, tzinfo=UTC).date()
-        report = activity_list_report(records, CACHE_TZ, start_date=day, end_date=day)
-        assert len({metric.period.activity_id for metric in report.metrics}) == 1
-        assert _scalar(report.metrics, "activity.sport") == "running"
-
-    def test_activity_report_contains_cached_metrics(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, two_files())
-        records = tuple(repository.load_sync_state().activities.values())
-        report = activity_report(records, records[0].activity_id)
-        assert report is not None
-        assert all(metric.period.activity_id == records[0].activity_id for metric in report.metrics)
-        assert _scalar(report.metrics, "training_load.hr_trimp") is not None
-        assert activity_report(records, "deadbeef") is None
 
 
 class TestDataQuality:

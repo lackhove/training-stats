@@ -32,7 +32,6 @@ class TrainingStatsService:
         repository: TrainingRepository,
     ) -> None:
         self.settings = settings
-        self.sources = sync_service.sources
         self.sync_service = sync_service
         self.repository = repository
         self.tz = settings.timezone

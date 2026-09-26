@@ -301,7 +301,7 @@ class TestCreateServer:
     def test_local_source_built(self, tmp_path: Path) -> None:
         config = make_app_config(tmp_path / "cache", tmp_path / "activities")
         server = create_service(config)
-        assert [source.name for source in server.sources] == ["local"]
+        assert [source.name for source in server.sync_service.sources] == ["local"]
 
     def test_webdav_source_built(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from training_stats.adapters.config import (
@@ -320,4 +320,4 @@ class TestCreateServer:
             )
         )
         server = create_service(config)
-        assert [source.name for source in server.sources] == ["local", "cloud"]
+        assert [source.name for source in server.sync_service.sources] == ["local", "cloud"]
