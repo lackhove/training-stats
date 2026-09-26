@@ -63,6 +63,17 @@ def _activity_ids(activities: list[dict[str, Any]]) -> set[str]:
     return {activity["activity_id"] for activity in activities}
 
 
+def _assert_no_none_fields(value: Any) -> None:
+    if isinstance(value, dict):
+        assert all(item is not None for item in value.values())
+        for item in value.values():
+            _assert_no_none_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict | list):
+                _assert_no_none_fields(item)
+
+
 class TestActivitiesEndpoint:
     def test_list_syncs_first_and_returns_activity_summaries(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
@@ -70,14 +81,15 @@ class TestActivitiesEndpoint:
             response = client.get("/activities")
         assert response.status_code == 200
         activities = response.json()
+        _assert_no_none_fields(activities)
         assert len(_activity_ids(activities)) == 2
         assert all("metrics" not in activity for activity in activities)
         assert set(activities[0]) == {
             "activity_id",
             "start_time",
             "sport",
-            "sub_sport",
         }
+        assert all("sub_sport" not in activity for activity in activities)
         sports = {activity["sport"] for activity in activities}
         assert sports == {"cycling", "running"}
         assert len(server.repository.load_sync_state().activities) == 2
@@ -94,6 +106,7 @@ class TestActivitiesEndpoint:
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/activities", params={"sport": "running"})
+            _assert_no_none_fields(response.json())
             assert {item["sport"] for item in response.json()} == {"running"}
             run_day = (T0 + timedelta(days=7)).date()
             response = client.get(
@@ -111,12 +124,15 @@ class TestActivitiesEndpoint:
             response = client.get(f"/activities/{activity_id}")
             missing = client.get("/activities/does-not-exist")
         assert response.status_code == 200
-        assert _trip_ids(response.json()) == {activity_id}
-        load = _named(response.json(), "training_load.hr_trimp")
+        report = response.json()
+        _assert_no_none_fields(report)
+        assert _trip_ids(report) == {activity_id}
+        load = _named(report, "training_load.hr_trimp")
         assert load["method"] == "hr_trimp"
         assert load["algorithm_version"] == "1"
-        assert _named(response.json(), "heart_rate.zone_time")["value"]["shape"] == "table"
+        assert _named(report, "heart_rate.zone_time")["value"]["shape"] == "table"
         assert missing.status_code == 404
+        _assert_no_none_fields(missing.json())
 
 
 class TestValidation:
@@ -124,14 +140,18 @@ class TestValidation:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
-            assert client.get("/activities", params={"start_date": "06/02/2026"}).status_code == 422
+            invalid_date = client.get("/activities", params={"start_date": "06/02/2026"})
+            assert invalid_date.status_code == 422
+            _assert_no_none_fields(invalid_date.json())
             assert client.get("/weekly", params={"start_date": "not-a-date"}).status_code == 422
 
     def test_out_of_range_int_rejected(self, tmp_path: Path) -> None:
         server = _make_server(tmp_path, _stub_files())
         server.sync_service.sync()
         with _client(server) as client:
-            assert client.get("/activities", params={"limit": 0}).status_code == 422
+            invalid_limit = client.get("/activities", params={"limit": 0})
+            assert invalid_limit.status_code == 422
+            _assert_no_none_fields(invalid_limit.json())
             assert client.get("/activities", params={"limit": 501}).status_code == 422
             assert client.get("/weekly", params={"weeks": 0}).status_code == 422
             assert client.get("/overview", params={"days": 0}).status_code == 422
@@ -144,7 +164,9 @@ class TestSummaryEndpoints:
         with _client(server) as client:
             response = client.get("/weekly", params={"weeks": 4})
         assert response.status_code == 200
-        distance = _named(response.json(), "activity.distance_by_week")
+        report = response.json()
+        _assert_no_none_fields(report)
+        distance = _named(report, "activity.distance_by_week")
         assert distance["value"]["shape"] == "table"
         assert len(distance["value"]["axis"]["values"]) == 2
 
@@ -153,7 +175,9 @@ class TestSummaryEndpoints:
         server.sync_service.sync()
         with _client(server) as client:
             response = client.get("/weekly", params={"weeks": 4, "sport": "cycling"})
-        distance = _named(response.json(), "activity.distance_by_week")
+        report = response.json()
+        _assert_no_none_fields(report)
+        distance = _named(report, "activity.distance_by_week")
         assert len(distance["value"]["axis"]["values"]) == 1
 
     def test_overview_is_generic_metric_report(self, tmp_path: Path) -> None:
@@ -162,6 +186,7 @@ class TestSummaryEndpoints:
         with _client(server) as client:
             response = client.get("/overview", params={"days": 14})
         report = response.json()
+        _assert_no_none_fields(report)
         assert response.status_code == 200
         assert len(_trip_ids(report)) == 2
         assert _named(report, "athlete_profile.max_heart_rate")["value"]["value"] == 180
@@ -173,6 +198,8 @@ class TestSummaryEndpoints:
         with _client(server) as client:
             weekly = client.get("/weekly", params={"weeks": 4})
             overview = client.get("/overview", params={"days": 14})
+        _assert_no_none_fields(weekly.json())
+        _assert_no_none_fields(overview.json())
         assert _named(weekly.json(), "activity.distance_by_week")["value"] is not None
         assert _named(overview.json(), "data_quality.activity_count")["value"]["value"] == 2
 
@@ -181,6 +208,7 @@ class TestSummaryEndpoints:
         with _client(server) as client:
             response = client.get("/activities/does-not-exist")
         assert response.status_code == 404
+        _assert_no_none_fields(response.json())
         assert server.repository.load_sync_state().activities == {}
 
 
@@ -210,3 +238,14 @@ class TestOpenApi:
             == "#/components/schemas/ActivitySummaryWire"
         )
         assert "description" in components["MetricWire"]["required"]
+        assert set(components["ActivitySummaryWire"]["required"]) == {
+            "activity_id",
+            "start_time",
+            "sport",
+        }
+        assert set(components["MetricWire"]["required"]) == {
+            "name",
+            "description",
+            "period",
+            "kind",
+        }

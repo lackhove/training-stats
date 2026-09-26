@@ -138,11 +138,12 @@ def _emit(
     if not force_json and sys.stdout.isatty():
         renderer(payload, Console())
     elif isinstance(payload, MetricReport):
-        report_payload = wire.metric_report(payload).model_dump(mode="json")
+        report_payload = wire.metric_report(payload).model_dump(mode="json", exclude_none=True)
         print(json.dumps(report_payload, indent=2))
     else:
         activities_payload = [
-            activity.model_dump(mode="json") for activity in wire.activity_summaries(payload)
+            activity.model_dump(mode="json", exclude_none=True)
+            for activity in wire.activity_summaries(payload)
         ]
         print(json.dumps(activities_payload, indent=2))
 

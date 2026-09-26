@@ -25,7 +25,7 @@ class ActivitySummaryWire(BaseModel):
     activity_id: str
     start_time: datetime
     sport: str
-    sub_sport: str | None
+    sub_sport: str | None = None
 
 
 class TripPeriodWire(BaseModel):
@@ -34,7 +34,7 @@ class TripPeriodWire(BaseModel):
     kind: Literal["trip"]
     activity_id: str
     start: datetime
-    end: datetime | None
+    end: datetime | None = None
 
 
 class DateRangePeriodWire(BaseModel):
@@ -70,7 +70,7 @@ class AxisBinWire(BaseModel):
 
     label: str
     lower: float
-    upper: float | None
+    upper: float | None = None
 
 
 AxisValueWire = str | int | float | AxisBinWire
@@ -81,7 +81,7 @@ class AxisWire(BaseModel):
 
     name: str
     values: list[AxisValueWire]
-    unit: str | None
+    unit: str | None = None
 
 
 class ScalarValueWire(BaseModel):
@@ -120,16 +120,16 @@ class MetricWire(BaseModel):
     name: str
     description: str
     period: PeriodWire
-    value: MetricValueWire | None
+    value: MetricValueWire | None = None
     kind: MetricKind
-    unit: str | None
-    missing_reason: MissingReason | None
-    method: MetricMethod | None
-    algorithm_version: str | None
-    confidence: Confidence | None
-    formula: str | None
-    coefficient_set: str | None
-    time_basis: TimeBasis | None
+    unit: str | None = None
+    missing_reason: MissingReason | None = None
+    method: MetricMethod | None = None
+    algorithm_version: str | None = None
+    confidence: Confidence | None = None
+    formula: str | None = None
+    coefficient_set: str | None = None
+    time_basis: TimeBasis | None = None
 
 
 class MetricReportWire(BaseModel):

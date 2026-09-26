@@ -94,6 +94,17 @@ def _activity_ids(activities: object) -> set[str]:
     return {str(activity["activity_id"]) for activity in activities}
 
 
+def _assert_no_none_fields(value: object) -> None:
+    if isinstance(value, dict):
+        assert all(item is not None for item in value.values())
+        for item in value.values():
+            _assert_no_none_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict | list):
+                _assert_no_none_fields(item)
+
+
 def _metric(report: object, name: str) -> dict[str, object]:
     return next(metric for metric in _metrics(report) if metric["name"] == name)
 
@@ -105,6 +116,7 @@ class TestListCommand:
         assert main(["--config", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
         activities = json.loads(captured.out)
+        _assert_no_none_fields(activities)
         assert len(_activity_ids(activities)) == 2
         assert all("metrics" not in activity for activity in activities)
         assert set(activities[0]) == {
@@ -156,6 +168,7 @@ class TestShowCommand:
 
         assert main(["-c", str(config_path), "show", activity_id]) == 0
         details = _stdout_payload(capsys)
+        _assert_no_none_fields(details)
         assert _trip_ids(details) == {activity_id}
         assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
         assert "records" not in details
@@ -166,6 +179,7 @@ class TestShowCommand:
         assert main(["-c", str(config_path), "show", "does-not-exist"]) == 1
         captured = capsys.readouterr()
         assert json.loads(captured.err)["detail"].startswith("activity not found")
+        _assert_no_none_fields(json.loads(captured.err))
         assert captured.out == ""
 
 
@@ -178,6 +192,7 @@ class TestWeeklyCommand:
         captured = capsys.readouterr()
         assert "syncing sources..." in captured.err
         report = json.loads(captured.out)
+        _assert_no_none_fields(report)
         assert _metric(report, "activity.distance_by_week")["value"]["shape"] == "table"
 
     def test_weekly_no_sync_serves_empty_cache(
@@ -186,7 +201,8 @@ class TestWeeklyCommand:
         assert main(["-c", str(config_path), "weekly", "--no-sync"]) == 0
         captured = capsys.readouterr()
         report = json.loads(captured.out)
-        assert all(metric["value"] is None for metric in _metrics(report))
+        _assert_no_none_fields(report)
+        assert all("value" not in metric for metric in _metrics(report))
         assert "sync" not in captured.err
 
 
@@ -195,6 +211,7 @@ class TestOverviewCommand:
         # Overview synchronizes on its own; no prior list needed.
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
         overview = _stdout_payload(capsys)
+        _assert_no_none_fields(overview)
         assert _metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
         assert _metric(overview, "data_quality.activity_count")["value"]["value"] == 2
         assert _metric(overview, "training_form.ctl_by_day")["value"]["shape"] == "table"

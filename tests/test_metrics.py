@@ -163,3 +163,21 @@ def test_wire_report_has_discriminated_shape_contract() -> None:
     assert (
         dumped["metrics"][0]["description"] == "Human-readable description for an arbitrary metric."
     )
+
+
+def test_excluding_none_fields_preserves_null_array_cells() -> None:
+    report = MetricReport(
+        (
+            Metric(
+                "sparse.daily_distance",
+                "Recorded distance when activity data is available.",
+                DateRangePeriod(date(2026, 6, 1), date(2026, 6, 2), "UTC"),
+                TableValue(Axis("date", ("2026-06-01", "2026-06-02")), (None, 1200.0)),
+                MetricKind.CALCULATED,
+            ),
+        )
+    )
+    dumped = metric_report(report).model_dump(mode="json", exclude_none=True)
+    metric = dumped["metrics"][0]
+    assert "unit" not in metric
+    assert metric["value"]["values"] == [None, 1200.0]

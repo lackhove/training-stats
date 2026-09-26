@@ -66,6 +66,8 @@ includes its stable name, required human-readable description, period, value
 shape, unit, and missing reason when unavailable. Tables and matrices are
 self-describing through their axes; adding metrics that use the existing shapes
 does not require API or Rich renderer changes.
+API and CLI JSON omit object fields whose value is `None`; null cells inside
+metric arrays are retained to preserve their axes.
 
 ## Configuration
 

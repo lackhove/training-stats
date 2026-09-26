@@ -84,6 +84,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
     @app.get(
         "/activities",
         response_model=list[wire.ActivitySummaryWire],
+        response_model_exclude_none=True,
         summary="List activities, newest first",
         dependencies=route_dependencies,
         tags=["activities"],
@@ -104,6 +105,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
     @app.get(
         "/activities/{activity_id}",
         response_model=wire.MetricReportWire,
+        response_model_exclude_none=True,
         summary="Get one activity's metrics",
         description="Serves cached data; IDs come from /activities.",
         dependencies=route_dependencies,
@@ -115,6 +117,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
     @app.get(
         "/weekly",
         response_model=wire.MetricReportWire,
+        response_model_exclude_none=True,
         summary="Weekly training metrics",
         dependencies=route_dependencies,
         tags=["aggregates"],
@@ -138,6 +141,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
     @app.get(
         "/overview",
         response_model=wire.MetricReportWire,
+        response_model_exclude_none=True,
         summary="Generic coaching metric report",
         dependencies=route_dependencies,
         tags=["aggregates"],
