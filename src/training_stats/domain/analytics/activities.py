@@ -24,6 +24,7 @@ from ..settings import AthleteConfig, QualityConfig
 from .activity_statistics import compute_activity_statistics
 from .endurance import DecouplingResult, compute_aerobic_decoupling
 from .heart_rate import (
+    HrBucketAvg,
     ZoneResult,
     build_zone_bounds,
     hr_bucket_averages,
@@ -78,8 +79,21 @@ def compute_activity_metrics(
             else None
         ),
     )
+    histogram = hr_histogram(activity.records, pause_intervals=activity.pause_intervals)
+    metrics: list[Metric] = []
+    metrics.extend(_session_metrics(activity, analysis_version, period))
+    metrics.extend(_heart_rate_metrics(period, zone_result, buckets, histogram))
+    metrics.extend(_load_metrics(activity, period, zone_result, load_value))
+    metrics.extend(_endurance_metrics(period, decoupling))
+    metrics.extend(compute_activity_statistics(activity, athlete, effective_quality))
+    return tuple(metrics)
+
+
+def _session_metrics(
+    activity: ParsedActivity, analysis_version: str, period: TripPeriod
+) -> list[Metric]:
     kind = MetricKind.MEASURED
-    metrics: list[Metric] = [
+    return [
         scalar_metric(
             "analysis.version",
             period,
@@ -175,37 +189,39 @@ def compute_activity_metrics(
         ),
     ]
 
+
+def _heart_rate_metrics(
+    period: TripPeriod,
+    zone_result: ZoneResult,
+    buckets: list[HrBucketAvg],
+    histogram: dict[str, float],
+) -> list[Metric]:
     zone_axis = Axis(
         name="heart_rate_zone",
         values=tuple(f"zone_{index}" for index in range(1, 6)),
     )
-    metrics.extend(
-        [
-            scalar_metric(
-                "heart_rate.coverage",
-                period,
-                zone_result.hr_coverage_ratio,
-                description="Share of active time covered by valid heart-rate samples.",
-                unit="ratio",
-                kind=MetricKind.CALCULATED,
-                time_basis=TimeBasis.ACTIVE_TIME,
-            ),
-            table_metric(
-                "heart_rate.zone_time",
-                period,
-                zone_axis,
-                zone_result.zone_seconds,
-                description="Active time assigned to each configured heart-rate zone.",
-                unit="s",
-                missing_reason=(
-                    MissingReason.NO_DATA if zone_result.valid_hr_time_s <= 0.0 else None
-                ),
-                time_basis=TimeBasis.ACTIVE_TIME,
-            ),
-        ]
-    )
+    metrics = [
+        scalar_metric(
+            "heart_rate.coverage",
+            period,
+            zone_result.hr_coverage_ratio,
+            description="Share of active time covered by valid heart-rate samples.",
+            unit="ratio",
+            kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.ACTIVE_TIME,
+        ),
+        table_metric(
+            "heart_rate.zone_time",
+            period,
+            zone_axis,
+            zone_result.zone_seconds,
+            description="Active time assigned to each configured heart-rate zone.",
+            unit="s",
+            missing_reason=(MissingReason.NO_DATA if zone_result.valid_hr_time_s <= 0.0 else None),
+            time_basis=TimeBasis.ACTIVE_TIME,
+        ),
+    ]
 
-    histogram = hr_histogram(activity.records, pause_intervals=activity.pause_intervals)
     histogram_values = tuple(histogram.values())
     metrics.append(
         table_metric(
@@ -246,47 +262,59 @@ def compute_activity_metrics(
         ]
     )
 
-    metrics.extend(
-        [
-            scalar_metric(
-                "heart_rate.drift",
-                period,
-                hr_drift_bpm_per_hour(buckets),
-                description="Heart-rate change per hour estimated from ten-minute averages.",
-                unit="bpm/h",
-                kind=MetricKind.CALCULATED,
-                missing_reason=MissingReason.INSUFFICIENT_DATA,
-                time_basis=TimeBasis.ACTIVE_TIME,
-            ),
-            scalar_metric(
-                "training_load.hr_trimp",
-                period,
-                load_value,
-                description="Banister HR load estimated from time in configured zones.",
-                kind=MetricKind.ESTIMATED,
-                unit="TRIMP",
-                missing_reason=MissingReason.NO_DATA,
-                method=MetricMethod.HR_TRIMP,
-                algorithm_version=LOAD_VERSION,
-                confidence=(
-                    Confidence(load_confidence(zone_result.hr_coverage_ratio))
-                    if load_value is not None
-                    else None
-                ),
-                formula=LOAD_FORMULA,
-                coefficient_set=LOAD_COEFFICIENT_SET,
-            ),
-            scalar_metric(
-                "data.completeness",
-                period,
-                _completeness(activity),
-                description="Fraction of seven key activity fields present in the FIT data.",
-                unit="ratio",
-                kind=MetricKind.CALCULATED,
-            ),
-        ]
+    metrics.append(
+        scalar_metric(
+            "heart_rate.drift",
+            period,
+            hr_drift_bpm_per_hour(buckets),
+            description="Heart-rate change per hour estimated from ten-minute averages.",
+            unit="bpm/h",
+            kind=MetricKind.CALCULATED,
+            missing_reason=MissingReason.INSUFFICIENT_DATA,
+            time_basis=TimeBasis.ACTIVE_TIME,
+        )
     )
+    return metrics
 
+
+def _load_metrics(
+    activity: ParsedActivity,
+    period: TripPeriod,
+    zone_result: ZoneResult,
+    load_value: float | None,
+) -> list[Metric]:
+    return [
+        scalar_metric(
+            "training_load.hr_trimp",
+            period,
+            load_value,
+            description="Banister HR load estimated from time in configured zones.",
+            kind=MetricKind.ESTIMATED,
+            unit="TRIMP",
+            missing_reason=MissingReason.NO_DATA,
+            method=MetricMethod.HR_TRIMP,
+            algorithm_version=LOAD_VERSION,
+            confidence=(
+                Confidence(load_confidence(zone_result.hr_coverage_ratio))
+                if load_value is not None
+                else None
+            ),
+            formula=LOAD_FORMULA,
+            coefficient_set=LOAD_COEFFICIENT_SET,
+        ),
+        scalar_metric(
+            "data.completeness",
+            period,
+            _completeness(activity),
+            description="Fraction of seven key activity fields present in the FIT data.",
+            unit="ratio",
+            kind=MetricKind.CALCULATED,
+        ),
+    ]
+
+
+def _endurance_metrics(period: TripPeriod, decoupling: DecouplingResult) -> list[Metric]:
+    metrics: list[Metric] = []
     decoupling_reason = _decoupling_missing_reason(decoupling.confidence)
     decoupling_confidence = Confidence.HIGH if decoupling.confidence == "high" else None
     for name, description, value, unit in (
@@ -323,8 +351,7 @@ def compute_activity_metrics(
                 time_basis=TimeBasis.MOVING_TIME,
             )
         )
-    metrics.extend(compute_activity_statistics(activity, athlete, effective_quality))
-    return tuple(metrics)
+    return metrics
 
 
 def _decoupling_missing_reason(confidence: str) -> MissingReason:
