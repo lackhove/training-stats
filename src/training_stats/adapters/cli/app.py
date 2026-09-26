@@ -133,12 +133,15 @@ def _emit(
     renderer: Callable[[object, Console], None],
     *,
     force_json: bool,
+    report_serializer: Callable[
+        [MetricReport], wire.MetricReportWire | wire.WeeklyReportWire
+    ] = wire.metric_report,
 ) -> None:
     """Render metrics, an activity record, or an activity list."""
     if not force_json and sys.stdout.isatty():
         renderer(payload, Console())
     elif isinstance(payload, MetricReport):
-        report_payload = wire.metric_report(payload).model_dump(mode="json", exclude_none=True)
+        report_payload = report_serializer(payload).model_dump(mode="json", exclude_none=True)
         print(json.dumps(report_payload, indent=2))
     elif isinstance(payload, tuple):
         activities_payload = [
@@ -263,6 +266,7 @@ def weekly(
         ),
         cli_output.render_report,
         force_json=json_output,
+        report_serializer=wire.weekly_report,
     )
 
 

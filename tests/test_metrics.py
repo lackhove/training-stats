@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import TypeAdapter
 
-from training_stats.adapters.wire import MetricReportWire, metric_report
+from training_stats.adapters.wire import MetricReportWire, metric_report, weekly_report
 from training_stats.domain.metrics import (
     AllTimePeriod,
     Axis,
@@ -181,3 +181,9 @@ def test_excluding_none_fields_preserves_null_array_cells() -> None:
     metric = dumped["metrics"][0]
     assert "unit" not in metric
     assert metric["value"]["values"] == [None, 1200.0]
+
+    weekly_dump = weekly_report(report).model_dump(mode="json", exclude_none=True)
+    assert weekly_dump["period"]["kind"] == "date_range"
+    weekly_metric = weekly_dump["metrics"][0]
+    assert "period" not in weekly_metric
+    assert weekly_metric["value"]["values"] == [None, 1200.0]

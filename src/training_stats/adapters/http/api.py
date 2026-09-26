@@ -116,7 +116,7 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
 
     @app.get(
         "/weekly",
-        response_model=wire.MetricReportWire,
+        response_model=wire.WeeklyReportWire,
         response_model_exclude_none=True,
         summary="Weekly training metrics",
         dependencies=route_dependencies,
@@ -131,8 +131,8 @@ def build_app(service: TrainingStatsService, *, auth_token: SecretStr | None = N
         end_date: EndDate = None,
         weeks: Annotated[int, Query(gt=0, le=MAX_WEEKS)] = 8,
         sport: SportQuery = None,
-    ) -> wire.MetricReportWire:
-        return wire.metric_report(
+    ) -> wire.WeeklyReportWire:
+        return wire.weekly_report(
             service.weekly_summary(
                 start_date=start_date, end_date=end_date, weeks=weeks, sport=sport
             )

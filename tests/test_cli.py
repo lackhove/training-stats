@@ -189,6 +189,8 @@ class TestWeeklyCommand:
         assert "syncing sources..." in captured.err
         report = json.loads(captured.out)
         _assert_no_none_fields(report)
+        assert report["period"]["kind"] == "date_range"
+        assert all("period" not in metric for metric in report["metrics"])
         assert _metric(report, "activity.distance_by_week")["value"]["shape"] == "table"
 
     def test_weekly_no_sync_serves_empty_cache(
@@ -198,6 +200,8 @@ class TestWeeklyCommand:
         captured = capsys.readouterr()
         report = json.loads(captured.out)
         _assert_no_none_fields(report)
+        assert report["period"]["kind"] == "date_range"
+        assert all("period" not in metric for metric in report["metrics"])
         assert all("value" not in metric for metric in _metrics(report))
         assert "sync" not in captured.err
 

@@ -64,12 +64,13 @@ and `sub_sport` for each matching activity.
 `show` returns one activity record with its metadata and metrics. Its terminal
 view starts with the same compact activity header as `list`, followed by the
 metric panels. In `show` JSON, each metric omits its `period` because the
-enclosing record identifies the activity. `weekly` and `overview` return the
-metric-report envelope. Each metric includes its stable name, required
-human-readable description, period, value shape, unit, and missing reason when
-unavailable. Tables and matrices are self-describing through their axes; adding
-metrics that use the existing shapes does not require API or Rich renderer
-changes.
+enclosing record identifies the activity. `weekly` returns one shared `period`
+alongside its metrics, which omit their repeated period; `overview` returns the
+generic metric-report envelope. Each metric includes its stable name, required
+human-readable description, period (where applicable), value shape, unit, and
+missing reason when unavailable. Tables and matrices are self-describing
+through their axes; adding metrics that use the existing shapes does not require
+API or Rich renderer changes.
 API and CLI JSON omit object fields whose value is `None`; null cells inside
 metric arrays are retained to preserve their axes.
 
@@ -124,7 +125,7 @@ uv run training-stats server --host 0.0.0.0 --port 8000
 | --- | --- |
 | `GET /activities` | Activity ID, start time, sport, and sub-sport only, newest first (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
 | `GET /activities/{activity_id}` | One complete activity record, including its metrics without per-metric periods (serves cached data) |
-| `GET /weekly` | Weekly metrics report (synchronizes if due); `weeks`, `sport`, dates |
+| `GET /weekly` | Shared period with weekly metrics (synchronizes if due); `weeks`, `sport`, dates |
 | `GET /overview` | Generic coaching metric report (synchronizes if due); `days`, `sport` |
 
 The OpenAPI schema is served at `/openapi.json` (interactive docs at

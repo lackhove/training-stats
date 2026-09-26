@@ -179,6 +179,8 @@ class TestSummaryEndpoints:
         assert response.status_code == 200
         report = response.json()
         _assert_no_none_fields(report)
+        assert report["period"]["kind"] == "date_range"
+        assert all("period" not in metric for metric in report["metrics"])
         distance = _named(report, "activity.distance_by_week")
         assert distance["value"]["shape"] == "table"
         assert len(distance["value"]["axis"]["values"]) == 2
@@ -190,6 +192,8 @@ class TestSummaryEndpoints:
             response = client.get("/weekly", params={"weeks": 4, "sport": "cycling"})
         report = response.json()
         _assert_no_none_fields(report)
+        assert report["period"]["kind"] == "date_range"
+        assert all("period" not in metric for metric in report["metrics"])
         distance = _named(report, "activity.distance_by_week")
         assert len(distance["value"]["axis"]["values"]) == 1
 
@@ -213,6 +217,8 @@ class TestSummaryEndpoints:
             overview = client.get("/overview", params={"days": 14})
         _assert_no_none_fields(weekly.json())
         _assert_no_none_fields(overview.json())
+        assert weekly.json()["period"]["kind"] == "date_range"
+        assert all("period" not in metric for metric in weekly.json()["metrics"])
         assert _named(weekly.json(), "activity.distance_by_week")["value"] is not None
         assert _named(overview.json(), "data_quality.activity_count")["value"]["value"] == 2
 
@@ -234,12 +240,13 @@ class TestOpenApi:
         components = schema["components"]["schemas"]
         assert "MetricReportWire" in components
         assert "MetricWire" in components
+        assert "MetricWithoutPeriodWire" in components
+        assert "WeeklyReportWire" in components
         assert "ScalarValueWire" in components
         assert "TableValueWire" in components
         assert "MatrixValueWire" in components
         assert "ActivitySummaryWire" in components
         assert "ActivityRecordWire" in components
-        assert "ActivityMetricWire" in components
         assert set(components["ActivitySummaryWire"]["properties"]) == {
             "activity_id",
             "start_time",
@@ -271,12 +278,26 @@ class TestOpenApi:
             "analysis_version",
             "metrics",
         }
-        assert set(components["ActivityMetricWire"]["properties"]) == set(
+        assert set(components["MetricWithoutPeriodWire"]["properties"]) == set(
             components["MetricWire"]["properties"]
         ) - {"period"}
         assert (
             components["ActivityRecordWire"]["properties"]["metrics"]["items"]["$ref"]
-            == "#/components/schemas/ActivityMetricWire"
+            == "#/components/schemas/MetricWithoutPeriodWire"
+        )
+        assert (
+            schema["paths"]["/weekly"]["get"]["responses"]["200"]["content"]["application/json"][
+                "schema"
+            ]["$ref"]
+            == "#/components/schemas/WeeklyReportWire"
+        )
+        assert (
+            components["WeeklyReportWire"]["properties"]["period"]["$ref"]
+            == "#/components/schemas/DateRangePeriodWire"
+        )
+        assert (
+            components["WeeklyReportWire"]["properties"]["metrics"]["items"]["$ref"]
+            == "#/components/schemas/MetricWithoutPeriodWire"
         )
         assert "description" in components["MetricWire"]["required"]
         assert set(components["ActivitySummaryWire"]["required"]) == {
