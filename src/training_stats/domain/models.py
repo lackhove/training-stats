@@ -54,33 +54,21 @@ class ActivityRecord:
 
 @dataclass(frozen=True, slots=True)
 class ActivitySummary:
-    """Activity metadata for list responses, without the derived metrics."""
+    """Compact activity metadata for list responses."""
 
     activity_id: str
     start_time: datetime
     sport: str
     sub_sport: str | None
-    segment_index: int
-    segment_count: int
-    repair_flags: tuple[str, ...]
-    source_name: str
-    source_path: str
-    analysis_version: str
 
     @classmethod
     def from_record(cls, record: ActivityRecord) -> ActivitySummary:
-        """Project a cached record into its metric-free list representation."""
+        """Project a cached record into its compact list representation."""
         return cls(
             activity_id=record.activity_id,
             start_time=record.start_time,
             sport=record.sport,
             sub_sport=record.sub_sport,
-            segment_index=record.segment_index,
-            segment_count=record.segment_count,
-            repair_flags=record.repair_flags,
-            source_name=record.source_name,
-            source_path=record.source_path,
-            analysis_version=record.analysis_version,
         )
 
 

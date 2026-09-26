@@ -26,12 +26,6 @@ class ActivitySummaryWire(BaseModel):
     start_time: datetime
     sport: str
     sub_sport: str | None
-    segment_index: int
-    segment_count: int
-    repair_flags: list[str]
-    source_name: str
-    source_path: str
-    analysis_version: str
 
 
 class TripPeriodWire(BaseModel):

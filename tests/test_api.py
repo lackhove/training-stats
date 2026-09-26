@@ -77,12 +77,6 @@ class TestActivitiesEndpoint:
             "start_time",
             "sport",
             "sub_sport",
-            "segment_index",
-            "segment_count",
-            "repair_flags",
-            "source_name",
-            "source_path",
-            "analysis_version",
         }
         sports = {activity["sport"] for activity in activities}
         assert sports == {"cycling", "running"}
@@ -203,6 +197,12 @@ class TestOpenApi:
         assert "TableValueWire" in components
         assert "MatrixValueWire" in components
         assert "ActivitySummaryWire" in components
+        assert set(components["ActivitySummaryWire"]["properties"]) == {
+            "activity_id",
+            "start_time",
+            "sport",
+            "sub_sport",
+        }
         assert (
             schema["paths"]["/activities"]["get"]["responses"]["200"]["content"][
                 "application/json"

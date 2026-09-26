@@ -112,12 +112,6 @@ class TestListCommand:
             "start_time",
             "sport",
             "sub_sport",
-            "segment_index",
-            "segment_count",
-            "repair_flags",
-            "source_name",
-            "source_path",
-            "analysis_version",
         }
         assert {activity["sport"] for activity in activities} == {"cycling"}
         # Sync feedback goes to stderr; stdout stays pure JSON.

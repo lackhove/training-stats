@@ -40,12 +40,6 @@ def test_activity_list_renders_metadata_without_metrics() -> None:
                 start_time=datetime(2026, 6, 1, 10, tzinfo=UTC),
                 sport="cycling",
                 sub_sport="road",
-                segment_index=0,
-                segment_count=1,
-                repair_flags=(),
-                source_name="local",
-                source_path="ride.fit",
-                analysis_version="1",
             ),
         ),
         Console(file=output, width=120, force_terminal=False, color_system=None),
@@ -53,7 +47,7 @@ def test_activity_list_renders_metadata_without_metrics() -> None:
     rendered = output.getvalue()
     assert "ride-1" in rendered
     assert "cycling" in rendered
-    assert "1/1" in rendered
+    assert "road" in rendered
     assert "training_load" not in rendered
 
 

@@ -51,7 +51,7 @@ go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
 
 | Command | Purpose |
 | --- | --- |
-| `training-stats list [--sport --start --end --limit --no-sync]` | Matching activity records without metrics, newest first (synchronizes if due) |
+| `training-stats list [--sport --start --end --limit --no-sync]` | Matching activities with ID, start time, sport, and sub-sport only (synchronizes if due) |
 | `training-stats show <activity-id>` | One activity's metric report (serves cached data) |
 | `training-stats weekly [--weeks --sport --start --end --no-sync]` | Weekly metrics as tables (synchronizes if due) |
 | `training-stats overview [--days --sport --no-sync]` | Generic coaching metric report (synchronizes if due) |
@@ -59,7 +59,8 @@ go to stderr, so piping stays clean: `training-stats list | jq '.[].sport'`.
 
 Global options: `--config/-c` and `--json` (before or after the verb),
 `--help`, `--version`.
-`list` returns an array of activity records without their `metrics` field.
+`list` returns an array containing only `activity_id`, `start_time`, `sport`,
+and `sub_sport` for each matching activity.
 `show`, `weekly`, and `overview` return the metric-report envelope. Each metric
 includes its stable name, required human-readable description, period, value
 shape, unit, and missing reason when unavailable. Tables and matrices are
@@ -115,7 +116,7 @@ uv run training-stats server --host 0.0.0.0 --port 8000
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /activities` | Activity records without metrics, newest first (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
+| `GET /activities` | Activity ID, start time, sport, and sub-sport only, newest first (synchronizes if due); `start_date`, `end_date`, `sport`, `limit` |
 | `GET /activities/{activity_id}` | One activity's metric report (serves cached data) |
 | `GET /weekly` | Weekly metrics report (synchronizes if due); `weeks`, `sport`, dates |
 | `GET /overview` | Generic coaching metric report (synchronizes if due); `days`, `sport` |

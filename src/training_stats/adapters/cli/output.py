@@ -47,14 +47,12 @@ def render_activity_list(payload: object, console: Console) -> None:
     table.add_column("Started", no_wrap=True)
     table.add_column("Sport")
     table.add_column("Sub-sport")
-    table.add_column("Segment", justify="right", no_wrap=True)
     for activity in activities:
         table.add_row(
             activity.activity_id,
             activity.start_time.isoformat(sep=" ", timespec="minutes"),
             activity.sport,
             activity.sub_sport or _EM_DASH,
-            f"{activity.segment_index + 1}/{activity.segment_count}",
         )
     console.print(table)
 
