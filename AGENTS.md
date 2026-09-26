@@ -64,14 +64,23 @@ __main__.py   delegates to adapters.cli.app
 
 Dependency direction: `domain <- services <- adapters`; only the adapter
 bootstrap wires concrete implementations into service ports. Domain analytics
-may use Polars, but has no imports from adapters or services.
+has no imports from adapters or services.
 
-The cache adapter loads typed domain records from JSON. Analytics owns filtering
-and aggregation and returns immutable `Metric`/`MetricReport` dataclasses.
-Polars frames are transient inputs/projections only; analytics performs no
-cache I/O and takes no locks.
+The cache adapter loads typed domain records from JSON. Analytics is a
+collection of pure functions: per-activity functions take `ParsedActivity` and
+explicit configuration and return one or more `Metric`s; aggregate functions
+take `ActivityRecord`s and explicit query context and return metrics or a
+`MetricReport`. Analytics owns filtering and aggregation, performs no cache I/O,
+and takes no locks. Do not convert cached activity metrics back into Polars
+frames. Polars remains available for transient FIT-record processing where it
+is useful.
 Every metric has a stable name and a required human-readable description;
 presentation uses the description stored on the metric rather than a name map.
+Analytics constructs metrics explicitly; do not infer metric names, units,
+descriptions, or shapes by walking untyped nested dictionaries.
+
+The detailed implementation sequence and compatibility requirements are in
+`doc/plan-analytics-simplification.md`.
 
 **Serialization convention:** services return domain models; serialize only at
 the edges. HTTP and CLI JSON use the typed Pydantic contracts in
@@ -128,6 +137,11 @@ These are core design decisions — do not violate them casually:
   stored with version and confidence. Don't rename it or drop the metadata.
 - **Deterministic analytics.** HR zones and athlete values come from
   configuration, never hardcoded.
+- **Stable public JSON.** Refactors preserve HTTP and CLI JSON responses for
+  identical inputs, including metric order, names, values, units, descriptions,
+  periods, missing reasons, provenance, axes, and null cells. Do not prune
+  metrics currently emitted by a public endpoint as part of an internal
+  simplification.
 - **Typed errors.** Use the layer-owned exception types under `domain/errors.py`,
   `services/errors.py`, and `adapters/errors.py`; per-file FIT failures are
   recorded as source-only rows in the cache, they don't abort the sync.
@@ -177,9 +191,9 @@ These are core design decisions — do not violate them casually:
   `adapters/fit/parser.py`; keep cyclopts usage isolated to
   `adapters/cli/app.py` (cyclopts and
   uvicorn ship type information, no override needed).
-- Polars is used for transient FIT records and optional in-memory analytics
-  projections. It is intentional that `domain/fit/` and `domain/analytics/`
-  depend on it. The repository returns decoded dataclasses, not lazy cache scans.
+- Polars is used for transient FIT records and per-activity calculations. It is
+  intentional that `domain/fit/` and parts of `domain/analytics/` depend on it;
+  cached `ActivityRecord` aggregation does not use Polars projections.
 
 ## Environment
 
