@@ -6,7 +6,6 @@ import math
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import polars as pl
 import pytest
 
 from training_stats.domain.analytics.fitness import (
@@ -23,35 +22,65 @@ from training_stats.domain.analytics.fitness import (
     compute_training_form,
     training_form_from,
 )
-
-FORM_FRAME_SCHEMA: dict[str, pl.DataType] = {
-    "start_time": pl.Datetime("us", "UTC"),
-    "sport": pl.String(),
-    "distance_m": pl.Float64(),
-    "load_value": pl.Float64(),
-    "load_confidence": pl.String(),
-}
-
-
-def _form_frame(rows: list[dict[str, object]]) -> pl.LazyFrame:
-    return pl.DataFrame(rows, schema=FORM_FRAME_SCHEMA).lazy()
+from training_stats.domain.metrics import (
+    Confidence,
+    Metric,
+    MetricKind,
+    MetricMethod,
+    MissingReason,
+    ScalarValue,
+    TripPeriod,
+)
+from training_stats.domain.models import ActivityRecord
 
 
-def _form_row(
+def _form_record(
     start: datetime,
     *,
     sport: str = "cycling",
     distance_m: float | None = 0.0,
     load_value: float | None = None,
     load_confidence: str | None = None,
-) -> dict[str, object]:
-    return {
-        "start_time": start,
-        "sport": sport,
-        "distance_m": distance_m,
-        "load_value": load_value,
-        "load_confidence": load_confidence,
-    }
+    activity_id: str | None = None,
+) -> ActivityRecord:
+    """Build a metric-bearing cached record for training-form tests."""
+    identifier = activity_id or f"act-{start.strftime('%Y%m%dT%H%M%S')}-{sport}"
+    period = TripPeriod(activity_id=identifier, start=start)
+    metrics = (
+        Metric(
+            name="activity.distance",
+            description="Cached distance for training-form tests.",
+            period=period,
+            value=ScalarValue(distance_m) if distance_m is not None else None,
+            kind=MetricKind.CALCULATED,
+            unit="m",
+            missing_reason=None if distance_m is not None else MissingReason.NO_DATA,
+        ),
+        Metric(
+            name="training_load.hr_trimp",
+            description="Cached Banister load for training-form tests.",
+            period=period,
+            value=ScalarValue(load_value) if load_value is not None else None,
+            kind=MetricKind.ESTIMATED,
+            unit="TRIMP",
+            missing_reason=None if load_value is not None else MissingReason.NO_DATA,
+            method=MetricMethod.HR_TRIMP,
+            confidence=Confidence(load_confidence) if load_confidence is not None else None,
+        ),
+    )
+    return ActivityRecord(
+        activity_id=identifier,
+        start_time=start,
+        sport=sport,
+        sub_sport=None,
+        segment_index=1,
+        segment_count=1,
+        repair_flags=(),
+        source_name="local",
+        source_path=f"{identifier}.fit",
+        analysis_version="1",
+        metrics=metrics,
+    )
 
 
 class TestTrainingFormRecursion:
@@ -126,34 +155,32 @@ class TestTrainingFormRecursion:
 
 
 class TestTrainingFormFrom:
-    """The frame-based composition entry point."""
+    """The record-based composition entry point."""
 
     TZ = ZoneInfo("Europe/Berlin")
 
     def test_ctl_atl_and_rolling_distance(self) -> None:
         today = date(2026, 6, 10)
-        frame = _form_frame(
-            [
-                # 20 km + load today, 30 km + load 5 days ago
-                _form_row(
-                    datetime(2026, 6, 10, 10, tzinfo=UTC),
-                    load_value=80.0,
-                    load_confidence="high",
-                    distance_m=20_000.0,
-                ),
-                _form_row(
-                    datetime(2026, 6, 5, 10, tzinfo=UTC),
-                    load_value=60.0,
-                    load_confidence="high",
-                    distance_m=30_000.0,
-                ),
-                # 50 km ride 10 days ago, outside the 7-day window
-                _form_row(
-                    datetime(2026, 5, 31, 10, tzinfo=UTC), load_value=None, distance_m=50_000.0
-                ),
-            ]
-        )
-        result = training_form_from(frame, tz=self.TZ, today=today)
+        records = [
+            # 20 km + load today, 30 km + load 5 days ago
+            _form_record(
+                datetime(2026, 6, 10, 10, tzinfo=UTC),
+                load_value=80.0,
+                load_confidence="high",
+                distance_m=20_000.0,
+            ),
+            _form_record(
+                datetime(2026, 6, 5, 10, tzinfo=UTC),
+                load_value=60.0,
+                load_confidence="high",
+                distance_m=30_000.0,
+            ),
+            # 50 km ride 10 days ago, outside the 7-day window
+            _form_record(
+                datetime(2026, 5, 31, 10, tzinfo=UTC), load_value=None, distance_m=50_000.0
+            ),
+        ]
+        result = training_form_from(records, tz=self.TZ, today=today)
         assert result.current_ctl > 0.0
         assert result.current_atl > 0.0
         assert result.rolling_7d_distance_km == 50.0
@@ -163,58 +190,96 @@ class TestTrainingFormFrom:
 
     def test_days_since_60k(self) -> None:
         today = date(2026, 6, 10)
-        frame = _form_frame(
-            [_form_row(datetime(2026, 6, 7, 10, tzinfo=UTC), distance_m=65_000.0, load_value=100.0)]
-        )
-        result = training_form_from(frame, tz=self.TZ, today=today)
+        records = [
+            _form_record(
+                datetime(2026, 6, 7, 10, tzinfo=UTC), distance_m=65_000.0, load_value=100.0
+            )
+        ]
+        result = training_form_from(records, tz=self.TZ, today=today)
         assert result.days_since_60k_ride == 3
 
     def test_load_confidence_ratio(self) -> None:
         today = date(2026, 6, 10)
-        frame = _form_frame(
-            [
-                _form_row(
-                    datetime(2026, 6, 9, 10, tzinfo=UTC), load_value=200.0, load_confidence="high"
-                ),
-                _form_row(
-                    datetime(2026, 6, 8, 10, tzinfo=UTC), load_value=100.0, load_confidence="low"
-                ),
-            ]
-        )
-        result = training_form_from(frame, tz=self.TZ, today=today)
+        records = [
+            _form_record(
+                datetime(2026, 6, 9, 10, tzinfo=UTC), load_value=200.0, load_confidence="high"
+            ),
+            _form_record(
+                datetime(2026, 6, 8, 10, tzinfo=UTC), load_value=100.0, load_confidence="low"
+            ),
+        ]
+        result = training_form_from(records, tz=self.TZ, today=today)
         assert result.load_confidence_ratio == pytest.approx(0.6667)  # rounded to 4 decimals
 
     def test_sport_filter(self) -> None:
         today = date(2026, 6, 10)
-        frame = _form_frame(
-            [
-                _form_row(
-                    datetime(2026, 6, 9, 10, tzinfo=UTC),
-                    load_value=100.0,
-                    load_confidence="high",
-                    distance_m=70_000.0,
-                ),
-                _form_row(
-                    datetime(2026, 6, 8, 10, tzinfo=UTC),
-                    sport="running",
-                    load_value=50.0,
-                    load_confidence="high",
-                    distance_m=10_000.0,
-                ),
-            ]
-        )
-        result = training_form_from(frame, tz=self.TZ, today=today, sport="running")
+        records = [
+            _form_record(
+                datetime(2026, 6, 9, 10, tzinfo=UTC),
+                load_value=100.0,
+                load_confidence="high",
+                distance_m=70_000.0,
+            ),
+            _form_record(
+                datetime(2026, 6, 8, 10, tzinfo=UTC),
+                sport="running",
+                load_value=50.0,
+                load_confidence="high",
+                distance_m=10_000.0,
+            ),
+        ]
+        result = training_form_from(records, tz=self.TZ, today=today, sport="running")
         # Cycling's 70 km ride must not count toward running readiness.
         assert result.days_since_60k_ride is None
         assert result.rolling_7d_distance_km == 10.0
 
     def test_empty(self) -> None:
-        result = training_form_from(_form_frame([]), tz=self.TZ, today=date(2026, 6, 10))
+        result = training_form_from([], tz=self.TZ, today=date(2026, 6, 10))
         assert result.current_ctl == 0.0
         assert result.is_warmup is True
         assert result.history_days == 0
         assert result.days_since_60k_ride is None
         assert result.load_confidence_ratio == 1.0
+
+    def test_sport_filter_is_case_insensitive(self) -> None:
+        today = date(2026, 6, 10)
+        records = [
+            _form_record(
+                datetime(2026, 6, 9, 10, tzinfo=UTC),
+                load_value=100.0,
+                load_confidence="high",
+                distance_m=70_000.0,
+            ),
+            _form_record(
+                datetime(2026, 6, 8, 10, tzinfo=UTC),
+                sport="running",
+                load_value=50.0,
+                load_confidence="high",
+                distance_m=10_000.0,
+            ),
+        ]
+        lower = training_form_from(records, tz=self.TZ, today=today, sport="running")
+        upper = training_form_from(records, tz=self.TZ, today=today, sport="RUNNING")
+        assert (upper.current_ctl, upper.rolling_7d_distance_km) == (
+            lower.current_ctl,
+            lower.rolling_7d_distance_km,
+        )
+
+    def test_local_day_bucketing(self) -> None:
+        today = date(2026, 6, 15)
+        records = [
+            _form_record(
+                datetime(2026, 6, 1, 23, 40, tzinfo=UTC),
+                load_value=100.0,
+                load_confidence="high",
+            )
+        ]
+        result = training_form_from(records, tz=self.TZ, today=today)
+        # 2026-06-01 23:40 UTC is already 2026-06-02 in Berlin.
+        assert result.history_days == 14
+        daily = {point.date: point.daily_load for point in result.trend_points}
+        assert "2026-06-01" not in daily
+        assert daily["2026-06-02"] == 100.0
 
 
 class TestClassificationBands:

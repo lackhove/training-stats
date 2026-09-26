@@ -290,11 +290,11 @@ time, distance, elevation gain, avg HR, max HR, and avg speed.
 
 ### 6.1 Daily (`daily.py`)
 
-`daily_summary` projects cached records into a transient Polars frame and
-returns one table metric per measure, grouped by **local calendar date**
-(configured timezone) × sport. Totals include activity count, duration,
+Daily aggregation reads the required per-activity metrics directly from cached
+records and returns one table metric per measure, grouped by **local calendar
+date** (configured timezone) × sport. Totals include activity count, duration,
 distance, elevation, zone seconds, load, `hard_activity_count` (load ≥ 150.0),
-and longest activity.
+and longest activity. Cached records are not converted into Polars frames.
 
 ### 6.2 Weekly (`weekly.py`)
 

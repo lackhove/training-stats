@@ -10,8 +10,7 @@ from ..domain.analytics.activities import AnalyzedActivity
 from ..domain.analytics.segments import analyze_segments
 from ..domain.errors import FitParseError
 from ..domain.fit.repair import repair_timeline
-from ..domain.frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
-from ..domain.models import SourceFile
+from ..domain.models import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK, SourceFile
 from ..domain.settings import AthleteConfig, QualityConfig
 from .ports import FitParser
 from .state import ActivityRecord, SourceIndexEntry, SourceStatus

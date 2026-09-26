@@ -7,8 +7,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ..domain.frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
-from ..domain.models import SourceFile
+from ..domain.models import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK, SourceFile
 from .errors import SourceError
 from .ports import ActivitySource, SyncRepository
 from .results import SyncResult

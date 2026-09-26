@@ -21,6 +21,7 @@ from training_stats.domain.analytics.daily import (
     select_daily,
     summarize_daily,
 )
+from training_stats.domain.analytics.metric_helpers import table_metric
 from training_stats.domain.analytics.reports import activity_list_report, activity_report
 from training_stats.domain.analytics.weekly import (
     WeeklySummaryRow,
@@ -30,27 +31,18 @@ from training_stats.domain.analytics.weekly import (
 from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, empty_records
 from training_stats.domain.metrics import (
     AllTimePeriod,
+    Axis,
+    Confidence,
     Metric,
+    MetricKind,
+    MetricMethod,
+    MissingReason,
     ScalarValue,
     TableValue,
+    TimeBasis,
     TripPeriod,
 )
-
-# Columns summarize_daily and its selection helpers consume.
-ACTIVITY_FRAME_SCHEMA: dict[str, pl.DataType] = {
-    "activity_id": pl.String(),
-    "start_time": pl.Datetime("us", "UTC"),
-    "sport": pl.String(),
-    "duration_s": pl.Float64(),
-    "distance_m": pl.Float64(),
-    "elevation_gain_m": pl.Float64(),
-    "hr_zone_1_s": pl.Float64(),
-    "hr_zone_2_s": pl.Float64(),
-    "hr_zone_3_s": pl.Float64(),
-    "hr_zone_4_s": pl.Float64(),
-    "hr_zone_5_s": pl.Float64(),
-    "load_value": pl.Float64(),
-}
+from training_stats.domain.models import ActivityRecord
 
 
 def _parsed(
@@ -82,35 +74,91 @@ def _parsed(
     )
 
 
-def _activity_row(
+# Cached metric facts the aggregate analytics read back from ActivityRecords.
+_ABSENT = object()
+
+
+def _cached_scalar(name: str, period: TripPeriod, value: object, unit: str | None) -> Metric:
+    return Metric(
+        name=name,
+        description=f"Cached {name} value for aggregate analytics tests.",
+        period=period,
+        value=ScalarValue(value) if value is not None else None,  # type: ignore[arg-type]
+        kind=MetricKind.CALCULATED,
+        unit=unit,
+        missing_reason=None if value is not None else MissingReason.NO_DATA,
+    )
+
+
+def _record(
     activity_id: str,
     start: datetime,
     *,
     sport: str = "cycling",
-    duration_s: float = 600.0,
-    distance_m: float = 1000.0,
-    elevation_gain_m: float = 0.0,
-    zones: tuple[float, float, float, float, float] = (0.0, 10.0, 0.0, 0.0, 0.0),
-    load_value: float | None = None,
-) -> dict[str, object]:
-    return {
-        "activity_id": activity_id,
-        "start_time": start,
-        "sport": sport,
-        "duration_s": duration_s,
-        "distance_m": distance_m,
-        "elevation_gain_m": elevation_gain_m,
-        "hr_zone_1_s": zones[0],
-        "hr_zone_2_s": zones[1],
-        "hr_zone_3_s": zones[2],
-        "hr_zone_4_s": zones[3],
-        "hr_zone_5_s": zones[4],
-        "load_value": load_value,
-    }
-
-
-def _activity_frame(rows: list[dict[str, object]]) -> pl.LazyFrame:
-    return pl.DataFrame(rows, schema=ACTIVITY_FRAME_SCHEMA).lazy()
+    duration_s: object = 600.0,
+    distance_m: object = 1000.0,
+    elevation_gain_m: object = 0.0,
+    zones: tuple[float, ...] | None = (0.0, 10.0, 0.0, 0.0, 0.0),
+    load_value: object = None,
+    load_confidence: str | None = None,
+    coverage: float | None = None,
+) -> ActivityRecord:
+    """Build a metric-bearing cached record for aggregate analytics tests."""
+    period = TripPeriod(activity_id=activity_id, start=start)
+    metrics: list[Metric] = []
+    for name, value, unit in (
+        ("activity.duration", duration_s, "s"),
+        ("activity.distance", distance_m, "m"),
+        ("activity.elevation_gain", elevation_gain_m, "m"),
+    ):
+        if value is not _ABSENT:
+            metrics.append(_cached_scalar(name, period, value, unit))
+    if load_value is not _ABSENT:
+        metrics.append(
+            Metric(
+                name="training_load.hr_trimp",
+                description="Estimated Banister heart-rate load for aggregate tests.",
+                period=period,
+                value=ScalarValue(load_value) if load_value is not None else None,  # type: ignore[arg-type]
+                kind=MetricKind.ESTIMATED,
+                unit="TRIMP",
+                missing_reason=None if load_value is not None else MissingReason.NO_DATA,
+                method=MetricMethod.HR_TRIMP,
+                confidence=Confidence(load_confidence) if load_confidence is not None else None,
+            )
+        )
+    if zones is not None:
+        metrics.append(
+            table_metric(
+                "heart_rate.zone_time",
+                period,
+                Axis(
+                    name="heart_rate_zone",
+                    values=tuple(f"zone_{index}" for index in range(1, len(zones) + 1)),
+                ),
+                zones,
+                description="Active time assigned to each configured heart-rate zone.",
+                unit="s",
+                time_basis=TimeBasis.ACTIVE_TIME,
+            )
+        )
+    if coverage is not None:
+        metrics.append(
+            _cached_scalar("heart_rate.coverage", period, coverage, "ratio"),
+        )
+    return ActivityRecord(
+        activity_id=activity_id,
+        start_time=start,
+        sport=sport,
+        sub_sport=None,
+        segment_index=1,
+        segment_count=1,
+        repair_flags=(),
+        source_name="local",
+        source_path=f"{activity_id}.fit",
+        analysis_version="1",
+        metrics=tuple(metrics),
+    )
 
 
 def _scalar(metrics: tuple[Metric, ...], name: str) -> object:
@@ -212,25 +260,23 @@ class TestActivityMetrics:
 
 
 class TestSummarizeDaily:
-    """Golden semantics of the vectorized daily grouping."""
+    """Golden semantics of the cached-record daily grouping."""
 
     TZ = ZoneInfo("Europe/Berlin")
 
     def test_local_date_conversion(self) -> None:
         # 23:40 UTC is already the next day in Berlin (UTC+2 in summer).
         start = datetime(2026, 6, 1, 23, 40, tzinfo=UTC)
-        rows = summarize_daily(_activity_frame([_activity_row("a1", start)]), self.TZ)
+        rows = summarize_daily([_record("a1", start)], self.TZ)
         assert rows[0].date == "2026-06-02"
 
     def test_grouping_by_sport(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
         rows = summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("a1", start, sport="cycling", load_value=100.0),
-                    _activity_row("a2", start, sport="running", load_value=200.0),
-                ]
-            ),
+            [
+                _record("a1", start, sport="cycling", load_value=100.0),
+                _record("a2", start, sport="running", load_value=200.0),
+            ],
             self.TZ,
         )
         assert [(row.date, row.sport) for row in rows] == [
@@ -238,17 +284,27 @@ class TestSummarizeDaily:
             ("2026-06-01", "running"),
         ]
 
+    def test_grouping_is_case_sensitive(self) -> None:
+        start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        rows = summarize_daily(
+            [
+                _record("a1", start, sport="Cycling"),
+                _record("a2", start, sport="cycling"),
+            ],
+            self.TZ,
+        )
+        assert [(row.date, row.sport) for row in rows] == [
+            ("2026-06-01", "Cycling"),
+            ("2026-06-01", "cycling"),
+        ]
+
     def test_hard_activity_threshold(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
         rows = summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("a1", start, load_value=HARD_LOAD_THRESHOLD),
-                    _activity_row(
-                        "a2", start + timedelta(hours=2), load_value=HARD_LOAD_THRESHOLD - 1
-                    ),
-                ]
-            ),
+            [
+                _record("a1", start, load_value=HARD_LOAD_THRESHOLD),
+                _record("a2", start + timedelta(hours=2), load_value=HARD_LOAD_THRESHOLD - 1),
+            ],
             self.TZ,
         )
         assert rows[0].hard_activity_count == 1
@@ -256,12 +312,10 @@ class TestSummarizeDaily:
     def test_longest_activity(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
         rows = summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("a1", start),
-                    _activity_row("a2", start + timedelta(hours=2), duration_s=3600.0),
-                ]
-            ),
+            [
+                _record("a1", start),
+                _record("a2", start + timedelta(hours=2), duration_s=3600.0),
+            ],
             self.TZ,
         )
         assert rows[0].longest_activity_id == "a2"
@@ -272,41 +326,107 @@ class TestSummarizeDaily:
         # Input order differs from (start_time, activity_id) order; the
         # first-seen rule resolves ties deterministically.
         rows = summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("b2", start),
-                    _activity_row("a1", start),
-                ]
-            ),
+            [
+                _record("b2", start),
+                _record("a1", start),
+            ],
             self.TZ,
         )
         assert rows[0].longest_activity_id == "a1"
 
     def test_zero_duration_has_no_longest(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
-        rows = summarize_daily(
-            _activity_frame([_activity_row("a1", start, duration_s=0.0)]), self.TZ
-        )
+        rows = summarize_daily([_record("a1", start, duration_s=0.0)], self.TZ)
         assert rows[0].longest_activity_id is None
         assert rows[0].longest_activity_s == 0.0
 
     def test_null_load_excluded(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
         rows = summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("a1", start, load_value=None),
-                    _activity_row("a2", start, load_value=200.0),
-                ]
-            ),
+            [
+                _record("a1", start, load_value=None),
+                _record("a2", start, load_value=200.0),
+            ],
             self.TZ,
         )
         assert rows[0].load_value == 200.0
         assert rows[0].hard_activity_count == 1
         assert rows[0].activity_count == 2
 
+    def test_missing_metrics_are_counted_as_zero(self) -> None:
+        start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        rows = summarize_daily(
+            [
+                _record(
+                    "a1",
+                    start,
+                    duration_s=_ABSENT,
+                    distance_m=_ABSENT,
+                    elevation_gain_m=_ABSENT,
+                    load_value=_ABSENT,
+                    zones=None,
+                    coverage=0.5,
+                ),
+                _record("a2", start, duration_s=600.0),
+            ],
+            self.TZ,
+        )
+        assert rows[0].activity_count == 2
+        assert rows[0].duration_s == 600.0
+        assert rows[0].distance_m == 1000.0
+        assert rows[0].elevation_gain_m == 0.0
+        assert rows[0].load_value == 0.0
+        assert rows[0].hard_activity_count == 0
+        assert rows[0].hr_zone_1_s == 0.0
+
+    def test_non_numeric_metric_values_rejected(self) -> None:
+        start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        rows = summarize_daily(
+            [
+                _record(
+                    "a1",
+                    start,
+                    duration_s="600",
+                    elevation_gain_m=True,
+                    load_value="150",
+                    zones=(True, 10.0),
+                ),
+            ],
+            self.TZ,
+        )
+        assert rows[0].duration_s == 0.0
+        assert rows[0].elevation_gain_m == 0.0
+        assert rows[0].load_value == 0.0
+        assert rows[0].hard_activity_count == 0
+        assert rows[0].hr_zone_1_s == 0.0
+        assert rows[0].hr_zone_2_s == 10.0
+        assert rows[0].longest_activity_id is None
+
+    def test_zone_cells_missing_from_table_default_to_zero(self) -> None:
+        start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        rows = summarize_daily([_record("a1", start, zones=(42.0,))], self.TZ)
+        assert (
+            rows[0].hr_zone_1_s,
+            rows[0].hr_zone_2_s,
+            rows[0].hr_zone_3_s,
+            rows[0].hr_zone_4_s,
+            rows[0].hr_zone_5_s,
+        ) == (42.0, 0.0, 0.0, 0.0, 0.0)
+
+    def test_input_order_does_not_change_rows(self) -> None:
+        start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        records = [
+            _record("b2", start, duration_s=900.0),
+            _record("a1", start + timedelta(hours=1), duration_s=900.0),
+            _record("c3", start, sport="running", duration_s=60.0),
+        ]
+        assert summarize_daily(records, self.TZ) == summarize_daily(
+            list(reversed(records)), self.TZ
+        )
+
     def test_empty(self) -> None:
-        assert summarize_daily(_activity_frame([]), self.TZ) == []
+        assert summarize_daily([], self.TZ) == []
+        assert summarize_daily((), self.TZ) == []
 
 
 class TestSelectDaily:
@@ -315,15 +435,11 @@ class TestSelectDaily:
 
     def _rows(self) -> list[DailySummaryRow]:
         return summarize_daily(
-            _activity_frame(
-                [
-                    _activity_row("a1", self.START, sport="cycling", load_value=100.0),
-                    _activity_row("a2", self.START, sport="running", load_value=50.0),
-                    _activity_row(
-                        "a3", self.START + timedelta(days=1), sport="cycling", load_value=10.0
-                    ),
-                ]
-            ),
+            [
+                _record("a1", self.START, sport="cycling", load_value=100.0),
+                _record("a2", self.START, sport="running", load_value=50.0),
+                _record("a3", self.START + timedelta(days=1), sport="cycling", load_value=10.0),
+            ],
             self.TZ,
         )
 

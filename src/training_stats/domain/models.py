@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Final, Literal
 
-from .frames import SourceStatus
 from .metrics import Metric, TripPeriod
 
 
@@ -70,6 +70,12 @@ class ActivitySummary:
             sport=record.sport,
             sub_sport=record.sub_sport,
         )
+
+
+SourceStatus = Literal["ok", "failed", "duplicate"]
+STATUS_OK: Final[SourceStatus] = "ok"
+STATUS_FAILED: Final[SourceStatus] = "failed"
+STATUS_DUPLICATE: Final[SourceStatus] = "duplicate"
 
 
 @dataclass(frozen=True, slots=True)

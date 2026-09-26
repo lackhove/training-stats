@@ -27,7 +27,6 @@ from .fitness import training_form_from
 from .load import LOAD_COEFFICIENT_SET, LOAD_FORMULA, LOAD_VERSION
 from .metric_helpers import scalar_metric, table_metric
 from .profile import athlete_profile
-from .record_frames import activity_records_frame
 from .weekly import WeeklySummaryRow, daily_to_weekly, select_weekly
 
 
@@ -113,7 +112,7 @@ def weekly_summary(
     today: date | None = None,
 ) -> MetricReport:
     """Summarize cached activity metrics into weekly table metrics."""
-    daily = summarize_daily(activity_records_frame(list(records)), tz)
+    daily = summarize_daily(records, tz)
     rows = select_weekly(
         daily_to_weekly(daily),
         start_date=start_date,
@@ -141,7 +140,7 @@ def daily_summary(
 ) -> MetricReport:
     """Summarize daily activity metrics over an inclusive date range."""
     rows = select_daily(
-        summarize_daily(activity_records_frame(list(records)), tz),
+        summarize_daily(records, tz),
         start_date=start_date,
         end_date=end_date,
         sport=sport,
@@ -165,8 +164,7 @@ def overview_report(
         today = datetime.now(tz).date()
     period_start = today - timedelta(days=max(days, 1) - 1)
     period = DateRangePeriod(start=period_start, end=today, timezone=str(tz))
-    frame = activity_records_frame(list(records))
-    daily_all = summarize_daily(frame, tz)
+    daily_all = summarize_daily(records, tz)
     selected_daily = select_daily(daily_all, start_date=period_start, end_date=today, sport=sport)
     selected_weekly = select_weekly(daily_to_weekly(daily_all), weeks=4, sport=sport)
     weekly_period = (
@@ -179,7 +177,7 @@ def overview_report(
         if selected_weekly
         else period
     )
-    form = training_form_from(frame, tz=tz, days=days, sport=sport, today=today)
+    form = training_form_from(records, tz=tz, days=days, sport=sport, today=today)
 
     metrics: list[Metric] = []
     metrics.extend(athlete_profile(athlete))

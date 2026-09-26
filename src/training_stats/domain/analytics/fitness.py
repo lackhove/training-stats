@@ -7,12 +7,11 @@ loads in local calendar days, plus rolling endurance volume and recency metrics.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, tzinfo
 
-import polars as pl
-
-from ..converters import optional_float
-from ..models import TrainingFormPoint, TrainingFormResult
+from ..models import ActivityRecord, TrainingFormPoint, TrainingFormResult
+from .daily import metric_number
 
 CTL_TIME_CONSTANT = 42
 ATL_TIME_CONSTANT = 7
@@ -119,48 +118,42 @@ def compute_days_since_60k(
 
 
 def training_form_from(
-    activities: pl.LazyFrame,
+    records: Sequence[ActivityRecord],
     *,
     tz: tzinfo,
     days: int = 42,
     sport: str | None = None,
     today: date | None = None,
 ) -> TrainingFormResult:
-    """Compute training form and tour readiness from an activity frame.
+    """Compute training form and tour readiness from cached activity records.
 
-    One projected collect gathers the per-activity fields; the daily
-    load/distance folds mirror the calendar-day semantics of the EWMA
-    recursion (full history, never a date-windowed subset). ``today``
+    The daily load/distance folds mirror the calendar-day semantics of the
+    EWMA recursion (full history, never a date-windowed subset). ``today``
     defaults to the current local date; pass it explicitly in tests.
     """
     if today is None:
         today = datetime.now(tz).date()
-    rows = (
-        activities.select("start_time", "sport", "distance_m", "load_value", "load_confidence")
-        .collect()
-        .to_dicts()
-    )
     if sport is not None:
         wanted = sport.lower()
-        rows = [row for row in rows if str(row["sport"]).lower() == wanted]
+        records = [record for record in records if str(record.sport).lower() == wanted]
 
     daily_loads: dict[date, float] = {}
     daily_distances: dict[date, float] = {}
     qualifying: list[tuple[date, float]] = []
     total_load = 0.0
     high_confidence_load = 0.0
-    for row in rows:
-        start_time = row["start_time"]
-        if not isinstance(start_time, datetime):
-            continue
-        local_day = start_time.astimezone(tz).date()
-        load = optional_float(row.get("load_value"))
+    for record in records:
+        metrics = {metric.name: metric for metric in record.metrics}
+        local_day = record.start_time.astimezone(tz).date()
+        load_metric = metrics.get("training_load.hr_trimp")
+        load = metric_number(load_metric)
         if load is not None:
             daily_loads[local_day] = daily_loads.get(local_day, 0.0) + load
             total_load += load
-            if row.get("load_confidence") == "high":
+            confidence = load_metric.confidence if load_metric is not None else None
+            if confidence is not None and str(confidence) == "high":
                 high_confidence_load = high_confidence_load + load
-        distance = optional_float(row.get("distance_m"))
+        distance = metric_number(metrics.get("activity.distance"))
         if distance is not None:
             daily_distances[local_day] = daily_distances.get(local_day, 0.0) + distance
             if distance >= MIN_LONG_RIDE_DISTANCE_M:

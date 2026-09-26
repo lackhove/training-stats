@@ -1,20 +1,24 @@
 """Daily aggregations in the configured local timezone.
 
-Aggregation is pushed down to Polars: :func:`summarize_daily` consumes a
-lazy activity frame, projects only the columns it needs, and groups by
-local date and sport. Selection helpers operate on the (few) resulting
-dataclass rows.
+:func:`summarize_daily` groups cached activity records by local date and
+sport, reading only the named metrics it aggregates: metadata supplies the
+identity facts and every total comes from a cached metric. Selection helpers
+operate on the (few) resulting dataclass rows.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, tzinfo
 
-import polars as pl
+from ..metrics import Metric, ScalarValue, TableValue
+from ..models import ActivityRecord
 
 # An activity counts as "hard" when its estimated load reaches this value.
 HARD_LOAD_THRESHOLD = 150.0
+
+_ZONE_COUNT = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,75 +57,125 @@ class DailySummaryRow(PeriodTotalsRow):
     sport: str = ""
 
 
-def summarize_daily(activities: pl.LazyFrame, tz: tzinfo) -> list[DailySummaryRow]:
+class _Group:
+    """Accumulates one (local date, sport) bucket in sorted input order."""
+
+    __slots__ = (
+        "_has_duration",
+        "activity_count",
+        "distance_m",
+        "duration_s",
+        "elevation_gain_m",
+        "hard_activity_count",
+        "load_value",
+        "longest_activity_id",
+        "longest_activity_s",
+        "zones",
+    )
+
+    def __init__(self) -> None:
+        self.activity_count = 0
+        self.duration_s = 0.0
+        self.distance_m = 0.0
+        self.elevation_gain_m = 0.0
+        self.zones = [0.0] * _ZONE_COUNT
+        self.load_value = 0.0
+        self.hard_activity_count = 0
+        self.longest_activity_s = 0.0
+        self.longest_activity_id: str | None = None
+        self._has_duration = False
+
+    def add(self, activity_id: str, metrics: dict[str, Metric]) -> None:
+        self.activity_count += 1
+        duration = metric_number(metrics.get("activity.duration"))
+        self.duration_s += duration if duration is not None else 0.0
+        distance = metric_number(metrics.get("activity.distance"))
+        self.distance_m += distance if distance is not None else 0.0
+        elevation = metric_number(metrics.get("activity.elevation_gain"))
+        self.elevation_gain_m += elevation if elevation is not None else 0.0
+        zones = metric_table_values(metrics.get("heart_rate.zone_time"))
+        for index in range(_ZONE_COUNT):
+            self.zones[index] += zone_cell(zones, index)
+        load = metric_number(metrics.get("training_load.hr_trimp"))
+        if load is None:
+            load = 0.0
+        self.load_value += load
+        if load >= HARD_LOAD_THRESHOLD:
+            self.hard_activity_count += 1
+        self._add_longest(activity_id, duration if duration is not None else 0.0)
+
+    def _add_longest(self, activity_id: str, duration: float) -> None:
+        if self._has_duration and duration <= self.longest_activity_s:
+            return
+        self._has_duration = True
+        self.longest_activity_s = duration
+        self.longest_activity_id = activity_id if duration > 0.0 else None
+
+
+def summarize_daily(records: Sequence[ActivityRecord], tz: tzinfo) -> list[DailySummaryRow]:
     """Group activities by local date and sport.
 
-    The frame is sorted by ``(start_time, activity_id)`` first so that the
-    longest-activity pick resolves ties to the earliest activity. Returns
-    rows sorted by date, then sport, with deterministic values.
+    Records are visited in ``(start_time, activity_id)`` order so that the
+    longest-activity pick resolves ties to the earliest activity. Returns rows
+    sorted by date, then sport, with deterministic values.
     """
-    frame = (
-        activities.sort("start_time", "activity_id")
-        .select(
-            pl.col("start_time").dt.convert_time_zone(str(tz)).dt.date().alias("date"),
-            "sport",
-            "activity_id",
-            pl.col("duration_s").fill_null(0.0),
-            pl.col("distance_m").fill_null(0.0),
-            pl.col("elevation_gain_m").fill_null(0.0),
-            "hr_zone_1_s",
-            "hr_zone_2_s",
-            "hr_zone_3_s",
-            "hr_zone_4_s",
-            "hr_zone_5_s",
-            pl.col("load_value").fill_null(0.0),
+    groups: dict[tuple[date, str], _Group] = {}
+    for record in sorted(records, key=lambda item: (item.start_time, item.activity_id)):
+        metrics = {metric.name: metric for metric in record.metrics}
+        key = (record.start_time.astimezone(tz).date(), record.sport)
+        group = groups.get(key)
+        if group is None:
+            group = _Group()
+            groups[key] = group
+        group.add(record.activity_id, metrics)
+    rows = [
+        DailySummaryRow(
+            activity_count=group.activity_count,
+            duration_s=group.duration_s,
+            distance_m=group.distance_m,
+            elevation_gain_m=group.elevation_gain_m,
+            hr_zone_1_s=group.zones[0],
+            hr_zone_2_s=group.zones[1],
+            hr_zone_3_s=group.zones[2],
+            hr_zone_4_s=group.zones[3],
+            hr_zone_5_s=group.zones[4],
+            load_value=group.load_value,
+            hard_activity_count=group.hard_activity_count,
+            longest_activity_s=group.longest_activity_s,
+            longest_activity_id=group.longest_activity_id,
+            date=day.isoformat(),
+            sport=sport,
         )
-        .group_by("date", "sport")
-        .agg(
-            pl.len().alias("activity_count"),
-            pl.col("duration_s").sum(),
-            pl.col("distance_m").sum(),
-            pl.col("elevation_gain_m").sum(),
-            pl.col("hr_zone_1_s").sum(),
-            pl.col("hr_zone_2_s").sum(),
-            pl.col("hr_zone_3_s").sum(),
-            pl.col("hr_zone_4_s").sum(),
-            pl.col("hr_zone_5_s").sum(),
-            pl.col("load_value").sum(),
-            (pl.col("load_value") >= HARD_LOAD_THRESHOLD).sum().alias("hard_activity_count"),
-            pl.col("duration_s").max().alias("longest_activity_s"),
-            pl.col("activity_id")
-            .filter(
-                (pl.col("duration_s") == pl.col("duration_s").max()) & (pl.col("duration_s") > 0.0)
-            )
-            .first()
-            .alias("longest_activity_id"),
-        )
-        .sort("date", "sport")
-        .collect()
-    )
-    return [_daily_row(row) for row in frame.to_dicts()]
+        for (day, sport), group in groups.items()
+    ]
+    return sorted(rows, key=lambda row: (row.date, row.sport))
 
 
-def _daily_row(row: dict[str, object]) -> DailySummaryRow:
-    day = row["date"]
-    return DailySummaryRow(
-        date=day.isoformat() if isinstance(day, date) else str(day),
-        sport=str(row["sport"]),
-        activity_count=_int(row["activity_count"]),
-        duration_s=_float(row["duration_s"]),
-        distance_m=_float(row["distance_m"]),
-        elevation_gain_m=_float(row["elevation_gain_m"]),
-        hr_zone_1_s=_float(row["hr_zone_1_s"]),
-        hr_zone_2_s=_float(row["hr_zone_2_s"]),
-        hr_zone_3_s=_float(row["hr_zone_3_s"]),
-        hr_zone_4_s=_float(row["hr_zone_4_s"]),
-        hr_zone_5_s=_float(row["hr_zone_5_s"]),
-        load_value=_float(row["load_value"]),
-        hard_activity_count=_int(row["hard_activity_count"]),
-        longest_activity_s=_float(row["longest_activity_s"]),
-        longest_activity_id=_optional_str(row["longest_activity_id"]),
-    )
+def metric_number(metric: Metric | None) -> float | None:
+    """Read a cached numeric scalar, rejecting non-numerics and booleans."""
+    if metric is None or not isinstance(metric.value, ScalarValue):
+        return None
+    value = metric.value.value
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def metric_table_values(metric: Metric | None) -> tuple[object, ...]:
+    """Read the raw cell values of a cached table metric."""
+    if metric is None or not isinstance(metric.value, TableValue):
+        return ()
+    return metric.value.values
+
+
+def zone_cell(values: tuple[object, ...], index: int) -> float:
+    """Read one zone cell, defaulting missing or invalid cells to 0.0."""
+    if index >= len(values):
+        return 0.0
+    value = values[index]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
 
 
 def select_daily(
@@ -176,19 +230,3 @@ def _date_in_range(value: date, start_date: date | None, end_date: date | None) 
     if start_date is not None and value < start_date:
         return False
     return not (end_date is not None and value > end_date)
-
-
-def _optional_str(value: object) -> str | None:
-    return str(value) if isinstance(value, str) else None
-
-
-def _int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0
-    return int(value)
-
-
-def _float(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0.0
-    return float(value)

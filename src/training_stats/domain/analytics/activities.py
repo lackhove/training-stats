@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from ..fit.types import ParsedActivity
-from ..frames import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK
 from ..metrics import (
     Axis,
     Confidence,
@@ -20,7 +19,7 @@ from ..metrics import (
     TimeBasis,
     TripPeriod,
 )
-from ..models import ActivityRecord, SourceIndexEntry
+from ..models import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK, ActivityRecord, SourceIndexEntry
 from ..settings import AthleteConfig, QualityConfig
 from .activity_statistics import compute_activity_statistics
 from .endurance import DecouplingResult, compute_aerobic_decoupling

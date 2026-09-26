@@ -53,7 +53,7 @@ Package lives in `src/training_stats/` (uv build backend, `uv_build`).
 
 ```
 domain/       models and settings; analytics; normalized FIT types and
-              timeline repair; canonical Polars frame contracts
+              timeline repair; transient Polars FIT-record processing
 services/     use-case orchestration (TrainingStatsService, SyncService,
               FileProcessor), typed state and ports (source/parser/repository)
 adapters/     cache/ (JSON serialization, atomic I/O, locking), fit/ (fitdecode),
