@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from ..domain.metrics import (
     Confidence,
-    Metric,
     MetricKind,
     MetricMethod,
     MetricReport,
@@ -115,39 +114,49 @@ MetricValueWire = Annotated[
 ]
 
 
-class MetricWire(BaseModel):
+class _MetricTrailWire(BaseModel):
+    """Value and provenance fields shared by both metric payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: MetricValueWire | None = None
+    kind: MetricKind
+    unit: str | None = None
+    missing_reason: MissingReason | None = None
+    method: MetricMethod | None = None
+    algorithm_version: str | None = None
+    confidence: Confidence | None = None
+    formula: str | None = None
+    coefficient_set: str | None = None
+    time_basis: TimeBasis | None = None
+
+
+class _MetricLeadWire(BaseModel):
+    """Identity fields shared by both metric payloads."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str
     description: str
+
+
+class _MetricLeadPeriodWire(_MetricLeadWire):
+    """Identity fields plus the period the metric was computed for."""
+
     period: PeriodWire
-    value: MetricValueWire | None = None
-    kind: MetricKind
-    unit: str | None = None
-    missing_reason: MissingReason | None = None
-    method: MetricMethod | None = None
-    algorithm_version: str | None = None
-    confidence: Confidence | None = None
-    formula: str | None = None
-    coefficient_set: str | None = None
-    time_basis: TimeBasis | None = None
 
 
-class MetricWithoutPeriodWire(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+# Pydantic collects base fields in reverse MRO order, so the trailing base is
+# listed first: that keeps the public key order (name, description, period,
+# value, ...) identical to the flat declarations this structure replaced.
+# Class docstrings would become JSON-schema descriptions, so these two public
+# payload models stay undocumented on purpose.
+class MetricWire(_MetricTrailWire, _MetricLeadPeriodWire):
+    pass
 
-    name: str
-    description: str
-    value: MetricValueWire | None = None
-    kind: MetricKind
-    unit: str | None = None
-    missing_reason: MissingReason | None = None
-    method: MetricMethod | None = None
-    algorithm_version: str | None = None
-    confidence: Confidence | None = None
-    formula: str | None = None
-    coefficient_set: str | None = None
-    time_basis: TimeBasis | None = None
+
+class MetricWithoutPeriodWire(_MetricTrailWire, _MetricLeadWire):
+    pass
 
 
 class ActivityRecordWire(BaseModel):
@@ -180,36 +189,29 @@ class MetricReportWire(BaseModel):
 
 
 METRIC_REPORT_ADAPTER = TypeAdapter(MetricReportWire)
-_DOMAIN_REPORT_ADAPTER = TypeAdapter(MetricReport)
-_DOMAIN_METRIC_ADAPTER = TypeAdapter(Metric)
 ACTIVITY_SUMMARIES_ADAPTER = TypeAdapter(list[ActivitySummaryWire])
-_DOMAIN_ACTIVITY_SUMMARIES_ADAPTER = TypeAdapter(list[ActivitySummary])
 ACTIVITY_RECORD_ADAPTER = TypeAdapter(ActivityRecordWire)
-_DOMAIN_ACTIVITY_RECORD_ADAPTER = TypeAdapter(ActivityRecord)
 
 
 def metric_report(report: MetricReport) -> MetricReportWire:
-    """Validate and map a domain report into its generic transport model."""
-    payload = _DOMAIN_REPORT_ADAPTER.dump_python(report, mode="json")
-    return METRIC_REPORT_ADAPTER.validate_python(payload)
+    """Map a domain report into its generic transport model."""
+    return METRIC_REPORT_ADAPTER.validate_python(report, from_attributes=True)
 
 
 def activity_summaries(
     summaries: Sequence[ActivitySummary],
 ) -> list[ActivitySummaryWire]:
-    """Validate and map activity summaries into their transport models."""
-    payload = _DOMAIN_ACTIVITY_SUMMARIES_ADAPTER.dump_python(list(summaries), mode="json")
-    return ACTIVITY_SUMMARIES_ADAPTER.validate_python(payload)
+    """Map activity summaries into their transport models."""
+    return ACTIVITY_SUMMARIES_ADAPTER.validate_python(list(summaries), from_attributes=True)
 
 
 def activity_record(record: ActivityRecord) -> ActivityRecordWire:
-    """Validate and map a complete domain record into its transport model."""
-    payload = _DOMAIN_ACTIVITY_RECORD_ADAPTER.dump_python(record, mode="json")
-    payload["metrics"] = [
-        _DOMAIN_METRIC_ADAPTER.dump_python(metric, mode="json", exclude={"period"})
-        for metric in record.metrics
-    ]
-    return ACTIVITY_RECORD_ADAPTER.validate_python(payload)
+    """Map a complete domain record into its transport model.
+
+    Metric periods are not read: activity metrics are scoped by the record's
+    own trip, which the wire payload does not repeat per metric.
+    """
+    return ACTIVITY_RECORD_ADAPTER.validate_python(record, from_attributes=True)
 
 
 def weekly_report(report: MetricReport) -> WeeklyReportWire:
@@ -227,9 +229,7 @@ def weekly_report(report: MetricReport) -> WeeklyReportWire:
     return WeeklyReportWire(
         period=period,
         metrics=[
-            MetricWithoutPeriodWire.model_validate(
-                metric.model_dump(mode="json", exclude={"period"})
-            )
-            for metric in report_wire.metrics
+            MetricWithoutPeriodWire.model_validate(metric, from_attributes=True)
+            for metric in report.metrics
         ],
     )
