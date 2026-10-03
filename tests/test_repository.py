@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import T0, build_repository, stub_activity_content, two_files
+from tests.conftest import (
+    T0,
+    StubSource,
+    build_repository,
+    make_sync_service,
+    stub_activity_content,
+    two_files,
+)
 from training_stats.adapters.cache import jsonio
-from training_stats.adapters.cache.repository import JsonTrainingRepository
+from training_stats.adapters.cache.repository import (
+    SNAPSHOT_FINGERPRINT_KEY,
+    JsonTrainingRepository,
+)
 from training_stats.adapters.cache.schemas import CACHE_FILE, CACHE_FORMAT_VERSION, METADATA_FILE
+from training_stats.services.state import SyncState
 
 
 def spy_on_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
@@ -25,6 +37,19 @@ def spy_on_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     monkeypatch.setattr(jsonio, "read_json", spy)
     return seen
+
+
+def count_snapshot_writes(monkeypatch: pytest.MonkeyPatch) -> list[SyncState]:
+    """Record every full-snapshot write performed by the repository."""
+    writes: list[SyncState] = []
+    original = JsonTrainingRepository.save_sync_snapshot
+
+    def counting(self: JsonTrainingRepository, state: SyncState, *, last_sync: datetime) -> None:
+        writes.append(state)
+        original(self, state, last_sync=last_sync)
+
+    monkeypatch.setattr(JsonTrainingRepository, "save_sync_snapshot", counting)
+    return writes
 
 
 def _cache_with_snapshot(tmp_path: Path) -> Path:
@@ -43,12 +68,82 @@ def _cache_with_snapshot(tmp_path: Path) -> Path:
     return cache_dir
 
 
+def _write_snapshot_and_stamp(cache_dir: Path, *, last_sync: datetime) -> JsonTrainingRepository:
+    """Repository whose metadata fingerprint describes an existing snapshot."""
+    repository = JsonTrainingRepository(cache_dir=cache_dir)
+    repository.save_sync_snapshot(SyncState(index_rows=[], activities={}), last_sync=last_sync)
+    return repository
+
+
+def _fingerprint(cache_dir: Path) -> dict[str, int]:
+    info = (cache_dir / CACHE_FILE).stat()
+    return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "inode": info.st_ino}
+
+
 class TestJsonCache:
-    def test_empty_cache_and_empty_sync(self, tmp_path: Path) -> None:
-        repository = build_repository(tmp_path, {})
-        assert repository.load_sync_state().activities == {}
-        assert repository.load_sync_state().index_rows == []
-        assert repository.last_sync_stamp() is not None
+    def test_empty_cache_and_empty_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writes = count_snapshot_writes(monkeypatch)
+        cache_dir = tmp_path / "cache"
+        service = make_sync_service(tmp_path, [StubSource(files={})])
+        assert service.sync().cache_updated_at is not None
+        assert len(writes) == 1  # the empty sync wrote the snapshot exactly once
+
+        snapshot = cache_dir / CACHE_FILE
+        assert json.loads(snapshot.read_text()) == {
+            "format_version": CACHE_FORMAT_VERSION,
+            "activities": [],
+            "source_index": [],
+        }
+        assert JsonTrainingRepository(cache_dir=cache_dir).load_sync_state().activities == {}
+        # A fresh process throttles against the snapshot the empty sync wrote.
+        assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is not None
+
+        written = snapshot.read_bytes()
+        modified = snapshot.stat().st_mtime_ns
+        result = service.sync()
+        assert result.cache_updated_at is not None
+        assert len(writes) == 1  # unchanged: metadata-only, no snapshot rewrite
+        assert snapshot.read_bytes() == written
+        assert snapshot.stat().st_mtime_ns == modified
+        metadata = json.loads((cache_dir / METADATA_FILE).read_text())
+        assert metadata["last_sync"] == result.cache_updated_at.isoformat()
+        assert metadata[SNAPSHOT_FINGERPRINT_KEY] == _fingerprint(cache_dir)
+
+        snapshot.unlink()
+        assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is None
+        assert service.sync().cache_updated_at is not None
+        assert len(writes) == 2  # the stamp only came back with a fresh snapshot
+        assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is not None
+
+        snapshot.write_text("not json")
+        assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is None
+
+    def test_noop_sync_reads_snapshot_once_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        files = {"a.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)}
+        service = make_sync_service(tmp_path, [StubSource(files=files)])
+        assert service.sync().files_processed == 1
+
+        snapshot = tmp_path / "cache" / CACHE_FILE
+        written = snapshot.read_bytes()
+        modified = snapshot.stat().st_mtime_ns
+        writes = count_snapshot_writes(monkeypatch)
+        seen = spy_on_reads(monkeypatch)
+
+        assert service.sync().files_skipped == 1
+        # One load_sync_state parse of the snapshot, one small metadata read to
+        # compare the stamp fingerprint, and no snapshot serialization or write.
+        assert [path.name for path in seen] == [CACHE_FILE, METADATA_FILE]
+        assert writes == []
+        assert snapshot.read_bytes() == written
+        assert snapshot.stat().st_mtime_ns == modified
+
+        seen.clear()
+        assert service.repository.last_sync_stamp() is not None
+        assert [path.name for path in seen] == [METADATA_FILE]
 
     def test_cache_stores_activity_metric_records(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())
@@ -105,20 +200,130 @@ class TestJsonCache:
 
     def test_metadata_file_keeps_stamp_and_format_version(self, tmp_path: Path) -> None:
         build_repository(tmp_path, two_files())
-        metadata = json.loads((tmp_path / "cache" / METADATA_FILE).read_text())
-        assert set(metadata) == {"last_sync", "format_version"}
+        cache_dir = tmp_path / "cache"
+        metadata = json.loads((cache_dir / METADATA_FILE).read_text())
+        assert set(metadata) == {"last_sync", "format_version", SNAPSHOT_FINGERPRINT_KEY}
         assert metadata["format_version"] == CACHE_FORMAT_VERSION
         assert datetime.fromisoformat(metadata["last_sync"]).tzinfo is not None
+        assert metadata[SNAPSHOT_FINGERPRINT_KEY] == _fingerprint(cache_dir)
+
+    def test_metadata_only_stamp_records_snapshot_fingerprint(self, tmp_path: Path) -> None:
+        cache_dir = tmp_path / "cache"
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        repository.save_sync_snapshot(SyncState(index_rows=[], activities={}), last_sync=T0)
+        snapshot = cache_dir / CACHE_FILE
+        written = snapshot.read_bytes()
+
+        repository.save_sync_stamp(
+            SyncState(index_rows=[], activities={}), last_sync=T0 + timedelta(minutes=1)
+        )
+        assert snapshot.read_bytes() == written  # no snapshot serialization or replacement
+        metadata = json.loads((cache_dir / METADATA_FILE).read_text())
+        assert metadata[SNAPSHOT_FINGERPRINT_KEY] == _fingerprint(cache_dir)
+        assert metadata["last_sync"] == (T0 + timedelta(minutes=1)).isoformat()
+
+    @pytest.mark.parametrize("damage", ["missing", "malformed", "obsolete"])
+    def test_stamp_repairs_damaged_snapshot_before_stamping(
+        self, tmp_path: Path, damage: str
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        repository.save_sync_snapshot(SyncState(index_rows=[], activities={}), last_sync=T0)
+        snapshot = cache_dir / CACHE_FILE
+        if damage == "missing":
+            snapshot.unlink()
+        elif damage == "malformed":
+            snapshot.write_text("not json")
+        else:
+            snapshot.write_text('{"format_version": 0}')
+
+        repository.save_sync_stamp(SyncState(index_rows=[], activities={}), last_sync=T0)
+        assert json.loads(snapshot.read_text()) == {
+            "format_version": CACHE_FORMAT_VERSION,
+            "activities": [],
+            "source_index": [],
+        }
+        assert repository.last_sync_stamp() == T0
+
+    @pytest.mark.parametrize("metadata_case", ["absent", "legacy"])
+    def test_stamp_writes_snapshot_without_a_matching_stamp(
+        self, tmp_path: Path, metadata_case: str
+    ) -> None:
+        cache_dir = _cache_with_snapshot(tmp_path)
+        if metadata_case == "legacy":
+            (cache_dir / METADATA_FILE).write_text(json.dumps({"last_sync": T0.isoformat()}))
+        snapshot = cache_dir / CACHE_FILE
+        written = snapshot.read_bytes()
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+
+        repository.save_sync_stamp(SyncState(index_rows=[], activities={}), last_sync=T0)
+        assert snapshot.read_bytes() != written  # stale metadata cannot vouch for a snapshot
+        assert json.loads(snapshot.read_text())["format_version"] == CACHE_FORMAT_VERSION
+        assert repository.last_sync_stamp() == T0
 
 
 class TestLastSyncStamp:
     def test_reads_metadata_without_opening_snapshot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repository = JsonTrainingRepository(cache_dir=tmp_path / "cache")
-        repository.save_sync_stamp(last_sync=T0)
+        repository = _write_snapshot_and_stamp(tmp_path / "cache", last_sync=T0)
         seen = spy_on_reads(monkeypatch)
         assert repository.last_sync_stamp() == T0
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_removed_snapshot_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        repository = _write_snapshot_and_stamp(cache_dir, last_sync=T0)
+        (cache_dir / CACHE_FILE).unlink()
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() is None
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    @pytest.mark.parametrize(
+        "alteration",
+        ["truncate", "rewrite_same_size", "replace"],
+        ids=["truncated", "rewritten-in-place", "replaced-file"],
+    )
+    def test_altered_snapshot_returns_none_without_reading_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alteration: str
+    ) -> None:
+        cache_dir = tmp_path / "cache"
+        repository = _write_snapshot_and_stamp(cache_dir, last_sync=T0)
+        snapshot = cache_dir / CACHE_FILE
+        original = snapshot.read_bytes()
+        if alteration == "truncate":
+            snapshot.write_bytes(original[: len(original) // 2])
+        elif alteration == "rewrite_same_size":
+            info = snapshot.stat()
+            snapshot.write_bytes(b" " * len(original))
+            # Keep the size identical and bump mtime explicitly, so detection
+            # relies on the fingerprint rather than filesystem granularity.
+            os.utime(snapshot, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+        else:
+            snapshot.unlink()
+            snapshot.write_bytes(b'{"format_version": %d}' % CACHE_FORMAT_VERSION)
+
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() is None
+        assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_legacy_metadata_without_fingerprint_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_dir = _cache_with_snapshot(tmp_path)
+        (cache_dir / METADATA_FILE).write_text(
+            json.dumps(
+                {
+                    "last_sync": T0.isoformat(),
+                    "format_version": CACHE_FORMAT_VERSION,
+                }
+            )
+        )
+        repository = JsonTrainingRepository(cache_dir=cache_dir)
+        seen = spy_on_reads(monkeypatch)
+        assert repository.last_sync_stamp() is None
         assert [path.name for path in seen] == [METADATA_FILE]
 
     def test_legacy_metadata_without_version_returns_none(
@@ -158,7 +363,7 @@ class TestLastSyncStamp:
         assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is None
 
     def test_naive_timestamp_is_read_as_utc(self, tmp_path: Path) -> None:
-        cache_dir = tmp_path / "cache"
-        repository = JsonTrainingRepository(cache_dir=cache_dir)
-        repository.save_sync_stamp(last_sync=T0.replace(tzinfo=None))
+        repository = _write_snapshot_and_stamp(
+            tmp_path / "cache", last_sync=T0.replace(tzinfo=None)
+        )
         assert repository.last_sync_stamp() == T0

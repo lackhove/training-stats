@@ -123,7 +123,7 @@ class SyncService:
             }
             snapshot = SyncState(index_rows=kept_index, activities=persisted_activities)
             if self._state_unchanged(state, snapshot):
-                self.repository.save_sync_stamp(last_sync=started_at)
+                self.repository.save_sync_stamp(snapshot, last_sync=started_at)
             else:
                 self.repository.save_sync_snapshot(snapshot, last_sync=started_at)
             logger.info(

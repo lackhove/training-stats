@@ -455,6 +455,74 @@ class TestSyncThrottle:
         assert isinstance(result, SyncResult)
         assert result.files_processed == 2
 
+    def test_matching_fingerprint_still_throttles(self, tmp_path: Path) -> None:
+        first = _make_throttled_server(tmp_path)
+        assert isinstance(first.sync_if_due(), SyncResult)
+        # Fresh process: metadata plus an intact snapshot keeps the throttle.
+        second = _make_throttled_server(tmp_path)
+        assert second.repository.last_sync_stamp() is not None
+        assert isinstance(second.sync_if_due(), ThrottledSync)
+
+    def test_metadata_without_fingerprint_syncs(self, tmp_path: Path) -> None:
+        server = _make_throttled_server(tmp_path)
+        cache_dir = tmp_path / "cache"
+        _write_valid_snapshot(cache_dir)
+        (cache_dir / schemas.METADATA_FILE).write_text(
+            json.dumps(
+                {
+                    "last_sync": datetime.now(UTC).isoformat(),
+                    "format_version": schemas.CACHE_FORMAT_VERSION,
+                }
+            )
+        )
+        assert server.repository.last_sync_stamp() is None
+        result = server.sync_if_due()
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+
+    def test_removed_snapshot_forces_sync_and_rebuild(self, tmp_path: Path) -> None:
+        first = _make_throttled_server(tmp_path)
+        assert isinstance(first.sync_if_due(), SyncResult)
+        snapshot = tmp_path / "cache" / schemas.CACHE_FILE
+        assert snapshot.exists()
+        snapshot.unlink()
+
+        second = _make_throttled_server(tmp_path)
+        assert second.repository.last_sync_stamp() is None
+        result = second.sync_if_due()
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+        assert snapshot.exists()
+        assert len(second.repository.load_sync_state().activities) == 2
+        assert isinstance(second.sync_if_due(), ThrottledSync)
+
+    def test_tampered_snapshot_forces_sync_and_rebuild(self, tmp_path: Path) -> None:
+        first = _make_throttled_server(tmp_path)
+        assert isinstance(first.sync_if_due(), SyncResult)
+        snapshot = tmp_path / "cache" / schemas.CACHE_FILE
+        snapshot.write_text("{}")
+
+        second = _make_throttled_server(tmp_path)
+        assert second.repository.last_sync_stamp() is None
+        result = second.sync_if_due()
+        assert isinstance(result, SyncResult)
+        assert result.files_processed == 2
+        assert len(second.repository.load_sync_state().activities) == 2
+
+    def test_empty_library_stamp_throttles_the_next_process(self, tmp_path: Path) -> None:
+        snapshot = tmp_path / "cache" / schemas.CACHE_FILE
+        first = make_server(tmp_path, {}, interval_s=10.0)
+        assert isinstance(first.sync_if_due(), SyncResult)
+        assert snapshot.exists()  # the empty sync left a snapshot behind
+
+        second = make_server(tmp_path, {}, interval_s=10.0)
+        assert isinstance(second.sync_if_due(), ThrottledSync)  # no repeat sync
+
+        snapshot.unlink()
+        third = make_server(tmp_path, {}, interval_s=10.0)
+        assert isinstance(third.sync_if_due(), SyncResult)
+        assert snapshot.exists()  # rebuilt before the new stamp
+
 
 class TestCreateServer:
     def test_local_source_built(self, tmp_path: Path) -> None:

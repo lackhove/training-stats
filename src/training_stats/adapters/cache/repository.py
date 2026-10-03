@@ -16,6 +16,9 @@ from . import jsonio, schemas
 _ACTIVITIES_ADAPTER = TypeAdapter(list[ActivityRecord])
 _SOURCE_INDEX_ADAPTER = TypeAdapter(list[SourceIndexEntry])
 
+# Metadata key holding the snapshot stat fingerprint written with each stamp.
+SNAPSHOT_FINGERPRINT_KEY = "snapshot_fingerprint"
+
 
 class JsonTrainingRepository(SyncRepository):
     """Atomically persist one metric-bearing record per accepted activity."""
@@ -45,6 +48,59 @@ class JsonTrainingRepository(SyncRepository):
 
     def save_sync_snapshot(self, state: SyncState, *, last_sync: datetime) -> None:
         """Write records and sync stamp atomically at their respective boundaries."""
+        self._write_snapshot(state)
+        self._write_sync_metadata_stamp(last_sync=last_sync)
+
+    def save_sync_stamp(self, state: SyncState, *, last_sync: datetime) -> None:
+        """Record a successful sync stamp without rewriting an unchanged snapshot.
+
+        Metadata alone is rewritten while the stamp on disk still covers the
+        snapshot by fingerprint, which is written immediately after every
+        snapshot write and therefore proves the file is that valid snapshot.
+        Metadata that is missing, legacy, or out of version, and a snapshot
+        that is gone or changed on disk, mean ``state`` is written first: a
+        stamp must never cover a snapshot it did not vouch for. The caller
+        passes the state its sync produced and stays responsible for having
+        established that it matches what was loaded (the sync's no-op path).
+        """
+        if not self._snapshot_matches_last_stamp():
+            self.save_sync_snapshot(state, last_sync=last_sync)
+            return
+        self._write_sync_metadata_stamp(last_sync=last_sync)
+
+    def last_sync_stamp(self) -> datetime | None:
+        """Read the throttle stamp from metadata alone; never open the snapshot.
+
+        The stamp is honoured only while the snapshot still matches the
+        fingerprint recorded with it; metadata without a fingerprint, or a
+        snapshot that is gone or changed on disk, forces a sync.
+        """
+        metadata = jsonio.read_json(self.cache_dir / schemas.METADATA_FILE)
+        if metadata is None or metadata.get("format_version") != schemas.CACHE_FORMAT_VERSION:
+            return None
+        value = metadata.get("last_sync")
+        if not isinstance(value, str):
+            return None
+        try:
+            stamp = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if not self._fingerprint_matches(metadata.get(SNAPSHOT_FINGERPRINT_KEY)):
+            return None
+        return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+    def _snapshot_matches_last_stamp(self) -> bool:
+        """True when the stamp on disk still covers the snapshot by fingerprint.
+
+        Reads only the small metadata file and stats the snapshot; the
+        multi-megabyte snapshot is never parsed on this path.
+        """
+        metadata = jsonio.read_json(self.cache_dir / schemas.METADATA_FILE)
+        if metadata is None or metadata.get("format_version") != schemas.CACHE_FORMAT_VERSION:
+            return False
+        return self._fingerprint_matches(metadata.get(SNAPSHOT_FINGERPRINT_KEY))
+
+    def _write_snapshot(self, state: SyncState) -> None:
         try:
             payload: dict[str, object] = {
                 "format_version": schemas.CACHE_FORMAT_VERSION,
@@ -56,28 +112,29 @@ class JsonTrainingRepository(SyncRepository):
         except (TypeError, ValueError) as exc:
             raise CacheError("cannot serialize cache domain records") from exc
         jsonio.write_json_atomic(payload, self.cache_dir / schemas.CACHE_FILE)
-        self.save_sync_stamp(last_sync=last_sync)
 
-    def save_sync_stamp(self, *, last_sync: datetime) -> None:
-        """Record a successful sync stamp without serializing the snapshot."""
+    def _write_sync_metadata_stamp(self, *, last_sync: datetime) -> None:
         jsonio.write_json_atomic(
             {
                 "format_version": schemas.CACHE_FORMAT_VERSION,
                 "last_sync": last_sync.isoformat(),
+                SNAPSHOT_FINGERPRINT_KEY: self._snapshot_fingerprint(),
             },
             self.cache_dir / schemas.METADATA_FILE,
         )
 
-    def last_sync_stamp(self) -> datetime | None:
-        """Read the throttle stamp from metadata alone; never open the snapshot."""
-        metadata = jsonio.read_json(self.cache_dir / schemas.METADATA_FILE)
-        if metadata is None or metadata.get("format_version") != schemas.CACHE_FORMAT_VERSION:
-            return None
-        value = metadata.get("last_sync")
-        if not isinstance(value, str):
-            return None
+    def _snapshot_fingerprint(self) -> dict[str, int] | None:
+        """Stat the snapshot for identity; ``None`` when it does not exist."""
         try:
-            stamp = datetime.fromisoformat(value)
-        except ValueError:
+            info = (self.cache_dir / schemas.CACHE_FILE).stat()
+        except OSError:
             return None
-        return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+        return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "inode": info.st_ino}
+
+    def _fingerprint_matches(self, stored: object) -> bool:
+        if not isinstance(stored, dict):
+            return False
+        current = self._snapshot_fingerprint()
+        if current is None:
+            return False
+        return all(stored.get(key) == value for key, value in current.items())

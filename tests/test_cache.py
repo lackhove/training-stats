@@ -13,7 +13,10 @@ import pytest
 from tests.conftest import T0, StubSource, make_sync_service, stub_activity_content
 from training_stats.adapters.cache import jsonio, schemas
 from training_stats.adapters.cache.locking import acquire_app_lock
-from training_stats.adapters.cache.repository import JsonTrainingRepository
+from training_stats.adapters.cache.repository import (
+    SNAPSHOT_FINGERPRINT_KEY,
+    JsonTrainingRepository,
+)
 from training_stats.adapters.errors import CacheError
 from training_stats.domain.models import SourceFile
 from training_stats.services.errors import SourceError
@@ -172,6 +175,42 @@ class TestIncrementalSync:
         assert snapshot_path.read_bytes() == snapshot_bytes
         assert snapshot_path.stat().st_mtime_ns == snapshot_mtime
         assert metadata_stamp(cache_dir) == result.cache_updated_at.isoformat()
+        metadata = json.loads((cache_dir / schemas.METADATA_FILE).read_text())
+        info = snapshot_path.stat()
+        assert metadata[SNAPSHOT_FINGERPRINT_KEY] == {
+            "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns,
+            "inode": info.st_ino,
+        }
+        assert JsonTrainingRepository(cache_dir).last_sync_stamp() == result.cache_updated_at
+
+    def test_metadata_only_stamp_is_voided_by_snapshot_removal(self, tmp_path: Path) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, one_file())
+        assert service.sync().files_processed == 1
+        assert service.sync().files_skipped == 1  # metadata-only stamp
+        assert JsonTrainingRepository(cache_dir).last_sync_stamp() is not None
+
+        (cache_dir / schemas.CACHE_FILE).unlink()
+        assert JsonTrainingRepository(cache_dir).last_sync_stamp() is None
+
+    def test_corrupt_snapshot_is_repaired_before_the_stamp(self, tmp_path: Path) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, {})
+        assert service.sync().cache_updated_at is not None
+        snapshot = cache_dir / schemas.CACHE_FILE
+        assert snapshot.exists()
+        snapshot.write_text("not json")
+
+        result = service.sync()
+        assert result.cache_updated_at is not None
+        payload = json.loads(snapshot.read_text())
+        assert payload["format_version"] == schemas.CACHE_FORMAT_VERSION
+        assert payload["activities"] == []
+        assert payload["source_index"] == []
+        assert JsonTrainingRepository(cache_dir).last_sync_stamp() is not None
+
+        written = snapshot.read_bytes()
+        assert service.sync().cache_updated_at is not None
+        assert snapshot.read_bytes() == written  # repaired snapshot is now the fast path
 
     def test_content_change_reprocesses_activity(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file())
