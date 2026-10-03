@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
+from tests.conftest import (
+    StubSource,
+    make_app_config,
+    make_server,
+    spy_sync_calls,
+    stub_activity_content,
+)
 from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.cache import schemas
 from training_stats.adapters.cache.repository import JsonTrainingRepository
@@ -33,27 +38,8 @@ def _stub_files() -> dict[str, bytes]:
     }
 
 
-def _make_server(
-    tmp_path: Path, files: dict[str, bytes], *, interval_s: float = 0.0
-) -> TrainingStatsService:
-    """Build a server backed by the deterministic stub source/parser.
-
-    The sync throttle is disabled so tests observe individual syncs; the
-    throttle itself is exercised in ``TestSyncThrottle``.
-    """
-    config = make_app_config(tmp_path / "cache", tmp_path / "src")
-    config.cache.sync_min_interval_seconds = interval_s
-    server = create_service(config)
-    # Swap in the deterministic stub source/parser for cache independence.
-    server.sync_service.sources = [StubSource(files=files)]
-    server.sync_service.processor = make_processor(
-        athlete=config.athlete, analysis_version=server.sync_service.analysis_version
-    )
-    return server
-
-
 def _make_throttled_server(tmp_path: Path, interval_s: float = 10.0) -> TrainingStatsService:
-    return _make_server(tmp_path, _stub_files(), interval_s=interval_s)
+    return make_server(tmp_path, _stub_files(), interval_s=interval_s)
 
 
 def _write_metadata(cache_dir: Path, age_seconds: float) -> None:
@@ -77,19 +63,6 @@ def _write_valid_snapshot(cache_dir: Path) -> None:
 
 def _activity_ids(activities: tuple[ActivitySummary, ...]) -> set[str]:
     return {activity.activity_id for activity in activities}
-
-
-def _spy_sync_calls(server: TrainingStatsService) -> Callable[[], int]:
-    """Count how often the underlying sync actually runs."""
-    calls: list[bool] = []
-    original = server.sync_service.sync
-
-    def counting_sync() -> SyncResult:
-        calls.append(True)
-        return original()
-
-    server.sync_service.sync = counting_sync
-    return lambda: len(calls)
 
 
 class RecordingSource(StubSource):
@@ -130,7 +103,7 @@ def _scalar(report: MetricReport, name: str) -> object:
 
 @pytest.fixture
 def server(tmp_path: Path) -> TrainingStatsService:
-    server = _make_server(tmp_path, _stub_files())
+    server = make_server(tmp_path, _stub_files())
     server.sync_service.sync()
     return server
 
@@ -138,7 +111,7 @@ def server(tmp_path: Path) -> TrainingStatsService:
 @pytest.fixture
 def unsynced_server(tmp_path: Path) -> TrainingStatsService:
     """Server whose cache is empty; sync only happens via the code under test."""
-    return _make_server(tmp_path, _stub_files())
+    return make_server(tmp_path, _stub_files())
 
 
 class TestServiceOperations:
@@ -215,7 +188,7 @@ class TestServiceOperations:
     def test_queries_never_check_sync_themselves(
         self, unsynced_server: TrainingStatsService
     ) -> None:
-        sync_calls = _spy_sync_calls(unsynced_server)
+        sync_calls = spy_sync_calls(unsynced_server)
         with pytest.raises(LookupError):
             unsynced_server.get_activity("does-not-exist")
         unsynced_server.list_activities()
@@ -226,7 +199,7 @@ class TestServiceOperations:
     def test_explicit_orchestration_syncs_exactly_once(
         self, unsynced_server: TrainingStatsService
     ) -> None:
-        sync_calls = _spy_sync_calls(unsynced_server)
+        sync_calls = spy_sync_calls(unsynced_server)
         unsynced_server.sync_if_due()
         unsynced_server.list_activities()
         unsynced_server.weekly_summary(weeks=4)
@@ -316,7 +289,7 @@ class TestServiceOperations:
 
 class TestSyncSourceReads:
     def test_reads_each_file_from_the_source_that_listed_it(self, tmp_path: Path) -> None:
-        server = _make_server(tmp_path, {})
+        server = make_server(tmp_path, {})
         cloud = RecordingSource(
             name="cloud",
             files={"ride.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)},
@@ -335,7 +308,7 @@ class TestSyncSourceReads:
         assert local.read_paths == ["run.fit"]
 
     def test_read_uses_the_in_scope_source_without_a_name_relookup(self, tmp_path: Path) -> None:
-        server = _make_server(tmp_path, {})
+        server = make_server(tmp_path, {})
         source = ForeignNameSource(
             name="stub",
             files={"ride.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)},
@@ -353,7 +326,7 @@ class TestSyncSourceReads:
 class TestSharedActivityIdSet:
     def test_duplicate_detected_across_files_in_one_sync(self, tmp_path: Path) -> None:
         content = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
-        server = _make_server(tmp_path, {"one.fit": content, "two.fit": content})
+        server = make_server(tmp_path, {"one.fit": content, "two.fit": content})
 
         result = server.sync_if_due()
 
@@ -366,7 +339,7 @@ class TestSharedActivityIdSet:
 
     def test_changed_file_keeps_the_id_set_in_sync(self, tmp_path: Path) -> None:
         original = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
-        server = _make_server(tmp_path, {"a.fit": original})
+        server = make_server(tmp_path, {"a.fit": original})
         server.sync_if_due()
 
         source = server.sync_service.sources[0]

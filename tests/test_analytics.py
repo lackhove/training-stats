@@ -9,8 +9,15 @@ from zoneinfo import ZoneInfo
 import polars as pl
 import pytest
 
-from tests.conftest import StubParser, make_app_config, make_record_frame, stub_activity_content
-from tests.test_repository import T0, build_repository, two_files
+from tests.conftest import (
+    T0,
+    StubParser,
+    build_repository,
+    make_app_config,
+    make_record_frame,
+    stub_activity_content,
+    two_files,
+)
 from training_stats.domain.analytics.activities import (
     compute_activity_metrics,
     data_quality_metrics,

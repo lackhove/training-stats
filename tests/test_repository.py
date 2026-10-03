@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
+from tests.conftest import T0, build_repository, stub_activity_content, two_files
 from training_stats.adapters.cache import jsonio
 from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.adapters.cache.schemas import CACHE_FILE, CACHE_FORMAT_VERSION, METADATA_FILE
-from training_stats.services.sync import SyncService
-
-T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 
 
 def spy_on_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
@@ -44,30 +41,6 @@ def _cache_with_snapshot(tmp_path: Path) -> Path:
         )
     )
     return cache_dir
-
-
-def build_repository(tmp_path: Path, files: dict[str, bytes]) -> JsonTrainingRepository:
-    source = StubSource(files=files)
-    cache_dir = tmp_path / "cache"
-    config = make_app_config(cache_dir, tmp_path / "src")
-    repository = JsonTrainingRepository(cache_dir=cache_dir)
-    service = SyncService(
-        sources=[source],
-        processor=make_processor(athlete=config.athlete, analysis_version="1"),
-        repository=repository,
-        analysis_version="1",
-    )
-    service.sync()
-    return repository
-
-
-def two_files() -> dict[str, bytes]:
-    return {
-        "easy.fit": stub_activity_content(T0, "cycling", 3600.0, 30000.0, heart_rates=[120] * 60),
-        "intervals.fit": stub_activity_content(
-            T0 + timedelta(days=2), "running", 1800.0, 8000.0, heart_rates=[150] * 30
-        ),
-    }
 
 
 class TestJsonCache:

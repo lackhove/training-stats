@@ -21,3 +21,10 @@ config.toml
 examples/
 *.fit
 !tests/fixtures/*.fit
+
+# CLI output captured at the repository root (exact names, root only)
+/list.json
+/list.txt
+/show.json
+/weekly.json
+/overview.json

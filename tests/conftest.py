@@ -11,6 +11,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from training_stats.adapters.bootstrap import create_service
+from training_stats.adapters.cache.repository import JsonTrainingRepository
 from training_stats.adapters.config import (
     AppConfig,
     ApplicationConfig,
@@ -25,6 +27,9 @@ from training_stats.domain.settings import AthleteConfig, HeartRateZonesConfig, 
 from training_stats.services.errors import SourceError
 from training_stats.services.ingest import FileProcessor
 from training_stats.services.ports import ActivitySource, FitParser
+from training_stats.services.results import SyncResult
+from training_stats.services.sync import SyncService
+from training_stats.services.training import TrainingStatsService
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -228,6 +233,103 @@ def stub_activity_content(
     if heart_rates is None:
         return head.encode("utf-8")
     return (head + "," + ";".join(str(hr) for hr in heart_rates)).encode("utf-8")
+
+
+T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+
+
+def two_files() -> dict[str, bytes]:
+    return {
+        "easy.fit": stub_activity_content(T0, "cycling", 3600.0, 30000.0, heart_rates=[120] * 60),
+        "intervals.fit": stub_activity_content(
+            T0 + timedelta(days=2), "running", 1800.0, 8000.0, heart_rates=[150] * 30
+        ),
+    }
+
+
+def make_sync_service(
+    tmp_path: Path, sources: list[StubSource], *, version: str = "1"
+) -> SyncService:
+    """SyncService wired with stub sources and an isolated cache directory."""
+    cache_dir = tmp_path / "cache"
+    config = make_app_config(cache_dir, tmp_path / "src")
+    return SyncService(
+        sources=sources,
+        processor=make_processor(athlete=config.athlete, analysis_version=version),
+        repository=JsonTrainingRepository(cache_dir),
+        analysis_version=version,
+    )
+
+
+def build_repository(tmp_path: Path, files: dict[str, bytes]) -> JsonTrainingRepository:
+    """Repository holding the activities synced from ``files``."""
+    service = make_sync_service(tmp_path, [StubSource(files=files)])
+    service.sync()
+    return JsonTrainingRepository(tmp_path / "cache")
+
+
+def make_server(
+    tmp_path: Path,
+    files: dict[str, bytes],
+    *,
+    interval_s: float = 0.0,
+    config: AppConfig | None = None,
+) -> TrainingStatsService:
+    """Server backed by the deterministic stub source/parser.
+
+    ``config`` lets callers keep a pre-configured application config (for
+    example one carrying auth settings). The sync throttle is disabled unless
+    ``interval_s`` says otherwise.
+    """
+    cfg = config if config is not None else make_app_config(tmp_path / "cache", tmp_path / "src")
+    cfg.cache.sync_min_interval_seconds = interval_s
+    server = create_service(cfg)
+    # Swap in the deterministic stub source/parser for cache independence.
+    server.sync_service.sources = [StubSource(files=files)]
+    server.sync_service.processor = make_processor(
+        athlete=cfg.athlete, analysis_version=server.sync_service.analysis_version
+    )
+    return server
+
+
+def spy_sync_calls(server: TrainingStatsService) -> Callable[[], int]:
+    """Count how often the underlying sync actually runs."""
+    calls: list[bool] = []
+    original = server.sync_service.sync
+
+    def counting_sync() -> SyncResult:
+        calls.append(True)
+        return original()
+
+    server.sync_service.sync = counting_sync
+    return lambda: len(calls)
+
+
+def assert_no_none_fields(value: object) -> None:
+    if isinstance(value, dict):
+        assert all(item is not None for item in value.values())
+        for item in value.values():
+            assert_no_none_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict | list):
+                assert_no_none_fields(item)
+
+
+def json_metrics(report: object) -> list[dict[str, object]]:
+    assert isinstance(report, dict)
+    metrics = report.get("metrics")
+    assert isinstance(metrics, list)
+    return metrics
+
+
+def json_metric(report: object, name: str) -> dict[str, object]:
+    return next(metric for metric in json_metrics(report) if metric["name"] == name)
+
+
+def json_activity_ids(activities: object) -> set[str]:
+    assert isinstance(activities, list)
+    return {str(activity["activity_id"]) for activity in activities}
 
 
 @pytest.fixture

@@ -19,9 +19,10 @@ import httpx
 
 from ...domain.models import SourceFile
 from ...services.errors import SourceError
+from ...services.ports import ActivitySource
 from ..config import WebDAVCredentials, WebDAVSourceConfig
 from ..errors import AuthenticationError, RemoteFileError
-from .base import ActivitySource, is_fit_file
+from .base import is_fit_file
 
 logger = logging.getLogger(__name__)
 

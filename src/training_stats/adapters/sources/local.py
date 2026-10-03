@@ -9,7 +9,8 @@ from pathlib import Path
 
 from ...domain.models import SourceFile
 from ...services.errors import SourceError
-from .base import ActivitySource, is_fit_file
+from ...services.ports import ActivitySource
+from .base import is_fit_file
 
 logger = logging.getLogger(__name__)
 

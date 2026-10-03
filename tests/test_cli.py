@@ -9,7 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FIXTURES
+from tests.conftest import (
+    FIXTURES,
+    assert_no_none_fields,
+    json_activity_ids,
+    json_metric,
+    json_metrics,
+)
 from training_stats.adapters.cli.app import main
 
 
@@ -74,33 +80,6 @@ def _stdout_payload(capsys: pytest.CaptureFixture[str]) -> object:
     return json.loads(capsys.readouterr().out)
 
 
-def _metrics(report: object) -> list[dict[str, object]]:
-    assert isinstance(report, dict)
-    metrics = report.get("metrics")
-    assert isinstance(metrics, list)
-    return metrics
-
-
-def _activity_ids(activities: object) -> set[str]:
-    assert isinstance(activities, list)
-    return {str(activity["activity_id"]) for activity in activities}
-
-
-def _assert_no_none_fields(value: object) -> None:
-    if isinstance(value, dict):
-        assert all(item is not None for item in value.values())
-        for item in value.values():
-            _assert_no_none_fields(item)
-    elif isinstance(value, list):
-        for item in value:
-            if isinstance(item, dict | list):
-                _assert_no_none_fields(item)
-
-
-def _metric(report: object, name: str) -> dict[str, object]:
-    return next(metric for metric in _metrics(report) if metric["name"] == name)
-
-
 class TestListCommand:
     def test_list_and_repeat_sync(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -108,8 +87,8 @@ class TestListCommand:
         assert main(["--config", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
         activities = json.loads(captured.out)
-        _assert_no_none_fields(activities)
-        assert len(_activity_ids(activities)) == 2
+        assert_no_none_fields(activities)
+        assert len(json_activity_ids(activities)) == 2
         assert all("metrics" not in activity for activity in activities)
         assert set(activities[0]) == {
             "activity_id",
@@ -125,14 +104,14 @@ class TestListCommand:
         # Second run: unchanged files are skipped via content hashes.
         assert main(["--config", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
-        assert len(_activity_ids(json.loads(captured.out))) == 2
+        assert len(json_activity_ids(json.loads(captured.out))) == 2
         assert "sync: 2 found, 0 new, 2 unchanged, 0 failed" in captured.err
 
     def test_config_before_command(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list"]) == 0
-        assert len(_activity_ids(_stdout_payload(capsys))) == 2
+        assert len(json_activity_ids(_stdout_payload(capsys))) == 2
 
     def test_no_sync_serves_empty_cache(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -145,7 +124,7 @@ class TestListCommand:
     def test_sport_filter(self, config_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["-c", str(config_path), "list", "--sport", "cycling"]) == 0
         activities = _stdout_payload(capsys)
-        assert len(_activity_ids(activities)) == 2
+        assert len(json_activity_ids(activities)) == 2
 
     def test_limit_type_error(self, config_path: Path) -> None:
         assert main(["-c", str(config_path), "list", "--limit", "abc"]) == 2
@@ -156,17 +135,17 @@ class TestShowCommand:
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         assert main(["-c", str(config_path), "list", "--limit", "1"]) == 0
-        activity_id = next(iter(_activity_ids(_stdout_payload(capsys))))
+        activity_id = next(iter(json_activity_ids(_stdout_payload(capsys))))
 
         assert main(["-c", str(config_path), "show", activity_id]) == 0
         details = _stdout_payload(capsys)
-        _assert_no_none_fields(details)
+        assert_no_none_fields(details)
         assert details["activity_id"] == activity_id
         assert "start_time" in details
         assert "sport" in details
         assert "metrics" in details
         assert all("period" not in metric for metric in details["metrics"])
-        assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
+        assert json_metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
         assert "records" not in details
 
     def test_show_unknown_activity(
@@ -175,7 +154,7 @@ class TestShowCommand:
         assert main(["-c", str(config_path), "show", "does-not-exist"]) == 1
         captured = capsys.readouterr()
         assert json.loads(captured.err)["detail"].startswith("activity not found")
-        _assert_no_none_fields(json.loads(captured.err))
+        assert_no_none_fields(json.loads(captured.err))
         assert captured.out == ""
 
 
@@ -188,10 +167,10 @@ class TestWeeklyCommand:
         captured = capsys.readouterr()
         assert "syncing sources..." in captured.err
         report = json.loads(captured.out)
-        _assert_no_none_fields(report)
+        assert_no_none_fields(report)
         assert report["period"]["kind"] == "date_range"
         assert all("period" not in metric for metric in report["metrics"])
-        assert _metric(report, "activity.distance_by_week")["value"]["shape"] == "table"
+        assert json_metric(report, "activity.distance_by_week")["value"]["shape"] == "table"
 
     def test_weekly_no_sync_serves_empty_cache(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -199,10 +178,10 @@ class TestWeeklyCommand:
         assert main(["-c", str(config_path), "weekly", "--no-sync"]) == 0
         captured = capsys.readouterr()
         report = json.loads(captured.out)
-        _assert_no_none_fields(report)
+        assert_no_none_fields(report)
         assert report["period"]["kind"] == "date_range"
         assert all("period" not in metric for metric in report["metrics"])
-        assert all("value" not in metric for metric in _metrics(report))
+        assert all("value" not in metric for metric in json_metrics(report))
         assert "sync" not in captured.err
 
 
@@ -211,11 +190,11 @@ class TestOverviewCommand:
         # Overview synchronizes on its own; no prior list needed.
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
         overview = _stdout_payload(capsys)
-        _assert_no_none_fields(overview)
+        assert_no_none_fields(overview)
         assert all(metric["period"]["kind"] != "trip" for metric in overview["metrics"])
-        assert _metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
-        assert _metric(overview, "data_quality.activity_count")["value"]["value"] == 2
-        assert _metric(overview, "training_form.ctl_by_day")["value"]["shape"] == "table"
+        assert json_metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
+        assert json_metric(overview, "data_quality.activity_count")["value"]["value"] == 2
+        assert json_metric(overview, "training_form.ctl_by_day")["value"]["shape"] == "table"
 
 
 class TestErrorExits:
@@ -277,7 +256,7 @@ class TestSyncThrottleFeedback:
         second = capsys.readouterr()
         assert "sync: skipped (last sync" in second.err
         assert "syncing sources..." not in second.err
-        assert len(_activity_ids(json.loads(second.out))) == 2
+        assert len(json_activity_ids(json.loads(second.out))) == 2
 
     def test_zero_interval_reports_real_sync(
         self, config_path: Path, capsys: pytest.CaptureFixture[str]
@@ -344,7 +323,7 @@ class TestJsonOnlyOutput:
         assert main(["-c", str(config_path), "list"]) == 0
         captured = capsys.readouterr()
         activities = json.loads(captured.out)
-        assert len(_activity_ids(activities)) == 2
+        assert len(json_activity_ids(activities)) == 2
         assert {activity["sport"] for activity in activities} == {"cycling"}
         assert "sync: 2 found" in captured.err
 
@@ -355,12 +334,12 @@ class TestJsonOnlyOutput:
         interactive: None,
     ) -> None:
         assert main(["-c", str(config_path), "--json", "list", "--limit", "1"]) == 0
-        activity_id = next(iter(_activity_ids(_stdout_payload(capsys))))
+        activity_id = next(iter(json_activity_ids(_stdout_payload(capsys))))
 
         assert main(["-c", str(config_path), "show", activity_id]) == 0
         details = _stdout_payload(capsys)
         assert details["activity_id"] == activity_id
-        assert _metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
+        assert json_metric(details, "training_load.hr_trimp")["method"] == "hr_trimp"
 
     def test_overview_emits_json_when_stdout_is_a_tty(
         self,
@@ -370,7 +349,7 @@ class TestJsonOnlyOutput:
     ) -> None:
         assert main(["-c", str(config_path), "overview", "--days", "14"]) == 0
         overview = _stdout_payload(capsys)
-        assert _metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
+        assert json_metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
 
     def test_json_flag_before_and_after_command(
         self,
@@ -379,10 +358,10 @@ class TestJsonOnlyOutput:
         interactive: None,
     ) -> None:
         assert main(["-c", str(config_path), "--json", "list"]) == 0
-        assert len(_activity_ids(json.loads(capsys.readouterr().out))) == 2
+        assert len(json_activity_ids(json.loads(capsys.readouterr().out))) == 2
 
         assert main(["-c", str(config_path), "list", "--json"]) == 0
-        assert len(_activity_ids(json.loads(capsys.readouterr().out))) == 2
+        assert len(json_activity_ids(json.loads(capsys.readouterr().out))) == 2
 
     def test_domain_error_is_json_even_interactive(
         self,

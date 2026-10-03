@@ -5,12 +5,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
+from tests.conftest import T0, StubSource, make_sync_service, stub_activity_content
 from training_stats.adapters.cache import jsonio, schemas
 from training_stats.adapters.cache.locking import acquire_app_lock
 from training_stats.adapters.cache.repository import JsonTrainingRepository
@@ -19,8 +19,6 @@ from training_stats.domain.models import SourceFile
 from training_stats.services.errors import SourceError
 from training_stats.services.state import SyncState
 from training_stats.services.sync import SyncService
-
-T0 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
 
 
 def one_file(duration_s: float = 1800.0) -> dict[str, bytes]:
@@ -34,16 +32,9 @@ def make_sync(
     version: str = "1",
     source: StubSource | None = None,
 ) -> tuple[SyncService, StubSource, Path]:
-    source = source or StubSource(files=files)
-    cache_dir = tmp_path / "cache"
-    config = make_app_config(cache_dir, tmp_path / "src")
-    service = SyncService(
-        sources=[source],
-        processor=make_processor(athlete=config.athlete, analysis_version=version),
-        repository=JsonTrainingRepository(cache_dir),
-        analysis_version=version,
-    )
-    return service, source, cache_dir
+    stub = source or StubSource(files=files)
+    service = make_sync_service(tmp_path, [stub], version=version)
+    return service, stub, tmp_path / "cache"
 
 
 class CountingSource(StubSource):
@@ -61,17 +52,6 @@ class OfflineSource(StubSource):
 
     def list_files(self) -> list[SourceFile]:
         raise SourceError("offline")
-
-
-def make_multi_source_sync(tmp_path: Path, sources: list[StubSource]) -> SyncService:
-    cache_dir = tmp_path / "cache"
-    config = make_app_config(cache_dir, tmp_path / "src")
-    return SyncService(
-        sources=sources,
-        processor=make_processor(athlete=config.athlete, analysis_version="1"),
-        repository=JsonTrainingRepository(cache_dir),
-        analysis_version="1",
-    )
 
 
 def two_stub_sources() -> tuple[StubSource, StubSource]:
@@ -275,13 +255,7 @@ class TestIncrementalSync:
         cache_before = (cache_dir / schemas.CACHE_FILE).read_bytes()
         metadata_before = (cache_dir / schemas.METADATA_FILE).read_bytes()
 
-        config = make_app_config(cache_dir, tmp_path / "src")
-        offline = SyncService(
-            sources=[OfflineSource(name=source.name)],
-            processor=make_processor(athlete=config.athlete, analysis_version="1"),
-            repository=JsonTrainingRepository(cache_dir),
-            analysis_version="1",
-        )
+        offline = make_sync_service(tmp_path, [OfflineSource(name=source.name)])
         result = offline.sync()
         assert result.cache_updated_at is None
         assert (cache_dir / schemas.CACHE_FILE).read_bytes() == cache_before
@@ -298,7 +272,7 @@ class TestIncrementalSync:
 class TestMixedSourceListingFailure:
     def test_failed_source_keeps_rows_while_listed_source_changes(self, tmp_path: Path) -> None:
         cloud, local = two_stub_sources()
-        first = make_multi_source_sync(tmp_path, [cloud, local]).sync()
+        first = make_sync_service(tmp_path, [cloud, local]).sync()
         assert first.files_processed == 2
         cache_dir = tmp_path / "cache"
         prior = JsonTrainingRepository(cache_dir).load_sync_state()
@@ -314,7 +288,7 @@ class TestMixedSourceListingFailure:
                 T0 + timedelta(days=2), "cycling", 7200.0, 200000.0
             )
         }
-        service = make_multi_source_sync(tmp_path, [cloud, OfflineSource(name="local")])
+        service = make_sync_service(tmp_path, [cloud, OfflineSource(name="local")])
         result = service.sync()
 
         assert result.cache_updated_at is not None
@@ -334,7 +308,7 @@ class TestMixedSourceListingFailure:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cloud, local = two_stub_sources()
-        assert make_multi_source_sync(tmp_path, [cloud, local]).sync().files_processed == 2
+        assert make_sync_service(tmp_path, [cloud, local]).sync().files_processed == 2
         cache_dir = tmp_path / "cache"
         snapshot_path = cache_dir / schemas.CACHE_FILE
         snapshot_bytes = snapshot_path.read_bytes()
@@ -342,7 +316,7 @@ class TestMixedSourceListingFailure:
         prior = JsonTrainingRepository(cache_dir).load_sync_state()
         writes = count_snapshot_writes(monkeypatch)
 
-        service = make_multi_source_sync(tmp_path, [cloud, OfflineSource(name="local")])
+        service = make_sync_service(tmp_path, [cloud, OfflineSource(name="local")])
         result = service.sync()
 
         assert result.cache_updated_at is not None

@@ -9,8 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
-from training_stats.adapters.bootstrap import create_service
+from tests.conftest import make_app_config, make_server, stub_activity_content
 from training_stats.adapters.config import (
     AuthConfig,
     ServerConfig,
@@ -71,21 +70,12 @@ def _make_app(tmp_path: Path, with_auth: bool) -> object:
     config = make_app_config(tmp_path / "cache", tmp_path / "src")
     if with_auth:
         config.server.auth = AuthConfig(token_env=TOKEN_ENV)
-    server = create_service(config)
-    server.sync_service.sources = [
-        StubSource(
-            files={
-                "easy.fit": stub_activity_content(
-                    datetime.now(UTC).replace(tzinfo=None, microsecond=0),
-                    "cycling",
-                    3600.0,
-                )
-            }
+    files = {
+        "easy.fit": stub_activity_content(
+            datetime.now(UTC).replace(tzinfo=None, microsecond=0), "cycling", 3600.0
         )
-    ]
-    server.sync_service.processor = make_processor(
-        athlete=config.athlete, analysis_version=server.sync_service.analysis_version
-    )
+    }
+    server = make_server(tmp_path, files, config=config)
     return build_app(server, auth_token=resolve_auth_token(config))
 
 
