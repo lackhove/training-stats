@@ -53,8 +53,8 @@ class PeriodTotalsRow:
 class DailySummaryRow(PeriodTotalsRow):
     """Totals for one local date and sport."""
 
-    date: str = ""
-    sport: str = ""
+    date: date
+    sport: str
 
 
 class _Group:
@@ -143,7 +143,7 @@ def summarize_daily(records: Sequence[ActivityRecord], tz: tzinfo) -> list[Daily
             hard_activity_count=group.hard_activity_count,
             longest_activity_s=group.longest_activity_s,
             longest_activity_id=group.longest_activity_id,
-            date=day.isoformat(),
+            date=day,
             sport=sport,
         )
         for (day, sport), group in groups.items()
@@ -189,7 +189,7 @@ def select_daily(
     filtered = [
         row
         for row in rows
-        if _date_in_range(date.fromisoformat(row.date), start_date, end_date)
+        if _date_in_range(row.date, start_date, end_date)
         and (sport is None or row.sport.lower() == sport.lower())
     ]
     if sport is None:
@@ -199,7 +199,7 @@ def select_daily(
 
 def aggregate_daily(rows: list[DailySummaryRow]) -> list[DailySummaryRow]:
     """Aggregate per-(date, sport) rows into per-date totals."""
-    by_date: dict[str, list[DailySummaryRow]] = {}
+    by_date: dict[date, list[DailySummaryRow]] = {}
     for row in rows:
         by_date.setdefault(row.date, []).append(row)
     return [

@@ -93,10 +93,8 @@ def weekly_summary(
     )
     if today is None:
         today = datetime.now(tz).date()
-    first = min((date.fromisoformat(row.week_start) for row in rows), default=start_date or today)
-    last = max(
-        (date.fromisoformat(row.week_start) for row in rows), default=end_date or today
-    ) + timedelta(days=6)
+    first = min((row.week_start for row in rows), default=start_date or today)
+    last = max((row.week_start for row in rows), default=end_date or today) + timedelta(days=6)
     period = DateRangePeriod(start=start_date or first, end=end_date or last, timezone=str(tz))
     return MetricReport(metrics=_weekly_metrics(rows, period))
 
@@ -121,9 +119,8 @@ def overview_report(
     selected_weekly = select_weekly(daily_to_weekly(daily_all), weeks=4, sport=sport)
     weekly_period = (
         DateRangePeriod(
-            start=min(date.fromisoformat(row.week_start) for row in selected_weekly),
-            end=max(date.fromisoformat(row.week_start) for row in selected_weekly)
-            + timedelta(days=6),
+            start=min(row.week_start for row in selected_weekly),
+            end=max(row.week_start for row in selected_weekly) + timedelta(days=6),
             timezone=str(tz),
         )
         if selected_weekly
@@ -156,7 +153,7 @@ def overview_report(
 def _weekly_metrics(
     rows: Sequence[WeeklySummaryRow], period: DateRangePeriod
 ) -> tuple[Metric, ...]:
-    axis = Axis(name="week_start", values=tuple(row.week_start for row in rows))
+    axis = Axis(name="week_start", values=tuple(row.week_start.isoformat() for row in rows))
     specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
         (
             "activity.count_by_week",
@@ -278,7 +275,7 @@ def _weekly_metrics(
 
 
 def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> tuple[Metric, ...]:
-    axis = Axis(name="date", values=tuple(row.date for row in rows))
+    axis = Axis(name="date", values=tuple(row.date.isoformat() for row in rows))
     specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
         (
             "activity.count_by_day",
@@ -462,11 +459,13 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
     )
     if result.trend_points:
         period = DateRangePeriod(
-            start=date.fromisoformat(result.trend_points[0].date),
+            start=result.trend_points[0].date,
             end=today,
             timezone=timezone,
         )
-        axis = Axis(name="date", values=tuple(point.date for point in result.trend_points))
+        axis = Axis(
+            name="date", values=tuple(point.date.isoformat() for point in result.trend_points)
+        )
         for name, description, attr in (
             ("training_form.ctl_by_day", "Chronic training load by local calendar date.", "ctl"),
             ("training_form.atl_by_day", "Acute training load by local calendar date.", "atl"),

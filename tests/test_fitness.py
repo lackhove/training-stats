@@ -278,8 +278,8 @@ class TestTrainingFormFrom:
         # 2026-06-01 23:40 UTC is already 2026-06-02 in Berlin.
         assert result.history_days == 14
         daily = {point.date: point.daily_load for point in result.trend_points}
-        assert "2026-06-01" not in daily
-        assert daily["2026-06-02"] == 100.0
+        assert date(2026, 6, 1) not in daily
+        assert daily[date(2026, 6, 2)] == 100.0
 
 
 class TestClassificationBands:

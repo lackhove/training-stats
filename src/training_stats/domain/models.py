@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Final, Literal
 
 from .metrics import Metric, TripPeriod
@@ -102,7 +102,7 @@ class SourceIndexEntry:
 class TrainingFormPoint:
     """Daily impulse-response training form point."""
 
-    date: str
+    date: date
     ctl: float
     atl: float
     tsb: float

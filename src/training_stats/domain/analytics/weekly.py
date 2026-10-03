@@ -13,10 +13,10 @@ from .daily import DailySummaryRow, PeriodTotalsRow
 class WeeklySummaryRow(PeriodTotalsRow):
     """Totals for one ISO week and sport, including previous-week comparison."""
 
-    iso_year: int = 0
-    iso_week: int = 0
-    week_start: str = ""
-    sport: str = ""
+    iso_year: int
+    iso_week: int
+    week_start: date
+    sport: str
     load_value_prev: float | None = None
     duration_s_prev: float | None = None
     distance_m_prev: float | None = None
@@ -107,9 +107,8 @@ def daily_to_weekly(daily_rows: list[DailySummaryRow]) -> list[WeeklySummaryRow]
     buckets: dict[tuple[int, int, str], _Aggregator] = {}
     week_starts: dict[tuple[int, int], date] = {}
     for row in daily_rows:
-        day = date.fromisoformat(row.date)
-        iso_year, iso_week = iso_week_key(day)
-        week_starts[(iso_year, iso_week)] = week_start(day)
+        iso_year, iso_week = iso_week_key(row.date)
+        week_starts[(iso_year, iso_week)] = week_start(row.date)
         key = (iso_year, iso_week, row.sport)
         aggregator = buckets.get(key)
         if aggregator is None:
@@ -124,7 +123,7 @@ def daily_to_weekly(daily_rows: list[DailySummaryRow]) -> list[WeeklySummaryRow]
             WeeklySummaryRow(
                 iso_year=iso_year,
                 iso_week=iso_week,
-                week_start=week_starts[(iso_year, iso_week)].isoformat(),
+                week_start=week_starts[(iso_year, iso_week)],
                 sport=sport,
                 activity_count=aggregator.activity_count,
                 duration_s=aggregator.duration_s,
@@ -164,8 +163,8 @@ def select_weekly(
         row
         for row in rows
         if (sport is None or row.sport.lower() == sport.lower())
-        and (start_date is None or date.fromisoformat(row.week_start) >= start_date)
-        and (end_date is None or date.fromisoformat(row.week_start) <= end_date)
+        and (start_date is None or row.week_start >= start_date)
+        and (end_date is None or row.week_start <= end_date)
     ]
     if sport is None:
         filtered = aggregate_weekly(filtered)

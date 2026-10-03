@@ -348,18 +348,18 @@ class TestDailyRowParity:
     def test_exact_rows(self) -> None:
         rows = summarize_daily(RECORDS, TZ)
         assert [row.date for row in rows] == [
-            "2026-04-01",
-            "2026-05-28",
-            "2026-06-02",
-            "2026-06-02",
-            "2026-06-12",
+            date(2026, 4, 1),
+            date(2026, 5, 28),
+            date(2026, 6, 2),
+            date(2026, 6, 2),
+            date(2026, 6, 12),
         ]
         assert [(row.date, row.sport) for row in rows] == [
-            ("2026-04-01", "cycling"),
-            ("2026-05-28", "cycling"),
-            ("2026-06-02", "cycling"),
-            ("2026-06-02", "running"),
-            ("2026-06-12", "cycling"),
+            (date(2026, 4, 1), "cycling"),
+            (date(2026, 5, 28), "cycling"),
+            (date(2026, 6, 2), "cycling"),
+            (date(2026, 6, 2), "running"),
+            (date(2026, 6, 12), "cycling"),
         ]
         cycling = rows[2]
         # act-d has no aggregate metrics at all; act-g carries a non-numeric
@@ -392,7 +392,7 @@ class TestDailyRowParity:
         rows = summarize_daily(RECORDS, TZ)
         # act-b starts 2026-06-01 23:40 UTC, which is 2026-06-02 in Berlin.
         dates = {row.date for row in rows}
-        assert "2026-06-01" not in dates
+        assert date(2026, 6, 1) not in dates
 
     def test_input_order_is_irrelevant(self) -> None:
         assert summarize_daily(RECORDS, TZ) == summarize_daily(list(reversed(RECORDS)), TZ)
@@ -654,15 +654,15 @@ class TestTrainingFormParity:
         assert result.rolling_28d_distance_km == 320.0
         assert result.days_since_60k_ride == 3
         assert len(result.trend_points) == 28
-        assert result.trend_points[0].date == "2026-05-19"
-        assert result.trend_points[-1].date == "2026-06-15"
+        assert result.trend_points[0].date == date(2026, 5, 19)
+        assert result.trend_points[-1].date == date(2026, 6, 15)
         assert result.trend_points[-1].ctl == pytest.approx(result.current_ctl)
 
     def test_days_slices_trend_only(self) -> None:
         result = training_form_from(RECORDS, tz=TZ, days=7, today=TODAY)
         assert result.history_days == 76
         assert len(result.trend_points) == 7
-        assert result.trend_points[0].date == "2026-06-09"
+        assert result.trend_points[0].date == date(2026, 6, 9)
         assert result.current_ctl == pytest.approx(16.203992919332396)
 
     def test_sport_filter_is_case_insensitive(self) -> None:

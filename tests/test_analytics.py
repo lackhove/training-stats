@@ -267,7 +267,7 @@ class TestSummarizeDaily:
         # 23:40 UTC is already the next day in Berlin (UTC+2 in summer).
         start = datetime(2026, 6, 1, 23, 40, tzinfo=UTC)
         rows = summarize_daily([_record("a1", start)], self.TZ)
-        assert rows[0].date == "2026-06-02"
+        assert rows[0].date == date(2026, 6, 2)
 
     def test_grouping_by_sport(self) -> None:
         start = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
@@ -279,8 +279,8 @@ class TestSummarizeDaily:
             self.TZ,
         )
         assert [(row.date, row.sport) for row in rows] == [
-            ("2026-06-01", "cycling"),
-            ("2026-06-01", "running"),
+            (date(2026, 6, 1), "cycling"),
+            (date(2026, 6, 1), "running"),
         ]
 
     def test_grouping_is_case_sensitive(self) -> None:
@@ -293,8 +293,8 @@ class TestSummarizeDaily:
             self.TZ,
         )
         assert [(row.date, row.sport) for row in rows] == [
-            ("2026-06-01", "Cycling"),
-            ("2026-06-01", "cycling"),
+            (date(2026, 6, 1), "Cycling"),
+            (date(2026, 6, 1), "cycling"),
         ]
 
     def test_hard_activity_threshold(self) -> None:
@@ -445,15 +445,15 @@ class TestSelectDaily:
     def test_sport_filter_keeps_per_sport_rows(self) -> None:
         rows = select_daily(self._rows(), sport="CYCLING")
         assert [(row.date, row.sport) for row in rows] == [
-            ("2026-06-01", "cycling"),
-            ("2026-06-02", "cycling"),
+            (date(2026, 6, 1), "cycling"),
+            (date(2026, 6, 2), "cycling"),
         ]
 
     def test_no_sport_merges_to_all(self) -> None:
         rows = select_daily(self._rows())
         assert [(row.date, row.sport) for row in rows] == [
-            ("2026-06-01", "all"),
-            ("2026-06-02", "all"),
+            (date(2026, 6, 1), "all"),
+            (date(2026, 6, 2), "all"),
         ]
         first = rows[0]
         assert first.activity_count == 2
@@ -461,23 +461,23 @@ class TestSelectDaily:
 
     def test_merge_picks_longest(self) -> None:
         rows = select_daily(self._rows())
-        day_one = next(row for row in rows if row.date == "2026-06-01")
+        day_one = next(row for row in rows if row.date == date(2026, 6, 1))
         # 600 s running vs 600 s cycling: max of equal values keeps the first
         # (deterministic) longest id, which is a1 in sorted order.
         assert day_one.longest_activity_s == 600.0
 
     def test_date_range(self) -> None:
         rows = select_daily(self._rows(), start_date=date(2026, 6, 2))
-        assert [row.date for row in rows] == ["2026-06-02"]
+        assert [row.date for row in rows] == [date(2026, 6, 2)]
 
 
 class TestSelectWeekly:
     def _weekly(self) -> list[WeeklySummaryRow]:
         return [
-            _weekly("2026-05-25", 22, "cycling", 100.0, prev=None),
-            _weekly("2026-06-01", 23, "cycling", 200.0, prev=100.0),
-            _weekly("2026-05-25", 22, "running", 50.0, prev=None),
-            _weekly("2026-06-08", 24, "cycling", 300.0, prev=200.0),
+            _weekly(date(2026, 5, 25), 22, "cycling", 100.0, prev=None),
+            _weekly(date(2026, 6, 1), 23, "cycling", 200.0, prev=100.0),
+            _weekly(date(2026, 5, 25), 22, "running", 50.0, prev=None),
+            _weekly(date(2026, 6, 8), 24, "cycling", 300.0, prev=200.0),
         ]
 
     def test_weeks_truncation_newest_first(self) -> None:
@@ -505,8 +505,8 @@ class TestSelectWeekly:
 class TestAggregateWeekly:
     def test_aggregate_weekly_merges_sports_and_prev(self) -> None:
         rows = [
-            _weekly("2026-05-25", 22, "cycling", 100.0, prev=10.0),
-            _weekly("2026-05-25", 22, "running", 50.0, prev=None),
+            _weekly(date(2026, 5, 25), 22, "cycling", 100.0, prev=10.0),
+            _weekly(date(2026, 5, 25), 22, "running", 50.0, prev=None),
         ]
         merged = aggregate_weekly(rows)
         assert len(merged) == 1
@@ -514,11 +514,11 @@ class TestAggregateWeekly:
         assert row.sport == "all"
         assert row.load_value == 150.0
         assert row.load_value_prev == 10.0
-        assert row.week_start == "2026-05-25"
+        assert row.week_start == date(2026, 5, 25)
 
 
 def _weekly(
-    week_start: str, iso_week: int, sport: str, load: float, prev: float | None
+    week_start: date, iso_week: int, sport: str, load: float, prev: float | None
 ) -> WeeklySummaryRow:
     return WeeklySummaryRow(
         iso_year=2026,
@@ -542,9 +542,9 @@ def _weekly(
     )
 
 
-def _daily(date: str, load: float) -> DailySummaryRow:
+def _daily(day: date, load: float) -> DailySummaryRow:
     return DailySummaryRow(
-        date=date,
+        date=day,
         sport="cycling",
         activity_count=1,
         duration_s=1800.0,

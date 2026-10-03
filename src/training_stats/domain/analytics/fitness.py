@@ -70,7 +70,7 @@ def compute_form_curves(
         tsb = ctl - atl
         points.append(
             TrainingFormPoint(
-                date=current.isoformat(),
+                date=current,
                 ctl=ctl,
                 atl=atl,
                 tsb=tsb,
