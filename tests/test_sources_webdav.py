@@ -156,8 +156,9 @@ def test_authentication_failure() -> None:
         return httpx.Response(401)
 
     source = make_source(handler)
-    with pytest.raises(AuthenticationError, match="401"):
+    with pytest.raises(AuthenticationError) as exc_info:
         source.list_files()
+    assert str(exc_info.value) == "webdav source 'nextcloud': authentication failed (HTTP 401)"
 
 
 def test_download_404() -> None:
@@ -167,8 +168,9 @@ def test_download_404() -> None:
         return httpx.Response(404)
 
     source = make_source(handler)
-    with pytest.raises(RemoteFileError, match="not found"):
+    with pytest.raises(RemoteFileError) as exc_info:
         source.read_file(source.list_files()[0])
+    assert str(exc_info.value) == "webdav source 'nextcloud': remote file not found: ride1.FIT"
 
 
 def test_directory_404() -> None:
@@ -176,8 +178,12 @@ def test_directory_404() -> None:
         return httpx.Response(404)
 
     source = make_source(handler)
-    with pytest.raises(SourceError, match="not found"):
+    with pytest.raises(SourceError) as exc_info:
         source.list_files()
+    assert (
+        str(exc_info.value)
+        == "webdav source 'nextcloud': remote directory not found: 'Garmin/Activities'"
+    )
 
 
 def test_timeout() -> None:
@@ -214,8 +220,11 @@ def test_unexpected_status() -> None:
         return httpx.Response(500)
 
     source = make_source(handler)
-    with pytest.raises(RemoteFileError, match="500"):
+    with pytest.raises(RemoteFileError) as exc_info:
         source.list_files()
+    assert (
+        str(exc_info.value) == "webdav source 'nextcloud': unexpected HTTP status 500 while listing"
+    )
 
 
 def test_unlisted_status_is_covered_by_raise_for_status() -> None:
@@ -236,8 +245,26 @@ def test_download_unlisted_status_is_covered_by_raise_for_status() -> None:
         return httpx.Response(403)
 
     source = make_source(handler)
-    with pytest.raises(RemoteFileError, match="403"):
+    with pytest.raises(RemoteFileError) as exc_info:
         source.read_file(source.list_files()[0])
+    assert (
+        str(exc_info.value)
+        == "webdav source 'nextcloud': unexpected HTTP status 403 downloading ride1.FIT"
+    )
+
+
+def test_download_authentication_failure() -> None:
+    """A 401 on download maps to the same authentication error as on listing."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PROPFIND":
+            return httpx.Response(207, text=PROPFIND_RESPONSE)
+        return httpx.Response(401)
+
+    source = make_source(handler)
+    with pytest.raises(AuthenticationError) as exc_info:
+        source.read_file(source.list_files()[0])
+    assert str(exc_info.value) == "webdav source 'nextcloud': authentication failed (HTTP 401)"
 
 
 def test_non_recursive_uses_depth_1() -> None:

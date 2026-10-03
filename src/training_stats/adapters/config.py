@@ -168,6 +168,20 @@ class WebDAVCredentials:
         return "WebDAVCredentials(username=***, password=***)"
 
 
+def _require_env(name: str, context: str, missing: str) -> str:
+    """Read a required environment variable for ``context``.
+
+    ``context`` is the message prefix including its colon and ``missing``
+    describes the unset/empty state. Error messages name the variable, never
+    its value.
+    """
+    value = os.environ.get(name)
+    if not value:
+        msg = f"{context} environment variable {name!r} {missing}"
+        raise ConfigurationError(msg)
+    return value
+
+
 def resolve_webdav_credentials(config: AppConfig) -> dict[str, WebDAVCredentials]:
     """Resolve environment credentials for all WebDAV sources.
 
@@ -177,20 +191,9 @@ def resolve_webdav_credentials(config: AppConfig) -> dict[str, WebDAVCredentials
     resolved: dict[str, WebDAVCredentials] = {}
     for source in config.sources:
         if isinstance(source, WebDAVSourceConfig):
-            username = os.environ.get(source.username_env)
-            password = os.environ.get(source.password_env)
-            if not username:
-                msg = (
-                    f"webdav source {source.name!r}: environment variable "
-                    f"{source.username_env!r} is not set"
-                )
-                raise ConfigurationError(msg)
-            if not password:
-                msg = (
-                    f"webdav source {source.name!r}: environment variable "
-                    f"{source.password_env!r} is not set"
-                )
-                raise ConfigurationError(msg)
+            context = f"webdav source {source.name!r}:"
+            username = _require_env(source.username_env, context, "is not set")
+            password = _require_env(source.password_env, context, "is not set")
             resolved[source.name] = WebDAVCredentials(
                 username=SecretStr(username), password=SecretStr(password)
             )
@@ -206,10 +209,7 @@ def resolve_auth_token(config: AppConfig) -> SecretStr | None:
     auth = config.server.auth
     if auth is None:
         return None
-    token = os.environ.get(auth.token_env)
-    if not token:
-        msg = f"server.auth: environment variable {auth.token_env!r} is not set or empty"
-        raise ConfigurationError(msg)
+    token = _require_env(auth.token_env, "server.auth:", "is not set or empty")
     return SecretStr(token)
 
 

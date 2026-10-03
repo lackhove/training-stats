@@ -136,6 +136,9 @@ class TestRawFitData:
         session_rows = decoded.frame.filter(pl.col("message_type") == "session")
         assert session_rows["sport"][0] == "cycling"
         assert session_rows["sub_sport"][0] == "generic"
+        # Session rows carry no record fields; the schema fills them with nulls.
+        assert session_rows["heart_rate"][0] is None
+        assert session_rows["distance_m"][0] is None
 
 
 class TestCadenceParsing:
@@ -165,6 +168,14 @@ class TestCadenceParsing:
         assert row is not None
         assert row["cadence"] is None
         assert row["fractional_cadence"] is None
+        # Rows carry no null padding: the declared schema fills the absent
+        # columns (and every column a record row never provides) with nulls.
+        frame = pl.DataFrame([row], schema=FitData.SCHEMA)
+        assert frame.schema == pl.Schema(FitData.SCHEMA)
+        assert frame["cadence"][0] is None
+        assert frame["fractional_cadence"][0] is None
+        assert frame["sport"][0] is None
+        assert frame["event"][0] is None
 
 
 class TestMalformedInput:

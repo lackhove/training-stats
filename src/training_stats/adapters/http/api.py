@@ -41,23 +41,19 @@ _SYNC_NOTE = (
 
 
 # -- error handlers ------------------------------------------------------------
+# Starlette dispatches an exception to the handler registered for its class or
+# a base class, so each handler only ever sees its own exception type.
 
 
 async def _value_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    if not isinstance(exc, ValueError):
-        raise exc
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 async def _lookup_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    if not isinstance(exc, LookupError):
-        raise exc
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
 async def _training_stats_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    if not isinstance(exc, TrainingStatsError):
-        raise exc
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 

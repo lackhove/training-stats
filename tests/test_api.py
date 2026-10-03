@@ -7,11 +7,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import StubSource, make_app_config, make_processor, stub_activity_content
 from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.http.api import build_app
+from training_stats.domain.errors import TrainingStatsError
 from training_stats.services.results import SyncResult
 from training_stats.services.training import TrainingStatsService
 
@@ -175,6 +177,27 @@ class TestValidation:
             assert client.get("/activities", params={"limit": 501}).status_code == 422
             assert client.get("/weekly", params={"weeks": 0}).status_code == 422
             assert client.get("/overview", params={"days": 0}).status_code == 422
+
+
+class TestErrorHandlers:
+    @pytest.mark.parametrize(
+        ("error", "status"),
+        [(ValueError, 400), (LookupError, 404), (TrainingStatsError, 500)],
+    )
+    def test_registered_handler_keeps_status_and_detail_body(
+        self, tmp_path: Path, error: type[Exception], status: int
+    ) -> None:
+        server = _make_server(tmp_path, _stub_files())
+
+        def raising(*args: object, **kwargs: object) -> None:
+            raise error("handler failure")
+
+        server.overview = raising  # type: ignore[method-assign]
+        with _client(server) as client:
+            response = client.get("/overview")
+        assert response.status_code == status
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json() == {"detail": "handler failure"}
 
 
 class TestSummaryEndpoints:

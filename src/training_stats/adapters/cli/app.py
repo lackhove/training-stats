@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -21,8 +21,7 @@ from cyclopts.exceptions import CycloptsError
 
 from ... import __version__
 from ...domain.errors import TrainingStatsError
-from ...domain.metrics import MetricReport
-from ...domain.models import ActivityRecord, ActivitySummary
+from ...domain.models import ActivitySummary
 from ...services.results import SyncResult, ThrottledSync
 from ...services.training import TrainingStatsService
 from .. import wire
@@ -125,26 +124,26 @@ def _service(config_path: Path | None) -> TrainingStatsService:
     return _service_context(config_path)[1]
 
 
-def _emit(
-    payload: MetricReport | ActivityRecord | tuple[ActivitySummary, ...],
-    *,
-    report_serializer: Callable[
-        [MetricReport], wire.MetricReportWire | wire.WeeklyReportWire
-    ] = wire.metric_report,
-) -> None:
-    """Serialize command output as JSON."""
-    if isinstance(payload, MetricReport):
-        report_payload = report_serializer(payload).model_dump(mode="json", exclude_none=True)
-        print(json.dumps(report_payload, indent=2))
-    elif isinstance(payload, tuple):
-        activities_payload = [
-            activity.model_dump(mode="json", exclude_none=True)
-            for activity in wire.activity_summaries(payload)
+def _emit(payload: object) -> None:
+    """Serialize one JSON payload on stdout."""
+    print(json.dumps(payload, indent=2))
+
+
+def _emit_summaries(summaries: tuple[ActivitySummary, ...]) -> None:
+    """Serialize activity summaries as a JSON array on stdout."""
+    _emit(
+        [
+            summary.model_dump(mode="json", exclude_none=True)
+            for summary in wire.activity_summaries(summaries)
         ]
-        print(json.dumps(activities_payload, indent=2))
-    else:
-        activity_payload = wire.activity_record(payload).model_dump(mode="json", exclude_none=True)
-        print(json.dumps(activity_payload, indent=2))
+    )
+
+
+def _emit_wire(
+    payload: wire.ActivityRecordWire | wire.MetricReportWire | wire.WeeklyReportWire,
+) -> None:
+    """Serialize one wire model on stdout."""
+    _emit(payload.model_dump(mode="json", exclude_none=True))
 
 
 @app.meta.default
@@ -220,13 +219,15 @@ def list_activities(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(service.list_activities(start_date=start, end_date=end, sport=sport, limit=limit))
+    _emit_summaries(
+        service.list_activities(start_date=start, end_date=end, sport=sport, limit=limit)
+    )
 
 
 @app.command
 def show(activity_id: str, config: ConfigArg = None, json_output: JsonFlag = False) -> None:
     """Show one activity record with its metrics."""
-    _emit(_service(config).get_activity(activity_id))
+    _emit_wire(wire.activity_record(_service(config).get_activity(activity_id)))
 
 
 @app.command
@@ -243,9 +244,10 @@ def weekly(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(
-        service.weekly_summary(start_date=start, end_date=end, weeks=weeks, sport=sport),
-        report_serializer=wire.weekly_report,
+    _emit_wire(
+        wire.weekly_report(
+            service.weekly_summary(start_date=start, end_date=end, weeks=weeks, sport=sport)
+        )
     )
 
 
@@ -261,7 +263,7 @@ def overview(
     service = _service(config)
     if sync_first:
         _print_sync_feedback(service.sync_if_due())
-    _emit(service.overview(days=days, sport=sport))
+    _emit_wire(wire.metric_report(service.overview(days=days, sport=sport)))
 
 
 def _startup_sync(service: TrainingStatsService) -> SyncResult:

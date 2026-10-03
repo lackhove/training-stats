@@ -50,7 +50,6 @@ def _write_tmp(path: Path, writer: Callable[[Path], None]) -> Path:
         os.close(descriptor)
         tmp_path = Path(name)
         writer(tmp_path)
-        _fsync_file(tmp_path)
     except OSError as exc:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
@@ -64,15 +63,9 @@ def _write_tmp(path: Path, writer: Callable[[Path], None]) -> Path:
     return tmp_path
 
 
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _write_json(payload: dict[str, object], target: Path) -> None:
+    # Durability: the payload is flushed and fsynced before the file is closed,
+    # so the temporary file is on disk when write_json_atomic replaces it.
     with open(target, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
         handle.flush()

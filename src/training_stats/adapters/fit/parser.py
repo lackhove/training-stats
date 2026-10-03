@@ -1,4 +1,9 @@
-"""Concrete FIT decoder adapter backed by ``fitdecode``."""
+"""Concrete FIT decoder adapter backed by ``fitdecode``.
+
+Rows carry only the fields their message provides; the declared
+``FitData.SCHEMA`` fills absent columns with nulls and fixes dtypes, so
+session, record and event rows may omit fields freely.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,6 @@ import polars as pl
 from ...domain.errors import FitParseError
 from ...domain.fit.types import FitData
 from ...domain.models import SourceFile
-from .normalize import coerce_float, coerce_int, coerce_str
 
 
 class FitDecodeParser:
@@ -50,17 +54,8 @@ class FitDecodeParser:
 def _parse_session_metadata(frame: fitdecode.FitDataMessage) -> dict[str, object]:
     return {
         "message_type": "session",
-        "timestamp": None,
-        "heart_rate": None,
-        "cadence": None,
-        "fractional_cadence": None,
-        "distance_m": None,
-        "altitude_m": None,
-        "speed_mps": None,
         "sport": coerce_str(frame.get_value("sport", fallback=None)),
         "sub_sport": coerce_str(frame.get_value("sub_sport", fallback=None)),
-        "event": None,
-        "event_type": None,
     }
 
 
@@ -77,10 +72,6 @@ def _parse_record_row(frame: fitdecode.FitDataMessage) -> dict[str, object] | No
         "distance_m": coerce_float(frame.get_value("distance", fallback=None)),
         "altitude_m": _altitude(frame),
         "speed_mps": _speed(frame, "enhanced_speed", "speed"),
-        "sport": None,
-        "sub_sport": None,
-        "event": None,
-        "event_type": None,
     }
 
 
@@ -93,14 +84,6 @@ def _parse_timer_event(frame: fitdecode.FitDataMessage) -> dict[str, object] | N
     return {
         "message_type": "event",
         "timestamp": _ensure_utc(timestamp),
-        "heart_rate": None,
-        "cadence": None,
-        "fractional_cadence": None,
-        "distance_m": None,
-        "altitude_m": None,
-        "speed_mps": None,
-        "sport": None,
-        "sub_sport": None,
         "event": event,
         "event_type": event_type,
     }
@@ -126,3 +109,34 @@ def _altitude(frame: fitdecode.FitDataMessage) -> float | None:
     if value is None:
         value = coerce_float(frame.get_value("altitude", fallback=None))
     return value
+
+
+def coerce_float(value: object) -> float | None:
+    """Convert a FIT field value to ``float``, mapping invalid values to ``None``."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        result = float(value)
+        return None if result != result else result  # filter NaN
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def coerce_int(value: object) -> int | None:
+    """Convert a FIT field value to ``int``, mapping invalid values to ``None``."""
+    as_float = coerce_float(value)
+    if as_float is None:
+        return None
+    return round(as_float)
+
+
+def coerce_str(value: object) -> str | None:
+    """Convert a FIT field value to a cleaned lowercase string or ``None``."""
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower()
+    return cleaned or None

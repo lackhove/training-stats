@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import NoReturn
+from typing import Literal, NoReturn
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
 
@@ -74,21 +74,40 @@ class WebDAVSource(ActivitySource):
             )
             raise SourceError(msg) from exc
         except httpx.HTTPStatusError as exc:
-            self._raise_listing_status(exc)
+            self._raise_status(exc, operation="listing")
         except httpx.HTTPError as exc:
             msg = f"webdav source {self.name!r}: listing failed: {type(exc).__name__}"
             raise SourceError(msg) from exc
         return self._parse_propfind(response.text)
 
-    def _raise_listing_status(self, exc: httpx.HTTPStatusError) -> NoReturn:
+    def _raise_status(
+        self,
+        exc: httpx.HTTPStatusError,
+        *,
+        operation: Literal["listing", "download"],
+        path: str = "",
+    ) -> NoReturn:
+        """Map an HTTP error status onto the matching source error.
+
+        ``operation="listing"`` reports the configured collection; a ``path``
+        names the file a download was requested for.
+        """
         status = exc.response.status_code
         if status == 401:
             msg = f"webdav source {self.name!r}: authentication failed (HTTP 401)"
             raise AuthenticationError(msg) from exc
-        if status == 404:
-            msg = f"webdav source {self.name!r}: remote directory not found: {self.config.path!r}"
-            raise SourceError(msg) from exc
-        msg = f"webdav source {self.name!r}: unexpected HTTP status {status} while listing"
+        if operation == "listing":
+            if status == 404:
+                msg = (
+                    f"webdav source {self.name!r}: remote directory not found: {self.config.path!r}"
+                )
+                raise SourceError(msg) from exc
+            msg = f"webdav source {self.name!r}: unexpected HTTP status {status} while listing"
+        else:
+            if status == 404:
+                msg = f"webdav source {self.name!r}: remote file not found: {path}"
+                raise RemoteFileError(msg) from exc
+            msg = f"webdav source {self.name!r}: unexpected HTTP status {status} downloading {path}"
         raise RemoteFileError(msg) from exc
 
     def _parse_propfind(self, body: str) -> list[SourceFile]:
@@ -160,22 +179,11 @@ class WebDAVSource(ActivitySource):
             msg = f"webdav source {self.name!r}: download timed out: {source_file.path}"
             raise RemoteFileError(msg) from exc
         except httpx.HTTPStatusError as exc:
-            self._raise_download_status(exc, source_file.path)
+            self._raise_status(exc, operation="download", path=source_file.path)
         except httpx.HTTPError as exc:
             msg = f"webdav source {self.name!r}: download failed: {type(exc).__name__}"
             raise RemoteFileError(msg) from exc
         return response.content
-
-    def _raise_download_status(self, exc: httpx.HTTPStatusError, path: str) -> NoReturn:
-        status = exc.response.status_code
-        if status == 401:
-            msg = f"webdav source {self.name!r}: authentication failed (HTTP 401)"
-            raise AuthenticationError(msg) from exc
-        if status == 404:
-            msg = f"webdav source {self.name!r}: remote file not found: {path}"
-            raise RemoteFileError(msg) from exc
-        msg = f"webdav source {self.name!r}: unexpected HTTP status {status} downloading {path}"
-        raise RemoteFileError(msg) from exc
 
     def _client(self) -> httpx.Client:
         # One client per source so connections are reused across requests.

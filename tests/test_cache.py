@@ -116,6 +116,23 @@ class TestAtomicJson:
         broken.write_text("not json")
         assert jsonio.read_json(broken) is None
 
+    def test_write_fsyncs_once_before_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Durability: one fsync of the temporary file, before os.replace."""
+        syncs: list[int] = []
+        real_fsync = os.fsync
+
+        def counting_fsync(descriptor: int) -> None:
+            syncs.append(descriptor)
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        path = tmp_path / "cache.json"
+        jsonio.write_json_atomic({"value": [1, 2, 3]}, path)
+        assert len(syncs) == 1
+        assert jsonio.read_json(path) == {"value": [1, 2, 3]}
+
 
 class TestAppLock:
     def test_acquire_is_idempotent(self, tmp_path: Path) -> None:
