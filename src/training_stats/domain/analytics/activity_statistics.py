@@ -3,10 +3,12 @@
 Each public producer takes one ``ParsedActivity`` plus only the explicit
 athlete or quality configuration it needs, derives its narrow facts from the
 record helpers in ``statistics_records`` and constructs its metrics with
-literal names, descriptions, units, kinds and missing reasons. Producers may
-re-read the records rather than sharing one summary object. The public
-functions are grouped per output family; ``compute_activity_statistics`` is
-the thin composer over them.
+literal names, descriptions, units, kinds and missing reasons. Standalone
+calls build their own interval pass; ``compute_activity_statistics`` builds
+the intervals once and threads that shared sequence through every family via
+the private keyword-only ``intervals`` parameter, so the composition scans the
+record columns a single time. The public functions are grouped per output
+family; ``compute_activity_statistics`` is the thin composer over them.
 """
 
 from __future__ import annotations
@@ -260,26 +262,36 @@ def compute_activity_statistics(
     quality: QualityConfig,
 ) -> tuple[Metric, ...]:
     """Return detailed distribution, window, relationship, and heatmap metrics."""
+    intervals = tuple(build_intervals(activity))
     return (
-        *speed_metrics(activity, quality),
-        *heart_rate_metrics(activity),
-        *cadence_metrics(activity, quality),
-        *zone_metrics(activity, athlete),
-        *time_window_metrics(activity, quality),
-        *efficiency_metrics(activity, athlete, quality),
-        *fatigue_response_metrics(activity, athlete, quality),
-        *relationship_metrics(activity, quality),
-        *heatmap_metrics(activity, quality),
-        *sensor_quality_metrics(activity, quality),
+        *speed_metrics(activity, quality, intervals=intervals),
+        *heart_rate_metrics(activity, intervals=intervals),
+        *cadence_metrics(activity, quality, intervals=intervals),
+        *zone_metrics(activity, athlete, intervals=intervals),
+        *time_window_metrics(activity, quality, intervals=intervals),
+        *efficiency_metrics(activity, athlete, quality, intervals=intervals),
+        *fatigue_response_metrics(activity, athlete, quality, intervals=intervals),
+        *relationship_metrics(activity, quality, intervals=intervals),
+        *heatmap_metrics(activity, quality, intervals=intervals),
+        *sensor_quality_metrics(activity, quality, intervals=intervals),
     )
 
 
-def speed_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def _intervals(
+    activity: ParsedActivity, intervals: Sequence[Interval] | None
+) -> Sequence[Interval]:
+    """Reuse the composer's shared interval pass, or build one when standalone."""
+    return build_intervals(activity) if intervals is None else intervals
+
+
+def speed_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Speed distribution, time above configured thresholds and coverage ratios."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.speed_statistics"
     short = is_short_activity(activity)
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     samples: list[tuple[float, float]] = []
     valid_samples = 0
@@ -306,27 +318,30 @@ def speed_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Met
     )
     if short:
         return tuple(metrics)
-    threshold_seconds = {float(f"{threshold:g}"): 0.0 for threshold in quality.speed_thresholds_kmh}
-    for speed, weight in samples:
-        for threshold in quality.speed_thresholds_kmh:
-            if speed >= threshold:
-                threshold_seconds[float(f"{threshold:g}")] += weight
-    metrics.append(
-        table_metric(
-            f"{prefix}.speed_above_threshold_s.seconds",
-            period,
-            Axis(
-                name="threshold_kmh",
-                values=tuple(threshold_seconds),
-                unit="km/h",
-            ),
-            tuple(threshold_seconds.values()),
-            description="Time spent at or above each configured speed threshold.",
-            unit="s",
-            kind=MetricKind.CALCULATED,
-            time_basis=TimeBasis.MOVING_TIME,
+    if quality.speed_thresholds_kmh:
+        threshold_seconds = {
+            float(f"{threshold:g}"): 0.0 for threshold in quality.speed_thresholds_kmh
+        }
+        for speed, weight in samples:
+            for threshold in quality.speed_thresholds_kmh:
+                if speed >= threshold:
+                    threshold_seconds[float(f"{threshold:g}")] += weight
+        metrics.append(
+            table_metric(
+                f"{prefix}.speed_above_threshold_s.seconds",
+                period,
+                Axis(
+                    name="threshold_kmh",
+                    values=tuple(threshold_seconds),
+                    unit="km/h",
+                ),
+                tuple(threshold_seconds.values()),
+                description="Time spent at or above each configured speed threshold.",
+                unit="s",
+                kind=MetricKind.CALCULATED,
+                time_basis=TimeBasis.MOVING_TIME,
+            )
         )
-    )
     metrics.append(
         scalar_metric(
             f"{prefix}.valid_moving_time_ratio",
@@ -363,11 +378,13 @@ def speed_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Met
     return tuple(metrics)
 
 
-def heart_rate_metrics(activity: ParsedActivity) -> tuple[Metric, ...]:
+def heart_rate_metrics(
+    activity: ParsedActivity, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Heart-rate distribution and its five-beat-per-minute histogram."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.heart_rate_statistics"
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     samples = [
         (interval.heart_rate, interval.active_s)
         for interval in intervals
@@ -402,12 +419,14 @@ def heart_rate_metrics(activity: ParsedActivity) -> tuple[Metric, ...]:
     return tuple(metrics)
 
 
-def cadence_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def cadence_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Cadence availability, distributions, pedaling time and cadence bands."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.cadence_statistics"
     short = is_short_activity(activity)
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     moving = moving_time_s(activity, intervals, threshold_mps)
     samples: list[tuple[float, float]] = []
@@ -521,11 +540,13 @@ def cadence_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[M
     return tuple(metrics)
 
 
-def zone_metrics(activity: ParsedActivity, athlete: AthleteConfig) -> tuple[Metric, ...]:
+def zone_metrics(
+    activity: ParsedActivity, athlete: AthleteConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Activity-level heart-rate zone time, percent and denominator."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.zone_distribution"
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     zone_bounds = athlete.heart_rate_zones.as_bounds()
     seconds = [0.0] * 5
     valid_time_s = 0.0
@@ -585,7 +606,9 @@ def zone_metrics(activity: ParsedActivity, athlete: AthleteConfig) -> tuple[Metr
     )
 
 
-def time_window_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def time_window_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Five-minute window scalars, per-window tables and the movement variant."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.time_windows"
@@ -602,7 +625,7 @@ def time_window_metrics(activity: ParsedActivity, quality: QualityConfig) -> tup
     ]
     if is_short_activity(activity):
         return tuple(metrics)
-    windows, movement = _available_windows(activity, quality)
+    windows, movement = _available_windows(activity, quality, intervals=intervals)
     metrics.extend(_window_tables(f"{prefix}.items", "time windows", windows, period))
     if movement:
         metrics.extend(
@@ -630,20 +653,28 @@ def time_window_metrics(activity: ParsedActivity, quality: QualityConfig) -> tup
 
 
 def efficiency_metrics(
-    activity: ParsedActivity, athlete: AthleteConfig, quality: QualityConfig
+    activity: ParsedActivity,
+    athlete: AthleteConfig,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
     """Speed-per-heart-rate efficiency and aerobic decoupling."""
     if is_short_activity(activity):
         return ()
     period = _period(activity)
-    facts = _efficiency_facts(activity, athlete, quality)
+    facts = _efficiency_facts(activity, athlete, quality, intervals=intervals)
     return tuple(
         _efficiency_metrics(f"{_STATISTICS_PREFIX}.efficiency", "efficiency", facts, period)
     )
 
 
 def fatigue_response_metrics(
-    activity: ParsedActivity, athlete: AthleteConfig, quality: QualityConfig
+    activity: ParsedActivity,
+    athlete: AthleteConfig,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
     """Heart-rate drift plus the efficiency values mirrored under fatigue response."""
     period = _period(activity)
@@ -660,11 +691,11 @@ def fatigue_response_metrics(
                 missing_reason=MissingReason.INSUFFICIENT_DATA,
             ),
         )
-    facts = _efficiency_facts(activity, athlete, quality)
+    facts = _efficiency_facts(activity, athlete, quality, intervals=intervals)
     drift = scalar_metric(
         f"{prefix}.heart_rate_drift_bpm_per_hour",
         period,
-        _heart_rate_drift(activity, quality),
+        _heart_rate_drift(activity, quality, intervals=intervals),
         description=DRIFT_DESCRIPTION,
         unit="bpm",
         kind=MetricKind.CALCULATED,
@@ -676,13 +707,15 @@ def fatigue_response_metrics(
     )
 
 
-def relationship_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def relationship_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Spearman and Pearson correlation for each available window relationship."""
     if is_short_activity(activity):
         return ()
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.relationships"
-    windows = _available_windows(activity, quality)[0]
+    windows = _available_windows(activity, quality, intervals=intervals)[0]
     pairs: dict[str, list[tuple[float, float]]] = {
         "speed_heart_rate": [],
         "speed_cadence": [],
@@ -735,13 +768,15 @@ def relationship_metrics(activity: ParsedActivity, quality: QualityConfig) -> tu
     return tuple(metrics)
 
 
-def heatmap_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def heatmap_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Duration and observation matrices for each binned sensor pair."""
     if is_short_activity(activity):
         return ()
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.heatmap_data"
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     cells: dict[str, dict[tuple[int, int], list[float]]] = {
         "heart_rate_speed": defaultdict(lambda: [0.0, 0.0]),
@@ -816,12 +851,14 @@ def heatmap_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[M
     return tuple(metrics)
 
 
-def sensor_quality_metrics(activity: ParsedActivity, quality: QualityConfig) -> tuple[Metric, ...]:
+def sensor_quality_metrics(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> tuple[Metric, ...]:
     """Record-pass counts, outliers and sensor coverage ratios."""
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.data_quality"
     short = is_short_activity(activity)
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     valid_speed = 0
     during_movement = 0
@@ -1207,10 +1244,10 @@ def _weighted_mean(samples: Sequence[tuple[float, float]]) -> float | None:
 
 
 def _available_windows(
-    activity: ParsedActivity, quality: QualityConfig
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
 ) -> tuple[tuple[_Window, ...], tuple[_Window, ...]]:
     """Elapsed-time windows with the optional movement-time variant, cadence-masked."""
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     moving = moving_time_s(activity, intervals, threshold_mps)
     span = activity.duration_s or elapsed_time_s(activity)
@@ -1290,8 +1327,10 @@ def _window_tables(
     return metrics
 
 
-def _heart_rate_drift(activity: ParsedActivity, quality: QualityConfig) -> float | None:
-    windows = _available_windows(activity, quality)[0]
+def _heart_rate_drift(
+    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+) -> float | None:
+    windows = _available_windows(activity, quality, intervals=intervals)[0]
     points: list[tuple[float, float]] = []
     for window in windows:
         heart_rate = window.average_heart_rate_bpm
@@ -1309,9 +1348,13 @@ def _heart_rate_drift(activity: ParsedActivity, quality: QualityConfig) -> float
 
 
 def _efficiency_facts(
-    activity: ParsedActivity, athlete: AthleteConfig, quality: QualityConfig
+    activity: ParsedActivity,
+    athlete: AthleteConfig,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> _EfficiencyFacts:
-    intervals = build_intervals(activity)
+    intervals = _intervals(activity, intervals)
     threshold_mps = quality.moving_speed_threshold_mps
     pairs: list[tuple[float, float, float]] = []
     for interval in intervals:

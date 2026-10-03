@@ -61,17 +61,30 @@ def is_short_activity(activity: ParsedActivity) -> bool:
     records = activity.records
     if records.height < 2:
         return True
-    timestamps = records["timestamp"].to_list()
-    return not isinstance(timestamps[0], datetime) or not isinstance(timestamps[-1], datetime)
+    timestamps = records["timestamp"]
+    return _badly_stamped(timestamps[0], timestamps[-1])
+
+
+def _badly_stamped(first: object, last: object) -> bool:
+    return not isinstance(first, datetime) or not isinstance(last, datetime)
+
+
+def _is_short(timestamps: Sequence[object]) -> bool:
+    return len(timestamps) < 2 or _badly_stamped(timestamps[0], timestamps[-1])
 
 
 def merged_pauses(activity: ParsedActivity) -> tuple[PauseInterval, ...]:
     """Clip and merge the activity's pauses to its record span."""
-    if is_short_activity(activity):
+    records = activity.records
+    if records.height < 2:
         return ()
-    timestamps = activity.records["timestamp"].to_list()
-    first = timestamps[0]
-    last = timestamps[-1]
+    timestamps = records["timestamp"]
+    return _merged_pauses(activity, timestamps[0], timestamps[-1])
+
+
+def _merged_pauses(
+    activity: ParsedActivity, first: object, last: object
+) -> tuple[PauseInterval, ...]:
     if not isinstance(first, datetime) or not isinstance(last, datetime):
         return ()
     return merge_pause_intervals(activity.pause_intervals, first, last)
@@ -138,10 +151,15 @@ def timestamp_issues(activity: ParsedActivity) -> tuple[int, int]:
 def build_intervals(activity: ParsedActivity) -> list[Interval]:
     """Build capped, pause-adjusted intervals with validated sensor samples."""
     records = activity.records
-    if is_short_activity(activity):
-        return []
     timestamps = records["timestamp"].to_list()
-    pauses = merged_pauses(activity)
+    if _is_short(timestamps):
+        return []
+    pauses = _merged_pauses(activity, timestamps[0], timestamps[-1])
+    speed_column = records["speed_mps"]
+    heart_rate_column = records["heart_rate"]
+    cadence_column = records["cadence"]
+    fractional_cadence_column = records["fractional_cadence"]
+    distance_column = records["distance_m"]
     intervals: list[Interval] = []
     elapsed_s = 0.0
     for index in range(records.height - 1):
@@ -159,15 +177,15 @@ def build_intervals(activity: ParsedActivity) -> list[Interval]:
             elapsed_s += dt_s
             continue
 
-        speed, rejected_speed = accept(number(records["speed_mps"][index]), *SPEED_BOUNDS_MPS)
+        speed, rejected_speed = accept(number(speed_column[index]), *SPEED_BOUNDS_MPS)
         heart_rate, rejected_heart_rate = accept(
-            number(records["heart_rate"][index]), *HEART_RATE_BOUNDS_BPM
+            number(heart_rate_column[index]), *HEART_RATE_BOUNDS_BPM
         )
         cadence_rpm, rejected_cadence = _cadence_sample(
-            records["cadence"][index], records["fractional_cadence"][index]
+            cadence_column[index], fractional_cadence_column[index]
         )
         distance = _distance_delta(
-            records["distance_m"][index], records["distance_m"][index + 1], active_s, dt_s
+            distance_column[index], distance_column[index + 1], active_s, dt_s
         )
 
         intervals.append(

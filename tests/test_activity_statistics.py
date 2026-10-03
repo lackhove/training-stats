@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -11,6 +13,7 @@ import pytest
 
 from tests.conftest import make_athlete
 from training_stats.adapters.wire import activity_record
+from training_stats.domain.analytics import activity_statistics
 from training_stats.domain.analytics.activities import compute_activity_metrics
 from training_stats.domain.analytics.activity_statistics import (
     cadence_metrics,
@@ -25,6 +28,7 @@ from training_stats.domain.analytics.activity_statistics import (
     time_window_metrics,
     zone_metrics,
 )
+from training_stats.domain.analytics.statistics_records import Interval, build_intervals
 from training_stats.domain.fit.types import RECORD_SCHEMA, ParsedActivity, PauseInterval
 from training_stats.domain.metrics import (
     MatrixValue,
@@ -39,6 +43,7 @@ from training_stats.domain.settings import QualityConfig
 
 _DECOUPLING_QUALITY = QualityConfig(decoupling_min_duration_s=600.0)
 _ANALYSIS_VERSION = "test-version"
+_THRESHOLD_METRIC = "activity.statistics.speed_statistics.speed_above_threshold_s.seconds"
 
 VARIANTS: dict[str, tuple[dict[str, bool], QualityConfig]] = {
     "normal": ({"cadence": True}, _DECOUPLING_QUALITY),
@@ -46,6 +51,7 @@ VARIANTS: dict[str, tuple[dict[str, bool], QualityConfig]] = {
     "sparse_cadence": ({"sparse_cadence": True}, QualityConfig()),
     "paused": ({"pause": True}, QualityConfig()),
     "empty": ({"empty": True}, QualityConfig()),
+    "empty_thresholds": ({}, replace(_DECOUPLING_QUALITY, speed_thresholds_kmh=())),
 }
 
 EXPECTED_STATISTICS_COUNTS = {
@@ -54,6 +60,7 @@ EXPECTED_STATISTICS_COUNTS = {
     "sparse_cadence": 131,
     "paused": 158,
     "empty": 74,
+    "empty_thresholds": 142,
 }
 
 EXPECTED_WIRE_DIGESTS = {
@@ -62,6 +69,7 @@ EXPECTED_WIRE_DIGESTS = {
     "sparse_cadence": "261a8aba62931d95d62ea371d84cf3774f6e61b2a974d149337c1b9e7413103d",
     "paused": "efb3a2f958d15333e49d027bf9db16b67ccdbb84947750164c37905eef74bb92",
     "empty": "e71f0b978ce8dea88946ab262ecf84abb47f0cdb87d2e54cea8aa3764ff25244",
+    "empty_thresholds": "3d2bb2020a9a7cc1576e723798129e9aa86bc0b16764d9b36d52b28237aaf774",
 }
 
 EXPECTED_NORMAL_NAMES = (
@@ -294,6 +302,19 @@ def _missing(metrics: tuple[Metric, ...], name: str) -> MissingReason | None:
 
 def _cell(table: TableValue, label: object) -> MetricScalar | None:
     return table.values[table.axis.values.index(label)]  # type: ignore[arg-type]
+
+
+def _count_interval_builds(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    builds = 0
+    original = activity_statistics.build_intervals
+
+    def counting(activity: ParsedActivity) -> list[Interval]:
+        nonlocal builds
+        builds += 1
+        return original(activity)
+
+    monkeypatch.setattr(activity_statistics, "build_intervals", counting)
+    return lambda: builds
 
 
 class TestDetailedActivityStatistics:
@@ -538,3 +559,68 @@ class TestFamilyProducers:
         )
         zones = zone_metrics(activity, make_athlete())
         assert _table(zones, "activity.statistics.zone_distribution.seconds").values
+
+
+class TestSharedIntervalPass:
+    def test_composed_statistics_build_intervals_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        builds = _count_interval_builds(monkeypatch)
+        compute_activity_statistics(_activity(), make_athlete(), _DECOUPLING_QUALITY)
+        assert builds() == 1
+
+    def test_standalone_family_producers_build_their_own_intervals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        builds = _count_interval_builds(monkeypatch)
+        activity = _activity()
+        athlete = make_athlete()
+        quality = _DECOUPLING_QUALITY
+        producers: tuple[tuple[Callable[[], tuple[Metric, ...]], int], ...] = (
+            (lambda: speed_metrics(activity, quality), 1),
+            (lambda: heart_rate_metrics(activity), 1),
+            (lambda: cadence_metrics(activity, quality), 1),
+            (lambda: zone_metrics(activity, athlete), 1),
+            (lambda: time_window_metrics(activity, quality), 1),
+            (lambda: efficiency_metrics(activity, athlete, quality), 1),
+            (lambda: fatigue_response_metrics(activity, athlete, quality), 2),
+            (lambda: relationship_metrics(activity, quality), 1),
+            (lambda: heatmap_metrics(activity, quality), 1),
+            (lambda: sensor_quality_metrics(activity, quality), 1),
+        )
+        for produce, expected_builds in producers:
+            before = builds()
+            produce()
+            assert builds() - before == expected_builds
+        assert builds() == 11
+
+    def test_shared_interval_sequence_suppresses_standalone_builds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        builds = _count_interval_builds(monkeypatch)
+        activity = _activity()
+        athlete = make_athlete()
+        quality = _DECOUPLING_QUALITY
+        shared = build_intervals(activity)
+        speed_metrics(activity, quality, intervals=shared)
+        heart_rate_metrics(activity, intervals=shared)
+        cadence_metrics(activity, quality, intervals=shared)
+        zone_metrics(activity, athlete, intervals=shared)
+        time_window_metrics(activity, quality, intervals=shared)
+        efficiency_metrics(activity, athlete, quality, intervals=shared)
+        fatigue_response_metrics(activity, athlete, quality, intervals=shared)
+        relationship_metrics(activity, quality, intervals=shared)
+        heatmap_metrics(activity, quality, intervals=shared)
+        sensor_quality_metrics(activity, quality, intervals=shared)
+        assert builds() == 0
+
+
+class TestEmptySpeedThresholds:
+    def test_empty_threshold_list_omits_the_threshold_table(self) -> None:
+        quality = replace(_DECOUPLING_QUALITY, speed_thresholds_kmh=())
+        assert quality.speed_thresholds_kmh == ()
+        metrics = compute_activity_statistics(_activity(), make_athlete(), quality)
+        assert all(metric.name != _THRESHOLD_METRIC for metric in metrics)
+        baseline = compute_activity_statistics(_activity(), make_athlete(), _DECOUPLING_QUALITY)
+        assert any(metric.name == _THRESHOLD_METRIC for metric in baseline)
+        assert metrics == tuple(metric for metric in baseline if metric.name != _THRESHOLD_METRIC)
