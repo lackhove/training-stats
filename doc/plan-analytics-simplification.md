@@ -154,3 +154,28 @@ output, local cache files, configuration, or FIT files.
 - Removing the wire layer, source adapters, authentication, process-wide cache
   lock, or atomic-write guarantees. These are intentional boundaries/invariants,
   not needless conversions.
+
+## Reviewed candidate dispositions
+
+- **Preserved all API-visible activity metrics**, even those that appear
+  redundant or have awkward historical metadata. `/activities/{id}` emits the
+  entire metric tuple, so pruning any of those would break the response
+  compatibility requirement.
+- **Kept `MetricReport`** as the ordered report type returned by aggregate
+  analytics and consumed by both wire adapters.
+- **Kept explicit daily/weekly sport-merging behavior.** Weekly previous-period
+  values are derived per sport before merging; collapsing sports earlier can
+  change whether a missing previous value stays missing or becomes a partial
+  total.
+- **Kept the segment `_Facts` intermediate.** It represents pre-acceptance
+  candidate data that may be rejected before an `activity_id` and retained
+  segment identity exist; converting it to a placeholder `ParsedActivity` would
+  add invalid sentinel state and replacement logic.
+- **Kept separate sync log/progress messages and `Outcome` summary values.**
+  Service logs and CLI stderr intentionally have different wording/channels;
+  per-file outcome counters are retained where deriving them from segment rows
+  would require another file-level aggregation.
+- **Kept `--json`** as a documented CLI compatibility option.
+- **Kept distinct `jsonio` exception branches** because their error messages
+  intentionally differ; removed only the redundant second file fsync while
+  retaining fsync-before-replace.
