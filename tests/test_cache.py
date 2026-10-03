@@ -348,6 +348,21 @@ class TestIncrementalSync:
         new_service, _source, _cache_dir = make_sync(tmp_path, source=source)
         assert new_service.sync().files_processed == 1
 
+    def test_invalid_cached_record_triggers_full_reprocessing(self, tmp_path: Path) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, one_file())
+        assert service.sync().files_processed == 1
+        cache_path = cache_dir / schemas.CACHE_FILE
+        payload = json.loads(cache_path.read_text())
+        payload["activities"] = [{}]
+        cache_path.write_text(json.dumps(payload))
+
+        result = service.sync()
+
+        assert result.files_processed == 1
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        assert len(state.activities) == 1
+        assert next(iter(state.activities.values())).activity_id
+
     def test_failed_source_listing_does_not_overwrite_cache(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file())
         service.sync()

@@ -27,7 +27,7 @@ class JsonTrainingRepository(SyncRepository):
         self.cache_dir = cache_dir
 
     def load_sync_state(self) -> SyncState:
-        """Load the cache snapshot; an absent or obsolete format rebuilds empty."""
+        """Load the cache snapshot; invalid data rebuilds from configured sources."""
         payload = jsonio.read_json(self.cache_dir / schemas.CACHE_FILE)
         if payload is None or payload.get("format_version") != schemas.CACHE_FORMAT_VERSION:
             return SyncState(index_rows=[], activities={})
@@ -35,12 +35,12 @@ class JsonTrainingRepository(SyncRepository):
         raw_activities = payload.get("activities", [])
         raw_index = payload.get("source_index", [])
         if not isinstance(raw_activities, list) or not isinstance(raw_index, list):
-            raise CacheError("cache JSON has invalid activity/source-index collections")
+            return SyncState(index_rows=[], activities={})
         try:
             activities = _ACTIVITIES_ADAPTER.validate_python(raw_activities)
             index_rows = _SOURCE_INDEX_ADAPTER.validate_python(raw_index)
-        except ValidationError as exc:
-            raise CacheError("cache JSON contains an invalid domain record") from exc
+        except ValidationError:
+            return SyncState(index_rows=[], activities={})
         return SyncState(
             index_rows=index_rows,
             activities={activity.activity_id: activity for activity in activities},
