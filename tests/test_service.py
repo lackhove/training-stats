@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from tests.conftest import (
     spy_sync_calls,
     stub_activity_content,
 )
+from tests.test_cache import count_snapshot_writes
 from training_stats.adapters.bootstrap import create_service
 from training_stats.adapters.cache import schemas
 from training_stats.adapters.cache.repository import JsonTrainingRepository
@@ -360,6 +362,109 @@ class TestSharedActivityIdSet:
             T0,
             T0 + timedelta(days=1),
         }
+
+
+class BlockingListingSource(StubSource):
+    """Source that parks its first listing until the test releases it."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        super().__init__(files=files)
+        self.listings = 0
+        self.first_listing = threading.Event()
+        self.release_listing = threading.Event()
+        self.extra_listing = threading.Event()
+
+    def list_files(self) -> list[SourceFile]:
+        self.listings += 1
+        if self.listings == 1:
+            self.first_listing.set()
+            self.release_listing.wait(10)
+        else:
+            self.extra_listing.set()
+        return super().list_files()
+
+
+class TestConcurrentSync:
+    def test_sync_if_due_serializes_concurrent_callers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = BlockingListingSource(_stub_files())
+        server = make_server(tmp_path, _stub_files(), interval_s=10.0)
+        server.sync_service.sources = [source]
+        sync_calls = spy_sync_calls(server)
+        writes = count_snapshot_writes(monkeypatch)
+        results: dict[str, SyncResult | ThrottledSync] = {}
+        second_ready = threading.Event()
+
+        def run_first() -> None:
+            results["first"] = server.sync_if_due()
+
+        def run_second() -> None:
+            second_ready.set()
+            results["second"] = server.sync_if_due()
+
+        first = threading.Thread(target=run_first)
+        second = threading.Thread(target=run_second)
+        first.start()
+        try:
+            assert source.first_listing.wait(5)
+            second.start()
+            assert second_ready.wait(5)
+            # The queued caller must wait instead of syncing from the same snapshot.
+            assert not source.extra_listing.wait(0.5)
+        finally:
+            source.release_listing.set()
+            first.join(10)
+            if second.ident is not None:
+                second.join(10)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert source.listings == 1
+        assert sync_calls() == 1
+        assert len(writes) == 1
+        assert isinstance(results["first"], SyncResult)
+        assert results["first"].cache_updated_at is not None
+        assert isinstance(results["second"], ThrottledSync)
+        assert results["second"].seconds_since_last_sync >= 0
+
+    def test_unconditional_sync_serializes_concurrent_calls(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = BlockingListingSource(_stub_files())
+        server = make_server(tmp_path, _stub_files(), interval_s=10.0)
+        server.sync_service.sources = [source]
+        writes = count_snapshot_writes(monkeypatch)
+        results: dict[str, SyncResult] = {}
+        second_ready = threading.Event()
+
+        def run_first() -> None:
+            results["first"] = server.sync_activities()
+
+        def run_second() -> None:
+            second_ready.set()
+            results["second"] = server.sync_activities()
+
+        first = threading.Thread(target=run_first)
+        second = threading.Thread(target=run_second)
+        first.start()
+        try:
+            assert source.first_listing.wait(5)
+            second.start()
+            assert second_ready.wait(5)
+            assert not source.extra_listing.wait(0.5)
+        finally:
+            source.release_listing.set()
+            first.join(10)
+            if second.ident is not None:
+                second.join(10)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert source.listings == 2
+        assert len(writes) == 1
+        assert results["first"].files_processed == 2
+        assert results["second"].files_skipped == 2
 
 
 class TestSyncThrottle:

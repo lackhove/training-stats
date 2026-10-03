@@ -18,7 +18,13 @@ from training_stats.adapters.cache.repository import (
     JsonTrainingRepository,
 )
 from training_stats.adapters.errors import CacheError
-from training_stats.domain.models import SourceFile
+from training_stats.domain.models import (
+    STATUS_DUPLICATE,
+    STATUS_FAILED,
+    STATUS_OK,
+    ActivityRecord,
+    SourceFile,
+)
 from training_stats.services.errors import SourceError
 from training_stats.services.state import SyncState
 from training_stats.services.sync import SyncService
@@ -26,6 +32,17 @@ from training_stats.services.sync import SyncService
 
 def one_file(duration_s: float = 1800.0) -> dict[str, bytes]:
     return {"a.fit": stub_activity_content(T0, "cycling", duration_s, 20000.0)}
+
+
+def duplicate_pair() -> dict[str, bytes]:
+    """Two files holding the same activity: ``a.fit`` accepted, ``b.fit`` duplicate."""
+    shared = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+    return {"a.fit": shared, "b.fit": shared}
+
+
+def _distance_of(record: ActivityRecord) -> object:
+    """Distance value of a record, comparable across rebuilt copies."""
+    return next(metric.value for metric in record.metrics if metric.name == "activity.distance")
 
 
 def make_sync(
@@ -47,6 +64,20 @@ class CountingSource(StubSource):
 
     def read_file(self, source_file: SourceFile) -> bytes:
         self.read_count += 1
+        return super().read_file(source_file)
+
+
+class FlakyReadSource(CountingSource):
+    """Counting source whose reads fail on demand while listing stays intact."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        super().__init__(files)
+        self.read_error: str | None = None
+
+    def read_file(self, source_file: SourceFile) -> bytes:
+        if self.read_error is not None:
+            self.read_count += 1
+            raise SourceError(self.read_error)
         return super().read_file(source_file)
 
 
@@ -242,6 +273,35 @@ class TestIncrementalSync:
         assert len(state.activities) == 1
         assert next(iter(state.activities.values())).start_time.day == 2
 
+    def test_changed_duplicate_file_keeps_the_canonical_activity(self, tmp_path: Path) -> None:
+        """A duplicate-reference row never owns the record another file accepted."""
+        shared = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        unique = stub_activity_content(T0 + timedelta(days=3), "running", 900.0, 10000.0)
+        service, source, cache_dir = make_sync(tmp_path, {"a.fit": shared, "b.fit": shared})
+        first = service.sync()
+        assert first.files_processed == 2
+        assert first.duplicates_detected == 1
+        repository = JsonTrainingRepository(cache_dir)
+        canonical = next(iter(repository.load_sync_state().activities))
+        assert [row.status for row in repository.load_sync_state().index_rows] == [
+            STATUS_OK,
+            STATUS_DUPLICATE,
+        ]
+
+        source.files["b.fit"] = unique
+        second = service.sync()
+
+        assert second.files_processed == 1
+        state = repository.load_sync_state()
+        assert len(state.activities) == 2
+        assert canonical in state.activities
+        accepted = [row for row in state.index_rows if row.status == STATUS_OK]
+        updated_id = next(iter(set(state.activities) - {canonical}))
+        assert {(row.source_path, row.activity_id) for row in accepted} == {
+            ("a.fit", canonical),
+            ("b.fit", updated_id),
+        }
+
     def test_removed_file_is_purged(self, tmp_path: Path) -> None:
         service, source, cache_dir = make_sync(tmp_path, one_file())
         service.sync()
@@ -306,6 +366,268 @@ class TestIncrementalSync:
         content = (cache_dir / schemas.CACHE_FILE).read_text()
         assert '"timestamp"' not in content
         assert '"records":' not in content
+
+
+class TestTransientReadFailure:
+    def test_read_failure_keeps_last_known_good_record(self, tmp_path: Path) -> None:
+        source = FlakyReadSource(one_file())
+        service, _source, cache_dir = make_sync(tmp_path, source=source)
+        assert service.sync().files_processed == 1
+        repository = JsonTrainingRepository(cache_dir)
+        original_id, original = next(iter(repository.load_sync_state().activities.items()))
+
+        source.files["a.fit"] = stub_activity_content(T0.replace(day=2), "cycling", 1800.0, 20000.0)
+        source.read_error = "transient read failure"
+        failed = service.sync()
+
+        assert failed.files_failed == 1
+        assert failed.files_processed == 0
+        state = repository.load_sync_state()
+        assert state.activities == {original_id: original}
+        failure_rows = [row for row in state.index_rows if row.status == STATUS_FAILED]
+        assert len(failure_rows) == 1
+        assert failure_rows[0].source_hash is None
+        assert failure_rows[0].activity_id is None
+        assert failure_rows[0].error_message == "transient read failure"
+        assert any(
+            row.status == STATUS_OK and row.activity_id == original_id for row in state.index_rows
+        )
+
+        source.read_error = None
+        retried = service.sync()
+
+        assert retried.files_processed == 1
+        state = repository.load_sync_state()
+        assert len(state.activities) == 1
+        updated = next(iter(state.activities.values()))
+        assert updated.activity_id != original_id
+        assert updated.start_time.day == 2
+        assert not any(row.status == STATUS_FAILED for row in state.index_rows)
+        assert {row.activity_id for row in state.index_rows if row.status == STATUS_OK} == {
+            updated.activity_id
+        }
+
+    def test_repeated_identical_read_failure_reuses_the_failure_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = FlakyReadSource(one_file())
+        service, _source, cache_dir = make_sync(tmp_path, source=source)
+        assert service.sync().files_processed == 1
+        source.files["a.fit"] = stub_activity_content(T0.replace(day=2), "cycling", 1800.0, 20000.0)
+        source.read_error = "permission denied"
+        assert service.sync().files_failed == 1
+
+        snapshot_path = cache_dir / schemas.CACHE_FILE
+        snapshot_bytes = snapshot_path.read_bytes()
+        snapshot_mtime = snapshot_path.stat().st_mtime_ns
+        writes = count_snapshot_writes(monkeypatch)
+
+        for _ in range(3):
+            assert service.sync().files_failed == 1
+
+        assert writes == []
+        assert snapshot_path.read_bytes() == snapshot_bytes
+        assert snapshot_path.stat().st_mtime_ns == snapshot_mtime
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        failed_rows = [row for row in state.index_rows if row.status == STATUS_FAILED]
+        assert len(failed_rows) == 1
+        assert len(state.activities) == 1
+
+
+class TestDuplicatePromotion:
+    def test_deleted_canonical_promotes_the_unchanged_duplicate(self, tmp_path: Path) -> None:
+        service, source, cache_dir = make_sync(tmp_path, duplicate_pair())
+        first = service.sync()
+        assert first.files_processed == 2
+        assert first.duplicates_detected == 1
+        repository = JsonTrainingRepository(cache_dir)
+        state = repository.load_sync_state()
+        canonical_id, canonical = next(iter(state.activities.items()))
+
+        del source.files["a.fit"]
+        second = service.sync()
+
+        assert second.files_discovered == 1
+        assert second.files_processed == 1
+        assert second.files_skipped == 0
+        assert second.files_failed == 0
+        state = repository.load_sync_state()
+        assert set(state.activities) == {canonical_id}
+        promoted = state.activities[canonical_id]
+        assert promoted.sport == canonical.sport
+        assert promoted.source_path == "b.fit"
+        assert _distance_of(promoted) == _distance_of(canonical)
+        assert [(row.source_path, row.status, row.activity_id) for row in state.index_rows] == [
+            ("b.fit", STATUS_OK, canonical_id)
+        ]
+        assert state.index_rows[0].source_hash is not None
+
+    def test_changed_canonical_promotes_the_stale_duplicate(self, tmp_path: Path) -> None:
+        service, source, cache_dir = make_sync(tmp_path, duplicate_pair())
+        service.sync()
+        repository = JsonTrainingRepository(cache_dir)
+        old_id = next(iter(repository.load_sync_state().activities))
+
+        source.files["a.fit"] = stub_activity_content(
+            T0 + timedelta(days=2), "running", 900.0, 10000.0
+        )
+        second = service.sync()
+
+        assert second.files_processed == 2
+        assert second.files_skipped == 0
+        assert second.duplicates_detected == 0
+        state = repository.load_sync_state()
+        new_id = next(iter(set(state.activities) - {old_id}))
+        assert state.activities[old_id].sport == "cycling"
+        assert state.activities[new_id].sport == "running"
+        assert {(row.source_path, row.activity_id) for row in state.index_rows} == {
+            ("a.fit", new_id),
+            ("b.fit", old_id),
+        }
+        assert all(row.status == STATUS_OK for row in state.index_rows)
+
+    def test_unchanged_duplicate_is_not_reread_while_its_owner_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = CountingSource(duplicate_pair())
+        service, _source, cache_dir = make_sync(tmp_path, source=source)
+        assert service.sync().files_processed == 2
+        assert source.read_count == 2
+        snapshot_path = cache_dir / schemas.CACHE_FILE
+        snapshot_bytes = snapshot_path.read_bytes()
+        writes = count_snapshot_writes(monkeypatch)
+
+        second = service.sync()
+
+        assert second.files_skipped == 2
+        assert second.files_processed == 0
+        assert source.read_count == 2
+        assert writes == []
+        assert snapshot_path.read_bytes() == snapshot_bytes
+
+    def test_failed_source_duplicate_is_not_promoted(self, tmp_path: Path) -> None:
+        shared = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        local = StubSource(name="local", files={"a.fit": shared})
+        cloud = StubSource(name="cloud", files={"b.fit": shared})
+        assert make_sync_service(tmp_path, [local, cloud]).sync().duplicates_detected == 1
+        repository = JsonTrainingRepository(tmp_path / "cache")
+        canonical_id, canonical = next(iter(repository.load_sync_state().activities.items()))
+
+        local.files = {}
+        offline = make_sync_service(tmp_path, [OfflineSource(name="cloud"), local]).sync()
+        assert offline.source_errors == ("cloud: offline",)
+        assert offline.files_processed == 0
+        assert offline.files_failed == 0
+        state = repository.load_sync_state()
+        assert state.activities == {}
+        assert [(row.source_name, row.source_path, row.status) for row in state.index_rows] == [
+            ("cloud", "b.fit", STATUS_DUPLICATE)
+        ]
+
+        cloud.files = {"b.fit": shared}
+        healed = make_sync_service(tmp_path, [cloud, local]).sync()
+
+        assert healed.files_processed == 1
+        state = repository.load_sync_state()
+        assert set(state.activities) == {canonical_id}
+        assert state.activities[canonical_id].sport == canonical.sport
+        assert [(row.source_path, row.status) for row in state.index_rows] == [("b.fit", STATUS_OK)]
+
+    def test_changed_duplicate_promotes_when_its_canonical_was_deleted(
+        self, tmp_path: Path
+    ) -> None:
+        service, source, cache_dir = make_sync(tmp_path, duplicate_pair())
+        service.sync()
+        repository = JsonTrainingRepository(cache_dir)
+        canonical_id = next(iter(repository.load_sync_state().activities))
+
+        del source.files["a.fit"]
+        # Same activity id (start/sport/duration unchanged) with new bytes.
+        source.files["b.fit"] = stub_activity_content(T0, "cycling", 1800.0, 25000.0)
+        second = service.sync()
+
+        assert second.files_processed == 1
+        assert second.files_skipped == 0
+        assert second.files_failed == 0
+        assert second.duplicates_detected == 0
+        state = repository.load_sync_state()
+        assert set(state.activities) == {canonical_id}
+        assert [(row.source_path, row.status) for row in state.index_rows] == [("b.fit", STATUS_OK)]
+
+    def test_promotion_reprocesses_every_segment_of_the_surviving_file(
+        self, tmp_path: Path
+    ) -> None:
+        shared = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        extra = stub_activity_content(T0 + timedelta(days=4), "running", 600.0, 5000.0)
+        service, source, cache_dir = make_sync(
+            tmp_path, {"a.fit": shared, "b.fit": shared + b"\n" + extra}
+        )
+        first = service.sync()
+        assert first.files_processed == 2
+        assert first.duplicates_detected == 1
+        repository = JsonTrainingRepository(cache_dir)
+        original_ids = set(repository.load_sync_state().activities)
+        assert len(original_ids) == 2
+
+        del source.files["a.fit"]
+        second = service.sync()
+
+        assert second.files_processed == 1
+        state = repository.load_sync_state()
+        assert set(state.activities) == original_ids
+        assert [row.source_path for row in state.index_rows] == ["b.fit", "b.fit"]
+        assert [row.status for row in state.index_rows] == [STATUS_OK, STATUS_OK]
+
+    def test_only_one_of_several_copies_is_promoted(self, tmp_path: Path) -> None:
+        shared = stub_activity_content(T0, "cycling", 1800.0, 20000.0)
+        service, source, cache_dir = make_sync(
+            tmp_path, {"a.fit": shared, "b.fit": shared, "c.fit": shared}
+        )
+        first = service.sync()
+        assert first.files_processed == 3
+        assert first.duplicates_detected == 2
+        repository = JsonTrainingRepository(cache_dir)
+        canonical_id = next(iter(repository.load_sync_state().activities))
+
+        del source.files["a.fit"]
+        second = service.sync()
+
+        assert second.files_processed == 1
+        assert second.files_skipped == 1
+        assert second.duplicates_detected == 0
+        state = repository.load_sync_state()
+        assert set(state.activities) == {canonical_id}
+        assert [(row.source_path, row.status) for row in state.index_rows] == [
+            ("b.fit", STATUS_OK),
+            ("c.fit", STATUS_DUPLICATE),
+        ]
+
+    def test_promotion_read_failure_counts_as_failed_and_stays_retryable(
+        self, tmp_path: Path
+    ) -> None:
+        source = FlakyReadSource(duplicate_pair())
+        service, _source, cache_dir = make_sync(tmp_path, source=source)
+        assert service.sync().files_processed == 2
+        repository = JsonTrainingRepository(cache_dir)
+        canonical_id = next(iter(repository.load_sync_state().activities))
+
+        del source.files["a.fit"]
+        source.read_error = "vanished mid-fetch"
+        failed = service.sync()
+
+        assert failed.files_processed == 0
+        assert failed.files_skipped == 0
+        assert failed.files_failed == 1
+        state = repository.load_sync_state()
+        assert state.activities == {}
+        assert [row.status for row in state.index_rows] == [STATUS_DUPLICATE, STATUS_FAILED]
+        assert state.index_rows[1].source_hash is None
+
+        source.read_error = None
+        healed = service.sync()
+
+        assert healed.files_processed == 1
+        assert set(repository.load_sync_state().activities) == {canonical_id}
 
 
 class TestMixedSourceListingFailure:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import UTC, date, datetime
 
@@ -37,18 +38,22 @@ class TrainingStatsService:
         self.repository = repository
         self.tz = settings.timezone
         self._last_sync_monotonic: float | None = None
+        # Query handlers run in a threadpool: one service instance must check
+        # and run the sync as a single critical section.
+        self._sync_lock = threading.RLock()
 
     def sync_if_due(self) -> SyncResult | ThrottledSync:
         """Synchronize unless the last successful sync is recent."""
-        interval = self.settings.sync_min_interval_seconds
-        now = time.monotonic()
-        since = self._seconds_since_last_sync(now)
-        if interval > 0 and since is not None and since < interval:
-            return ThrottledSync(seconds_since_last_sync=round(max(since, 0.0), 1))
-        result = self.sync_activities()
-        if result.cache_updated_at is not None:
-            self._last_sync_monotonic = now
-        return result
+        with self._sync_lock:
+            interval = self.settings.sync_min_interval_seconds
+            now = time.monotonic()
+            since = self._seconds_since_last_sync(now)
+            if interval > 0 and since is not None and since < interval:
+                return ThrottledSync(seconds_since_last_sync=round(max(since, 0.0), 1))
+            result = self.sync_activities()
+            if result.cache_updated_at is not None:
+                self._last_sync_monotonic = now
+            return result
 
     def _seconds_since_last_sync(self, now: float) -> float | None:
         if self._last_sync_monotonic is not None:
@@ -60,23 +65,26 @@ class TrainingStatsService:
 
     def sync_activities(self) -> SyncResult:
         """Synchronize unconditionally; failures leave the existing cache usable."""
-        try:
-            result = self.sync_service.sync()
-        except Exception:
-            logger.warning("activity sync failed; serving cached data", exc_info=True)
-            return SyncResult(
-                files_discovered=0, files_processed=0, files_skipped=0, files_failed=0
-            )
-        if result.source_errors:
-            logger.warning("activity sync reported source errors: %s", list(result.source_errors))
-        if result.files_processed or result.files_failed:
-            logger.info(
-                "activity sync: processed=%d skipped=%d failed=%d",
-                result.files_processed,
-                result.files_skipped,
-                result.files_failed,
-            )
-        return result
+        with self._sync_lock:
+            try:
+                result = self.sync_service.sync()
+            except Exception:
+                logger.warning("activity sync failed; serving cached data", exc_info=True)
+                return SyncResult(
+                    files_discovered=0, files_processed=0, files_skipped=0, files_failed=0
+                )
+            if result.source_errors:
+                logger.warning(
+                    "activity sync reported source errors: %s", list(result.source_errors)
+                )
+            if result.files_processed or result.files_failed:
+                logger.info(
+                    "activity sync: processed=%d skipped=%d failed=%d",
+                    result.files_processed,
+                    result.files_skipped,
+                    result.files_failed,
+                )
+            return result
 
     def list_activities(
         self,
