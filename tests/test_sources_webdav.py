@@ -126,6 +126,57 @@ def test_successful_download() -> None:
     )
 
 
+PROPFIND_RESPONSE_SPACE_PATH = """<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/remote.php/dav/files/alice/Garmin/My%20Rides/</d:href>
+    <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop>
+    <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/files/alice/Garmin/My%20Rides/ride%20one.FIT</d:href>
+    <d:propstat><d:prop>
+      <d:resourcetype/>
+      <d:getcontentlength>4321</d:getcontentlength>
+      <d:getlastmodified>Tue, 12 Aug 2026 08:12:31 GMT</d:getlastmodified>
+    </d:prop>
+    <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/remote.php/dav/files/alice/Other/place.fit</d:href>
+    <d:propstat><d:prop>
+      <d:resourcetype/>
+      <d:getcontentlength>9999</d:getcontentlength>
+    </d:prop>
+    <d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
+
+def test_collection_path_with_space_matches_encoded_propfind_hrefs() -> None:
+    """The quoted collection URL and percent-encoded hrefs compare canonically."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "PROPFIND":
+            return httpx.Response(207, text=PROPFIND_RESPONSE_SPACE_PATH)
+        return httpx.Response(200, content=b"\x00\x01fit-bytes")
+
+    source = make_source(handler, make_config(path="Garmin/My Rides"))
+    files = source.list_files()
+    assert [item.path for item in files] == ["ride one.FIT"]
+    assert files[0].size == 4321
+
+    propfind = seen[0]
+    assert propfind.url.raw_path == b"/remote.php/dav/files/alice/Garmin/My%20Rides/"
+
+    source.read_file(files[0])
+    download = seen[-1]
+    assert download.url.raw_path == b"/remote.php/dav/files/alice/Garmin/My%20Rides/ride%20one.FIT"
+
+
 def test_client_reused_across_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     """PROPFIND + GET + a second listing share one httpx.Client."""
     import training_stats.adapters.sources.webdav as webdav_module

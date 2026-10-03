@@ -57,7 +57,7 @@ class WebDAVSource(ActivitySource):
         base = str(config.base_url).rstrip("/") + "/"
         trimmed_path = config.path.strip("/")
         self._collection_url = base + quote(trimmed_path) + "/" if trimmed_path else base
-        self._collection_path = _url_path(self._collection_url)
+        self._collection_path = _canonical_path(self._collection_url)
 
     def list_files(self) -> list[SourceFile]:
         depth = "infinity" if self.config.recursive else "1"
@@ -122,7 +122,7 @@ class WebDAVSource(ActivitySource):
             href_node = response_node.find(f"{{{_DAV_NS}}}href")
             if href_node is None or href_node.text is None:
                 continue
-            item_path = _url_path(unquote(href_node.text))
+            item_path = _canonical_path(href_node.text)
             if not item_path.startswith(self._collection_path):
                 continue
             relative = item_path[len(self._collection_path) :]
@@ -198,5 +198,12 @@ class WebDAVSource(ActivitySource):
         return self._http_client
 
 
-def _url_path(url: str) -> str:
-    return urlsplit(url).path
+def _canonical_path(url: str) -> str:
+    """Return the percent-decoded path of ``url``.
+
+    PROPFIND hrefs are percent-encoded, and so is the configured collection
+    path once it is placed in the request URL; both are decoded here so the
+    prefix comparison and the derived relative source paths use one canonical
+    representation. Requests keep the quoted form from ``_collection_url``.
+    """
+    return unquote(urlsplit(url).path)
