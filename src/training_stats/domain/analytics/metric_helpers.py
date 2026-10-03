@@ -1,4 +1,4 @@
-"""Small constructors shared by pure metric-producing functions."""
+"""Small constructors and readers shared by pure metric analytics."""
 
 from __future__ import annotations
 
@@ -99,3 +99,13 @@ def table_metric(
         formula=formula,
         coefficient_set=coefficient_set,
     )
+
+
+def metric_number(metric: Metric | None) -> float | None:
+    """Read a cached numeric scalar, rejecting non-numerics and booleans."""
+    if metric is None or not isinstance(metric.value, ScalarValue):
+        return None
+    value = metric.value.value
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)

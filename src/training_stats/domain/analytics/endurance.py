@@ -12,8 +12,8 @@ from datetime import datetime
 import polars as pl
 
 from ..fit.types import PauseInterval
-from .heart_rate import MAX_RECORD_INTERVAL_S
 from .intervals import interval_frame
+from .statistics_records import MAX_INTERVAL_S
 
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_INSUFFICIENT_DURATION = "insufficient_duration"
@@ -45,7 +45,7 @@ def compute_aerobic_decoupling(
     moving_speed_threshold_mps: float = 1.0,
     min_duration_s: float = 1200.0,
     min_coverage: float = 0.80,
-    max_interval_s: float = MAX_RECORD_INTERVAL_S,
+    max_interval_s: float = MAX_INTERVAL_S,
     session_moving_time_s: float | None = None,
     pause_intervals: tuple[PauseInterval, ...] = (),
 ) -> DecouplingResult:

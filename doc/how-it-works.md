@@ -67,12 +67,17 @@ Everything non-secret lives in a TOML file (see `config.example.toml`):
   `heart_rate_zones` (five validated, non-overlapping `(min, max)` bpm bounds)
 - `[[sources]]` — one or more `local` or `webdav` sources; WebDAV
   credentials are referenced by *environment variable name*
-- `[quality]` — repair, sensor-coverage, and speed-threshold settings
+- `[quality]` — repair, sensor-coverage, and speed-threshold settings. In
+  particular, `speed_min_coverage` controls when speed can infer pauses,
+  `max_moving_interval_s` caps time attributed to one record interval, and
+  `forgotten_stop_check_duration_s` controls when the low-moving-time-ratio
+  diagnostic applies.
 - `[cache]` — directory and lock timeout
 
-The analysis version (see §10) is owned by the code, not the config: it is
-the reprocessing switch — when parsing or metric semantics change, the
-version is bumped and the next sync reprocesses every file (current: `"8"`).
+The analysis version (see §10) starts with the code-owned version and includes
+a stable identity for non-default quality settings. Changing an analysis-
+affecting quality setting therefore makes the next sync reprocess unchanged
+files. Default settings retain the current version string (`"8"`).
 
 ---
 
@@ -109,15 +114,18 @@ does not alter timestamps. A pause under 15 minutes remains within a segment.
 
 Analysis identifies pauses from FIT timer stop/start events; if timer events
 are unavailable, it uses record speed below `moving_speed_threshold_mps` as
-the fallback. Pauses remain part of elapsed duration but do not contribute to
-statistics. Analysis drops every segment with less than
+the fallback when at least `speed_min_coverage` of record intervals have speed
+data. Each record interval contributes at most `max_moving_interval_s` to
+interval-based statistics. Pauses remain part of elapsed duration but do not
+contribute to statistics. Analysis drops every segment with less than
 `minimum_segment_duration_s = 300` seconds of moving time, including when all
 segments are short. Such files are indexed as successful source-only outcomes
 and are not retried on every sync.
 
 The `forgotten_stop` diagnostic remains: an activity is flagged when duration
-exceeds 24 hours, or moving-time ratio is below the configured minimum for
-activities longer than two hours. Flagged activities are retained.
+exceeds `forgotten_stop_max_duration_s`, or moving-time ratio is below the
+configured minimum for activities longer than
+`forgotten_stop_check_duration_s`. Flagged activities are retained.
 
 **Repair/hygiene flags:** `segments_discarded` and
 `non_monotonic_timestamps` are file-level; `forgotten_stop` is per activity.
@@ -421,6 +429,12 @@ contain raw time-series data.
 - Bumping the internal `ANALYSIS_VERSION_VALUE` in `adapters/cache/schemas.py`
   forces full reprocessing on the next sync; activity IDs are re-derived
   deterministically.
+- The effective source analysis version also fingerprints all `QualityConfig`
+  values. With default quality settings, `analysis.version` remains the
+  code-only version (currently `"8"`); non-default quality settings add a
+  deterministic `+quality-<sha256>` suffix. That effective identity is stored
+  on source-index rows and exposed in the per-activity `analysis.version`
+  metric, so changing settings recomputes cached activities on the next sync.
 - History: v2 (histogram + 10-min averages + drift), v3 (clock-correction
   start times), v4 (timeline repair, segment splits, records-derived moving
   time, UTC-canonical activity IDs).

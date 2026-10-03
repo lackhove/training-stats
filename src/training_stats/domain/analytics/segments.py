@@ -20,10 +20,6 @@ from ..settings import AthleteConfig, QualityConfig
 from .activities import AnalyzedActivity, compute_activity_metrics
 from .intervals import interval_frame, is_paused, merge_pause_intervals
 
-_MIN_SPEED_COVERAGE = 0.5
-_MAX_MOVING_INTERVAL_S = 30.0
-_FORGOTTEN_STOP_CHECK_DURATION_S = 7200.0
-
 
 @dataclass(frozen=True, slots=True)
 class SegmentAnalysis:
@@ -123,15 +119,13 @@ def _derive_facts(data: FitData, quality: QualityConfig) -> _Facts | None:
     timer_events = _timer_events(raw)
     timer_pauses = _timer_pause_intervals(timer_events, first, last)
     if timer_pauses is None:
-        moving_time_s, pauses = _speed_derived_movement(
-            records, duration_s, quality.moving_speed_threshold_mps
-        )
+        moving_time_s, pauses = _speed_derived_movement(records, duration_s, quality)
     else:
         pauses = timer_pauses
         paused_s = sum((pause.end - pause.start).total_seconds() for pause in pauses)
         moving_time_s = max(0.0, duration_s - paused_s)
 
-    intervals = interval_frame(records, pauses, max_interval_s=_MAX_MOVING_INTERVAL_S)
+    intervals = interval_frame(records, pauses, max_interval_s=quality.max_moving_interval_s)
     active_hr = intervals.filter(
         pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0) & (pl.col("active_s") > 0)
     )
@@ -227,7 +221,7 @@ def _timer_pause_intervals(
 
 
 def _speed_derived_movement(
-    records: pl.DataFrame, duration_s: float, threshold_mps: float
+    records: pl.DataFrame, duration_s: float, quality: QualityConfig
 ) -> tuple[float, tuple[PauseInterval, ...]]:
     if records.height < 2:
         return duration_s, ()
@@ -246,9 +240,9 @@ def _speed_derived_movement(
         if isinstance(speed, bool) or not isinstance(speed, int | float):
             continue
         valid_speed_intervals += 1
-        if speed < threshold_mps:
+        if speed < quality.moving_speed_threshold_mps:
             pauses.append(PauseInterval(start, end))
-    if valid_intervals == 0 or valid_speed_intervals / valid_intervals < _MIN_SPEED_COVERAGE:
+    if valid_intervals == 0 or valid_speed_intervals / valid_intervals < quality.speed_min_coverage:
         return duration_s, ()
     if not isinstance(timestamps[0], datetime) or not isinstance(timestamps[-1], datetime):
         return duration_s, ()
@@ -316,7 +310,7 @@ def _is_forgotten_stop(duration_s: float, moving_time_s: float, quality: Quality
     if duration_s > quality.forgotten_stop_max_duration_s:
         return True
     return (
-        duration_s > _FORGOTTEN_STOP_CHECK_DURATION_S
+        duration_s > quality.forgotten_stop_check_duration_s
         and moving_time_s / duration_s < quality.forgotten_stop_min_moving_ratio
     )
 

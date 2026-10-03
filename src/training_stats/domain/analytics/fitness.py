@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta, tzinfo
 
 from ..models import ActivityRecord, TrainingFormPoint, TrainingFormResult
-from .daily import metric_number
+from .metric_helpers import metric_number
 
 CTL_TIME_CONSTANT = 42
 ATL_TIME_CONSTANT = 7

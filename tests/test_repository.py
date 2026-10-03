@@ -120,7 +120,7 @@ class TestJsonCache:
         snapshot.write_text("not json")
         assert JsonTrainingRepository(cache_dir=cache_dir).last_sync_stamp() is None
 
-    def test_noop_sync_reads_snapshot_once_and_writes_nothing(
+    def test_noop_sync_reuses_snapshot_and_writes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         files = {"a.fit": stub_activity_content(T0, "cycling", 1800.0, 20000.0)}
@@ -134,9 +134,9 @@ class TestJsonCache:
         seen = spy_on_reads(monkeypatch)
 
         assert service.sync().files_skipped == 1
-        # One load_sync_state parse of the snapshot, one small metadata read to
-        # compare the stamp fingerprint, and no snapshot serialization or write.
-        assert [path.name for path in seen] == [CACHE_FILE, METADATA_FILE]
+        # The repository memo covers the just-written snapshot; only the small
+        # metadata read is needed to validate the stamp fingerprint.
+        assert [path.name for path in seen] == [METADATA_FILE]
         assert writes == []
         assert snapshot.read_bytes() == written
         assert snapshot.stat().st_mtime_ns == modified
@@ -144,6 +144,27 @@ class TestJsonCache:
         seen.clear()
         assert service.repository.last_sync_stamp() is not None
         assert [path.name for path in seen] == [METADATA_FILE]
+
+    def test_snapshot_state_is_memoized_until_atomic_replacement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache_dir = _cache_with_snapshot(tmp_path)
+        snapshot = cache_dir / CACHE_FILE
+        repository = JsonTrainingRepository(cache_dir)
+        seen = spy_on_reads(monkeypatch)
+
+        first = repository.load_sync_state()
+        second = repository.load_sync_state()
+
+        assert [path.name for path in seen] == [CACHE_FILE]
+        assert first.index_rows is not second.index_rows
+        assert first.activities is not second.activities
+
+        jsonio.write_json_atomic({"format_version": 0}, snapshot)
+        repaired = repository.load_sync_state()
+        assert [path.name for path in seen] == [CACHE_FILE, CACHE_FILE]
+        assert repaired.index_rows == []
+        assert repaired.activities == {}
 
     def test_cache_stores_activity_metric_records(self, tmp_path: Path) -> None:
         repository = build_repository(tmp_path, two_files())

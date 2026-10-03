@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from ..domain.metrics import (
     Confidence,
+    DateRangePeriod,
     MetricKind,
     MetricMethod,
     MetricReport,
@@ -216,18 +217,17 @@ def activity_record(record: ActivityRecord) -> ActivityRecordWire:
 
 def weekly_report(report: MetricReport) -> WeeklyReportWire:
     """Hoist the shared weekly date range out of its metric collection."""
-    report_wire = metric_report(report)
-    if not report_wire.metrics:
+    if not report.metrics:
         msg = "weekly reports must contain metrics"
         raise ValueError(msg)
-    period = report_wire.metrics[0].period
-    if not isinstance(period, DateRangePeriodWire) or any(
-        metric.period != period for metric in report_wire.metrics
+    period = report.metrics[0].period
+    if not isinstance(period, DateRangePeriod) or any(
+        metric.period != period for metric in report.metrics
     ):
         msg = "weekly metrics must share one date-range period"
         raise ValueError(msg)
     return WeeklyReportWire(
-        period=period,
+        period=DateRangePeriodWire.model_validate(period, from_attributes=True),
         metrics=[
             MetricWithoutPeriodWire.model_validate(metric, from_attributes=True)
             for metric in report.metrics

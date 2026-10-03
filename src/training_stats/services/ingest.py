@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from ..domain.analytics.activities import AnalyzedActivity
 from ..domain.analytics.segments import analyze_segments
@@ -45,12 +45,10 @@ class FileProcessor:
         parser: FitParser,
         athlete: AthleteConfig,
         quality: QualityConfig,
-        analysis_version: str,
     ) -> None:
         self.parser = parser
         self.athlete = athlete
         self.quality = quality
-        self.analysis_version = analysis_version
 
     def process(
         self,
@@ -59,6 +57,8 @@ class FileProcessor:
         file_hash: str,
         existing_ids: set[str],
         processed_at: datetime,
+        *,
+        analysis_version: str,
     ) -> Outcome:
         """Analyze ``content``; update ``existing_ids`` with accepted ids."""
         try:
@@ -71,7 +71,7 @@ class FileProcessor:
                         source_file=source_file,
                         source_hash=file_hash,
                         processed_at=processed_at,
-                        analysis_version=self.analysis_version,
+                        analysis_version=analysis_version,
                         status=STATUS_FAILED,
                         error_message=str(exc),
                     )
@@ -99,7 +99,7 @@ class FileProcessor:
             repaired_segments,
             source_path=source_file.path,
             athlete=self.athlete,
-            analysis_version=self.analysis_version,
+            analysis_version=analysis_version,
             quality=self.quality,
         )
         if analysis.discarded_segment_count:
@@ -116,7 +116,7 @@ class FileProcessor:
                         source_file=source_file,
                         source_hash=file_hash,
                         processed_at=processed_at,
-                        analysis_version=self.analysis_version,
+                        analysis_version=analysis_version,
                         activity_id=activity.activity_id,
                         segment_index=activity.segment_index,
                         segment_count=activity.segment_count,
@@ -141,7 +141,7 @@ class FileProcessor:
                     source_file=source_file,
                     source_hash=file_hash,
                     processed_at=processed_at,
-                    analysis_version=self.analysis_version,
+                    analysis_version=analysis_version,
                     activity_id=activity.activity_id,
                     segment_index=activity.segment_index,
                     segment_count=activity.segment_count,
@@ -150,9 +150,7 @@ class FileProcessor:
                     status=STATUS_OK,
                 )
             )
-            activities.append(
-                _activity_record(analyzed, source_file.source_name, self.analysis_version)
-            )
+            activities.append(_activity_record(analyzed, source_file.source_name, analysis_version))
 
         if not index_rows:
             index_rows.append(
@@ -160,7 +158,7 @@ class FileProcessor:
                     source_file=source_file,
                     source_hash=file_hash,
                     processed_at=processed_at,
-                    analysis_version=self.analysis_version,
+                    analysis_version=analysis_version,
                     status=STATUS_OK,
                     file_repair_flags=tuple(repair_flags),
                     discarded_segment_count=analysis.discarded_segment_count,
@@ -214,7 +212,7 @@ def _activity_record(
     activity = item.activity
     return ActivityRecord(
         activity_id=activity.activity_id,
-        start_time=_ensure_utc(activity.start_time),
+        start_time=activity.start_time,
         sport=activity.sport,
         sub_sport=activity.sub_sport,
         segment_index=activity.segment_index,
@@ -225,7 +223,3 @@ def _activity_record(
         analysis_version=analysis_version,
         metrics=item.metrics,
     )
-
-
-def _ensure_utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

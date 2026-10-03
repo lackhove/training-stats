@@ -18,6 +18,7 @@ from training_stats.adapters.cache.repository import (
     JsonTrainingRepository,
 )
 from training_stats.adapters.errors import CacheError
+from training_stats.domain.metrics import ScalarValue
 from training_stats.domain.models import (
     STATUS_DUPLICATE,
     STATUS_FAILED,
@@ -25,6 +26,7 @@ from training_stats.domain.models import (
     ActivityRecord,
     SourceFile,
 )
+from training_stats.domain.settings import QualityConfig
 from training_stats.services.errors import SourceError
 from training_stats.services.state import SyncState
 from training_stats.services.sync import SyncService
@@ -167,6 +169,51 @@ class TestAppLock:
 
 
 class TestIncrementalSync:
+    def test_quality_identity_is_stable_and_default_stays_code_only(self) -> None:
+        default = QualityConfig()
+        custom = QualityConfig(speed_min_coverage=0.75)
+
+        default_identity = schemas.effective_analysis_version(default)
+        custom_identity = schemas.effective_analysis_version(custom)
+
+        assert default_identity == schemas.ANALYSIS_VERSION_VALUE
+        assert custom_identity == schemas.effective_analysis_version(custom)
+        assert custom_identity != default_identity
+        assert custom_identity != schemas.effective_analysis_version(
+            QualityConfig(max_moving_interval_s=20.0)
+        )
+
+    def test_quality_change_reprocesses_unchanged_source(self, tmp_path: Path) -> None:
+        source = CountingSource(one_file())
+        default_quality = QualityConfig()
+        initial = make_sync_service(
+            tmp_path,
+            [source],
+            version=schemas.effective_analysis_version(default_quality),
+            quality=default_quality,
+        )
+        initial.sync()
+
+        custom_quality = QualityConfig(speed_min_coverage=0.75)
+        updated = make_sync_service(
+            tmp_path,
+            [source],
+            version=schemas.effective_analysis_version(custom_quality),
+            quality=custom_quality,
+        )
+        result = updated.sync()
+
+        assert result.files_processed == 1
+        assert source.read_count == 2
+        state = JsonTrainingRepository(tmp_path / "cache").load_sync_state()
+        identity = schemas.effective_analysis_version(custom_quality)
+        assert {row.source_analysis_version for row in state.index_rows} == {identity}
+        activity = next(iter(state.activities.values()))
+        assert activity.analysis_version == identity
+        metric = next(item for item in activity.metrics if item.name == "analysis.version")
+        assert isinstance(metric.value, ScalarValue)
+        assert metric.value.value == identity
+
     def test_initial_and_idempotent_sync(self, tmp_path: Path) -> None:
         service, _source, cache_dir = make_sync(tmp_path, one_file())
         first = service.sync()

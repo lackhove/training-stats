@@ -11,9 +11,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, tzinfo
+from typing import TypedDict
 
-from ..metrics import Metric, ScalarValue, TableValue
+from ..metrics import Metric, TableValue
 from ..models import ActivityRecord
+from .metric_helpers import metric_number
 
 # An activity counts as "hard" when its estimated load reaches this value.
 HARD_LOAD_THRESHOLD = 150.0
@@ -49,6 +51,22 @@ class PeriodTotalsRow:
         }
 
 
+class _TotalsKwargs(TypedDict):
+    activity_count: int
+    duration_s: float
+    distance_m: float
+    elevation_gain_m: float
+    hr_zone_1_s: float
+    hr_zone_2_s: float
+    hr_zone_3_s: float
+    hr_zone_4_s: float
+    hr_zone_5_s: float
+    load_value: float
+    hard_activity_count: int
+    longest_activity_s: float
+    longest_activity_id: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class DailySummaryRow(PeriodTotalsRow):
     """Totals for one local date and sport."""
@@ -57,11 +75,11 @@ class DailySummaryRow(PeriodTotalsRow):
     sport: str
 
 
-class _Group:
-    """Accumulates one (local date, sport) bucket in sorted input order."""
+class _PeriodTotalsAccumulator:
+    """Accumulate the common totals shared by daily and weekly rows."""
 
     __slots__ = (
-        "_has_duration",
+        "_has_longest",
         "activity_count",
         "distance_m",
         "duration_s",
@@ -83,33 +101,92 @@ class _Group:
         self.hard_activity_count = 0
         self.longest_activity_s = 0.0
         self.longest_activity_id: str | None = None
-        self._has_duration = False
+        self._has_longest = False
 
-    def add(self, activity_id: str, metrics: dict[str, Metric]) -> None:
-        self.activity_count += 1
+    def add_activity(self, activity_id: str, metrics: dict[str, Metric]) -> None:
         duration = metric_number(metrics.get("activity.duration"))
-        self.duration_s += duration if duration is not None else 0.0
         distance = metric_number(metrics.get("activity.distance"))
-        self.distance_m += distance if distance is not None else 0.0
         elevation = metric_number(metrics.get("activity.elevation_gain"))
-        self.elevation_gain_m += elevation if elevation is not None else 0.0
         zones = metric_table_values(metrics.get("heart_rate.zone_time"))
-        for index in range(_ZONE_COUNT):
-            self.zones[index] += zone_cell(zones, index)
         load = metric_number(metrics.get("training_load.hr_trimp"))
-        if load is None:
-            load = 0.0
-        self.load_value += load
-        if load >= HARD_LOAD_THRESHOLD:
-            self.hard_activity_count += 1
-        self._add_longest(activity_id, duration if duration is not None else 0.0)
+        self._add_totals(
+            activity_count=1,
+            duration_s=duration if duration is not None else 0.0,
+            distance_m=distance if distance is not None else 0.0,
+            elevation_gain_m=elevation if elevation is not None else 0.0,
+            zones=tuple(zone_cell(zones, index) for index in range(_ZONE_COUNT)),
+            load_value=load if load is not None else 0.0,
+            hard_activity_count=int(load is not None and load >= HARD_LOAD_THRESHOLD),
+            longest_activity_s=duration if duration is not None else 0.0,
+            longest_activity_id=(activity_id if duration is not None and duration > 0.0 else None),
+            first_tie_wins=True,
+        )
 
-    def _add_longest(self, activity_id: str, duration: float) -> None:
-        if self._has_duration and duration <= self.longest_activity_s:
-            return
-        self._has_duration = True
-        self.longest_activity_s = duration
-        self.longest_activity_id = activity_id if duration > 0.0 else None
+    def add_row(self, row: PeriodTotalsRow, *, first_tie_wins: bool = False) -> None:
+        self._add_totals(
+            activity_count=row.activity_count,
+            duration_s=row.duration_s,
+            distance_m=row.distance_m,
+            elevation_gain_m=row.elevation_gain_m,
+            zones=(
+                row.hr_zone_1_s,
+                row.hr_zone_2_s,
+                row.hr_zone_3_s,
+                row.hr_zone_4_s,
+                row.hr_zone_5_s,
+            ),
+            load_value=row.load_value,
+            hard_activity_count=row.hard_activity_count,
+            longest_activity_s=row.longest_activity_s,
+            longest_activity_id=row.longest_activity_id,
+            first_tie_wins=first_tie_wins,
+        )
+
+    def _add_totals(
+        self,
+        *,
+        activity_count: int,
+        duration_s: float,
+        distance_m: float,
+        elevation_gain_m: float,
+        zones: tuple[float, ...],
+        load_value: float,
+        hard_activity_count: int,
+        longest_activity_s: float,
+        longest_activity_id: str | None,
+        first_tie_wins: bool,
+    ) -> None:
+        self.activity_count += activity_count
+        self.duration_s += duration_s
+        self.distance_m += distance_m
+        self.elevation_gain_m += elevation_gain_m
+        for index in range(_ZONE_COUNT):
+            self.zones[index] += zones[index]
+        self.load_value += load_value
+        self.hard_activity_count += hard_activity_count
+        if longest_activity_s > self.longest_activity_s or (
+            first_tie_wins and not self._has_longest
+        ):
+            self.longest_activity_s = longest_activity_s
+            self.longest_activity_id = longest_activity_id
+        self._has_longest = True
+
+    def to_row(self) -> PeriodTotalsRow:
+        return PeriodTotalsRow(
+            activity_count=self.activity_count,
+            duration_s=self.duration_s,
+            distance_m=self.distance_m,
+            elevation_gain_m=self.elevation_gain_m,
+            hr_zone_1_s=self.zones[0],
+            hr_zone_2_s=self.zones[1],
+            hr_zone_3_s=self.zones[2],
+            hr_zone_4_s=self.zones[3],
+            hr_zone_5_s=self.zones[4],
+            load_value=self.load_value,
+            hard_activity_count=self.hard_activity_count,
+            longest_activity_s=self.longest_activity_s,
+            longest_activity_id=self.longest_activity_id,
+        )
 
 
 def summarize_daily(records: Sequence[ActivityRecord], tz: tzinfo) -> list[DailySummaryRow]:
@@ -119,46 +196,24 @@ def summarize_daily(records: Sequence[ActivityRecord], tz: tzinfo) -> list[Daily
     longest-activity pick resolves ties to the earliest activity. Returns rows
     sorted by date, then sport, with deterministic values.
     """
-    groups: dict[tuple[date, str], _Group] = {}
+    groups: dict[tuple[date, str], _PeriodTotalsAccumulator] = {}
     for record in sorted(records, key=lambda item: (item.start_time, item.activity_id)):
         metrics = {metric.name: metric for metric in record.metrics}
         key = (record.start_time.astimezone(tz).date(), record.sport)
         group = groups.get(key)
         if group is None:
-            group = _Group()
+            group = _PeriodTotalsAccumulator()
             groups[key] = group
-        group.add(record.activity_id, metrics)
+        group.add_activity(record.activity_id, metrics)
     rows = [
         DailySummaryRow(
-            activity_count=group.activity_count,
-            duration_s=group.duration_s,
-            distance_m=group.distance_m,
-            elevation_gain_m=group.elevation_gain_m,
-            hr_zone_1_s=group.zones[0],
-            hr_zone_2_s=group.zones[1],
-            hr_zone_3_s=group.zones[2],
-            hr_zone_4_s=group.zones[3],
-            hr_zone_5_s=group.zones[4],
-            load_value=group.load_value,
-            hard_activity_count=group.hard_activity_count,
-            longest_activity_s=group.longest_activity_s,
-            longest_activity_id=group.longest_activity_id,
+            **_totals_kwargs(group.to_row()),
             date=day,
             sport=sport,
         )
         for (day, sport), group in groups.items()
     ]
     return sorted(rows, key=lambda row: (row.date, row.sport))
-
-
-def metric_number(metric: Metric | None) -> float | None:
-    """Read a cached numeric scalar, rejecting non-numerics and booleans."""
-    if metric is None or not isinstance(metric.value, ScalarValue):
-        return None
-    value = metric.value.value
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
 
 
 def metric_table_values(metric: Metric | None) -> tuple[object, ...]:
@@ -202,28 +257,31 @@ def aggregate_daily(rows: list[DailySummaryRow]) -> list[DailySummaryRow]:
     by_date: dict[date, list[DailySummaryRow]] = {}
     for row in rows:
         by_date.setdefault(row.date, []).append(row)
-    return [
-        DailySummaryRow(
-            date=day,
-            sport="all",
-            activity_count=sum(row.activity_count for row in group),
-            duration_s=sum(row.duration_s for row in group),
-            distance_m=sum(row.distance_m for row in group),
-            elevation_gain_m=sum(row.elevation_gain_m for row in group),
-            hr_zone_1_s=sum(row.hr_zone_1_s for row in group),
-            hr_zone_2_s=sum(row.hr_zone_2_s for row in group),
-            hr_zone_3_s=sum(row.hr_zone_3_s for row in group),
-            hr_zone_4_s=sum(row.hr_zone_4_s for row in group),
-            hr_zone_5_s=sum(row.hr_zone_5_s for row in group),
-            load_value=sum(row.load_value for row in group),
-            hard_activity_count=sum(row.hard_activity_count for row in group),
-            longest_activity_s=max(row.longest_activity_s for row in group),
-            longest_activity_id=max(
-                group, key=lambda row: row.longest_activity_s
-            ).longest_activity_id,
-        )
-        for day, group in sorted(by_date.items())
-    ]
+    result: list[DailySummaryRow] = []
+    for day, group in sorted(by_date.items()):
+        totals = _PeriodTotalsAccumulator()
+        for row in group:
+            totals.add_row(row, first_tie_wins=True)
+        result.append(DailySummaryRow(**_totals_kwargs(totals.to_row()), date=day, sport="all"))
+    return result
+
+
+def _totals_kwargs(row: PeriodTotalsRow) -> _TotalsKwargs:
+    return {
+        "activity_count": row.activity_count,
+        "duration_s": row.duration_s,
+        "distance_m": row.distance_m,
+        "elevation_gain_m": row.elevation_gain_m,
+        "hr_zone_1_s": row.hr_zone_1_s,
+        "hr_zone_2_s": row.hr_zone_2_s,
+        "hr_zone_3_s": row.hr_zone_3_s,
+        "hr_zone_4_s": row.hr_zone_4_s,
+        "hr_zone_5_s": row.hr_zone_5_s,
+        "load_value": row.load_value,
+        "hard_activity_count": row.hard_activity_count,
+        "longest_activity_s": row.longest_activity_s,
+        "longest_activity_id": row.longest_activity_id,
+    }
 
 
 def _date_in_range(value: date, start_date: date | None, end_date: date | None) -> bool:

@@ -9,7 +9,7 @@ from ..services.settings import ServiceSettings
 from ..services.sync import SyncService
 from ..services.training import TrainingStatsService
 from .cache.repository import JsonTrainingRepository
-from .cache.schemas import ANALYSIS_VERSION_VALUE
+from .cache.schemas import effective_analysis_version
 from .config import (
     AppConfig,
     LocalSourceConfig,
@@ -42,18 +42,18 @@ def create_service(config: AppConfig) -> TrainingStatsService:
             raise TrainingStatsError(msg)
 
     parser: FitParser = FitDecodeParser()
+    analysis_version = effective_analysis_version(config.quality)
     processor = FileProcessor(
         parser=parser,
         athlete=config.athlete,
         quality=config.quality,
-        analysis_version=ANALYSIS_VERSION_VALUE,
     )
     repository = JsonTrainingRepository(cache_dir=config.cache.directory)
     sync_service = SyncService(
         sources=sources,
         processor=processor,
         repository=repository,
-        analysis_version=ANALYSIS_VERSION_VALUE,
+        analysis_version=analysis_version,
     )
     settings = ServiceSettings(
         application_name=config.application.name,

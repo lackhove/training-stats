@@ -166,8 +166,8 @@ class TestCadenceParsing:
         row = _parse_record_row(cast(fitdecode.FitDataMessage, message))
 
         assert row is not None
-        assert row["cadence"] is None
-        assert row["fractional_cadence"] is None
+        assert "cadence" not in row
+        assert "fractional_cadence" not in row
         # Rows carry no null padding: the declared schema fills the absent
         # columns (and every column a record row never provides) with nulls.
         frame = pl.DataFrame([row], schema=FitData.SCHEMA)

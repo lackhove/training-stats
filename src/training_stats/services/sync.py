@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import chain
 from typing import TYPE_CHECKING, Literal
 
 from ..domain.models import (
@@ -30,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FileKey = tuple[str, str]
+OwnershipMap = dict[str, set[FileKey]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,12 +64,15 @@ class SyncService:
         state = self.repository.load_sync_state()
         activities = dict(state.activities)
         activity_ids = set(activities)
+        previous_rows_by_file = _rows_by_file(state.index_rows)
+        previous_owners = _activity_owners(state.index_rows)
 
         discovered = 0
         sources_listed = 0
         source_errors: list[str] = []
         failed_sources: set[str] = set()
         kept_index: list[SourceIndexEntry] = []
+        kept_owners: OwnershipMap = {}
         outcomes: dict[FileKey, _FileOutcome] = {}
         listed: dict[FileKey, tuple[ActivitySource, SourceFile]] = {}
 
@@ -86,35 +89,33 @@ class SyncService:
             for source_file in files:
                 key = (source.name, source_file.path)
                 listed[key] = (source, source_file)
-                previous_rows = self._previous_rows(state.index_rows, source.name, source_file.path)
+                previous_rows = previous_rows_by_file.get(key, [])
                 if previous_rows and self._metadata_unchanged(previous_rows, source_file):
                     kept_index.extend(previous_rows)
+                    _add_activity_owners(kept_owners, previous_rows)
                     outcomes[key] = _FileOutcome(kind="skipped")
                     continue
                 try:
-                    content = source.read_file(source_file)
+                    outcome = self._read_and_process_file(
+                        source,
+                        source_file,
+                        previous_rows,
+                        activities,
+                        activity_ids,
+                        (previous_owners, kept_owners),
+                        started_at,
+                    )
                 except SourceError as exc:
                     logger.error("cannot read %s/%s: %s", source.name, source_file.path, exc)
-                    kept_index.extend(
-                        self._read_failure_rows(previous_rows, source_file, started_at, str(exc))
+                    failed_rows = self._read_failure_rows(
+                        previous_rows, source_file, started_at, str(exc)
                     )
+                    kept_index.extend(failed_rows)
+                    _add_activity_owners(kept_owners, failed_rows)
                     outcomes[key] = _FileOutcome(kind="failed")
                     continue
-                file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(
-                    previous_rows,
-                    activities,
-                    activity_ids,
-                    self._ids_owned_by_others(
-                        chain(state.index_rows, kept_index),
-                        source_name=source.name,
-                        path=source_file.path,
-                    ),
-                )
-                outcome = self.processor.process(
-                    source_file, content, file_hash, activity_ids, started_at
-                )
                 kept_index.extend(outcome.index_rows)
+                _add_activity_owners(kept_owners, outcome.index_rows)
                 for activity in outcome.activities:
                     activities[activity.activity_id] = activity
                     activity_ids.add(activity.activity_id)
@@ -122,9 +123,13 @@ class SyncService:
 
         if sources_listed > 0:
             # A source that failed to list is not evidence of deletion: carry its rows over.
-            kept_index.extend(row for row in state.index_rows if row.source_name in failed_sources)
+            carried_rows = [row for row in state.index_rows if row.source_name in failed_sources]
+            kept_index.extend(carried_rows)
+            _add_activity_owners(kept_owners, carried_rows)
             self._promote_orphan_duplicates(
                 kept_index=kept_index,
+                kept_by_file=_rows_by_file(kept_index),
+                kept_owners=kept_owners,
                 activities=activities,
                 activity_ids=activity_ids,
                 listed=listed,
@@ -185,6 +190,35 @@ class SyncService:
             duplicates_detected=duplicates_detected,
         )
 
+    def _read_and_process_file(
+        self,
+        source: ActivitySource,
+        source_file: SourceFile,
+        previous_rows: list[SourceIndexEntry],
+        activities: dict[str, ActivityRecord],
+        activity_ids: set[str],
+        owner_maps: Sequence[OwnershipMap],
+        processed_at: datetime,
+    ) -> Outcome:
+        """Read and analyze one file after removing records it no longer owns."""
+        content = source.read_file(source_file)
+        file_hash = hashlib.sha256(content).hexdigest()
+        key = (source.name, source_file.path)
+        self._purge_previous(
+            previous_rows,
+            activities,
+            activity_ids,
+            _ids_owned_by_others(previous_rows, key, owner_maps),
+        )
+        return self.processor.process(
+            source_file,
+            content,
+            file_hash,
+            activity_ids,
+            processed_at,
+            analysis_version=self.analysis_version,
+        )
+
     def _failure_entry(
         self, source_file: SourceFile, processed_at: datetime, message: str
     ) -> SourceIndexEntry:
@@ -239,23 +273,12 @@ class SyncService:
             and stored.error_message == candidate.error_message
         )
 
-    @staticmethod
-    def _ids_owned_by_others(
-        rows: Iterable[SourceIndexEntry], *, source_name: str, path: str
-    ) -> set[str]:
-        """Activity ids another file still claims through an accepted row."""
-        return {
-            row.activity_id
-            for row in rows
-            if row.status == STATUS_OK
-            and row.activity_id is not None
-            and not (row.source_name == source_name and row.source_path == path)
-        }
-
     def _promote_orphan_duplicates(
         self,
         *,
         kept_index: list[SourceIndexEntry],
+        kept_by_file: dict[FileKey, list[SourceIndexEntry]],
+        kept_owners: OwnershipMap,
         activities: dict[str, ActivityRecord],
         activity_ids: set[str],
         listed: dict[FileKey, tuple[ActivitySource, SourceFile]],
@@ -296,7 +319,7 @@ class SyncService:
             activity_ids.discard(activity_id)
 
         for key in candidates:
-            rows = [row for row in kept_index if (row.source_name, row.source_path) == key]
+            rows = kept_by_file.get(key, [])
             if not any(
                 row.status == STATUS_DUPLICATE
                 and row.activity_id is not None
@@ -306,24 +329,20 @@ class SyncService:
                 continue  # an earlier promotion in this pass restored its owner
             source, source_file = listed[key]
             try:
-                content = source.read_file(source_file)
+                outcome = self._read_and_process_file(
+                    source,
+                    source_file,
+                    rows,
+                    activities,
+                    activity_ids,
+                    (kept_owners,),
+                    processed_at,
+                )
             except SourceError as exc:
                 logger.error("cannot read %s/%s: %s", source.name, source_file.path, exc)
                 new_rows = self._read_failure_rows(rows, source_file, processed_at, str(exc))
                 outcomes[key] = _FileOutcome(kind="failed")
             else:
-                file_hash = hashlib.sha256(content).hexdigest()
-                self._purge_previous(
-                    rows,
-                    activities,
-                    activity_ids,
-                    self._ids_owned_by_others(
-                        kept_index, source_name=source.name, path=source_file.path
-                    ),
-                )
-                outcome = self.processor.process(
-                    source_file, content, file_hash, activity_ids, processed_at
-                )
                 new_rows = outcome.index_rows
                 for activity in outcome.activities:
                     activities[activity.activity_id] = activity
@@ -334,7 +353,9 @@ class SyncService:
                     for row in outcome.index_rows
                     if row.status == STATUS_OK and row.activity_id is not None
                 )
-            self._replace_rows(kept_index, key, new_rows)
+            _remove_activity_owners(kept_owners, key, rows)
+            self._replace_rows(kept_index, kept_by_file, key, new_rows)
+            _add_activity_owners(kept_owners, new_rows)
             logger.info(
                 "promoted %s/%s: its accepted owner vanished, the surviving copy was reprocessed",
                 source.name,
@@ -343,7 +364,10 @@ class SyncService:
 
     @staticmethod
     def _replace_rows(
-        kept_index: list[SourceIndexEntry], key: FileKey, new_rows: list[SourceIndexEntry]
+        kept_index: list[SourceIndexEntry],
+        kept_by_file: dict[FileKey, list[SourceIndexEntry]],
+        key: FileKey,
+        new_rows: list[SourceIndexEntry],
     ) -> None:
         """Swap one file's rows in place so source/path row order stays stable."""
         positions = [
@@ -353,19 +377,13 @@ class SyncService:
         ]
         if not positions:
             kept_index.extend(new_rows)
+            kept_by_file[key] = new_rows
             return
         insert_at = positions[0]
         for index in reversed(positions):
             kept_index.pop(index)
         kept_index[insert_at:insert_at] = new_rows
-
-    @staticmethod
-    def _previous_rows(
-        index_rows: list[SourceIndexEntry], source_name: str, path: str
-    ) -> list[SourceIndexEntry]:
-        return [
-            row for row in index_rows if row.source_name == source_name and row.source_path == path
-        ]
+        kept_by_file[key] = new_rows
 
     @staticmethod
     def _state_unchanged(previous: SyncState, current: SyncState) -> bool:
@@ -413,6 +431,52 @@ class SyncService:
                 continue
             activities.pop(row.activity_id, None)
             activity_ids.discard(row.activity_id)
+
+
+def _rows_by_file(rows: Iterable[SourceIndexEntry]) -> dict[FileKey, list[SourceIndexEntry]]:
+    grouped: dict[FileKey, list[SourceIndexEntry]] = {}
+    for row in rows:
+        grouped.setdefault((row.source_name, row.source_path), []).append(row)
+    return grouped
+
+
+def _activity_owners(rows: Iterable[SourceIndexEntry]) -> OwnershipMap:
+    owners: OwnershipMap = {}
+    _add_activity_owners(owners, rows)
+    return owners
+
+
+def _add_activity_owners(owners: OwnershipMap, rows: Iterable[SourceIndexEntry]) -> None:
+    for row in rows:
+        if row.status == STATUS_OK and row.activity_id is not None:
+            owners.setdefault(row.activity_id, set()).add((row.source_name, row.source_path))
+
+
+def _remove_activity_owners(
+    owners: OwnershipMap, key: FileKey, rows: Iterable[SourceIndexEntry]
+) -> None:
+    for row in rows:
+        if row.status != STATUS_OK or row.activity_id is None:
+            continue
+        activity_owners = owners.get(row.activity_id)
+        if activity_owners is None:
+            continue
+        activity_owners.discard(key)
+        if not activity_owners:
+            del owners[row.activity_id]
+
+
+def _ids_owned_by_others(
+    rows: Iterable[SourceIndexEntry], key: FileKey, owner_maps: Sequence[OwnershipMap]
+) -> set[str]:
+    row_ids = {
+        row.activity_id for row in rows if row.status == STATUS_OK and row.activity_id is not None
+    }
+    return {
+        activity_id
+        for activity_id in row_ids
+        if any(owner != key for owners in owner_maps for owner in owners.get(activity_id, ()))
+    }
 
 
 def _outcome_of(outcome: Outcome) -> _FileOutcome:

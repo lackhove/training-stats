@@ -34,6 +34,7 @@ from ..metrics import (
 from ..settings import AthleteConfig, QualityConfig
 from .metric_helpers import scalar_metric, table_metric
 from .statistics_records import (
+    MAX_INTERVAL_S,
     Interval,
     active_time_s,
     build_intervals,
@@ -262,7 +263,7 @@ def compute_activity_statistics(
     quality: QualityConfig,
 ) -> tuple[Metric, ...]:
     """Return detailed distribution, window, relationship, and heatmap metrics."""
-    intervals = tuple(build_intervals(activity))
+    intervals = tuple(build_intervals(activity, quality.max_moving_interval_s))
     return (
         *speed_metrics(activity, quality, intervals=intervals),
         *heart_rate_metrics(activity, intervals=intervals),
@@ -278,10 +279,12 @@ def compute_activity_statistics(
 
 
 def _intervals(
-    activity: ParsedActivity, intervals: Sequence[Interval] | None
+    activity: ParsedActivity,
+    intervals: Sequence[Interval] | None,
+    max_interval_s: float = MAX_INTERVAL_S,
 ) -> Sequence[Interval]:
     """Reuse the composer's shared interval pass, or build one when standalone."""
-    return build_intervals(activity) if intervals is None else intervals
+    return build_intervals(activity, max_interval_s) if intervals is None else intervals
 
 
 def speed_metrics(
@@ -291,7 +294,7 @@ def speed_metrics(
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.speed_statistics"
     short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     samples: list[tuple[float, float]] = []
     valid_samples = 0
@@ -426,7 +429,7 @@ def cadence_metrics(
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.cadence_statistics"
     short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     moving = moving_time_s(activity, intervals, threshold_mps)
     samples: list[tuple[float, float]] = []
@@ -776,7 +779,7 @@ def heatmap_metrics(
         return ()
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.heatmap_data"
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     cells: dict[str, dict[tuple[int, int], list[float]]] = {
         "heart_rate_speed": defaultdict(lambda: [0.0, 0.0]),
@@ -858,7 +861,7 @@ def sensor_quality_metrics(
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.data_quality"
     short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     valid_speed = 0
     during_movement = 0
@@ -883,7 +886,7 @@ def sensor_quality_metrics(
     if short:
         duplicates, gaps = 0, 0
     else:
-        duplicates, gaps = timestamp_issues(activity)
+        duplicates, gaps = timestamp_issues(activity, quality.max_moving_interval_s)
     outliers = sum(interval.rejected_values for interval in intervals)
     counts: tuple[tuple[str, str, str | None, int | float], ...] = (
         (
@@ -1247,7 +1250,7 @@ def _available_windows(
     activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
 ) -> tuple[tuple[_Window, ...], tuple[_Window, ...]]:
     """Elapsed-time windows with the optional movement-time variant, cadence-masked."""
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     moving = moving_time_s(activity, intervals, threshold_mps)
     span = activity.duration_s or elapsed_time_s(activity)
@@ -1354,7 +1357,7 @@ def _efficiency_facts(
     *,
     intervals: Sequence[Interval] | None = None,
 ) -> _EfficiencyFacts:
-    intervals = _intervals(activity, intervals)
+    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
     threshold_mps = quality.moving_speed_threshold_mps
     pairs: list[tuple[float, float, float]] = []
     for interval in intervals:

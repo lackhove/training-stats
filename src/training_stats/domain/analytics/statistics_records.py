@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from ..fit.types import ParsedActivity, PauseInterval
 from .intervals import merge_pause_intervals, overlap_seconds
 
+# Standalone-call default; production analytics use the configured interval cap.
 MAX_INTERVAL_S = 30.0
 
 SPEED_BOUNDS_MPS = (0.0, 40.0)
@@ -130,8 +131,10 @@ def active_time_s(activity: ParsedActivity) -> float:
     return max(0.0, span - (activity.paused_time_s or 0.0))
 
 
-def timestamp_issues(activity: ParsedActivity) -> tuple[int, int]:
-    """Count duplicate timestamps (``dt <= 0``) and gaps (``dt > 30 s``)."""
+def timestamp_issues(
+    activity: ParsedActivity, max_interval_s: float = MAX_INTERVAL_S
+) -> tuple[int, int]:
+    """Count duplicate timestamps and gaps larger than the interval cap."""
     timestamps = activity.records["timestamp"].to_list()
     duplicates = 0
     gaps = 0
@@ -143,12 +146,14 @@ def timestamp_issues(activity: ParsedActivity) -> tuple[int, int]:
         dt_s = (end - start).total_seconds()
         if dt_s <= 0.0:
             duplicates += int(dt_s == 0.0)
-        elif dt_s > MAX_INTERVAL_S:
+        elif dt_s > max_interval_s:
             gaps += 1
     return duplicates, gaps
 
 
-def build_intervals(activity: ParsedActivity) -> list[Interval]:
+def build_intervals(
+    activity: ParsedActivity, max_interval_s: float = MAX_INTERVAL_S
+) -> list[Interval]:
     """Build capped, pause-adjusted intervals with validated sensor samples."""
     records = activity.records
     timestamps = records["timestamp"].to_list()
@@ -170,7 +175,7 @@ def build_intervals(activity: ParsedActivity) -> list[Interval]:
         dt_s = (end - start).total_seconds()
         if dt_s <= 0.0:
             continue
-        counted_s = min(dt_s, MAX_INTERVAL_S)
+        counted_s = min(dt_s, max_interval_s)
         counted_end = start + timedelta(seconds=counted_s)
         active_s = max(0.0, counted_s - overlap_seconds(start, counted_end, pauses))
         if active_s <= 0.0:

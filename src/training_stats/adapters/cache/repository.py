@@ -25,26 +25,22 @@ class JsonTrainingRepository(SyncRepository):
 
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
+        self._cached_sync_state: tuple[tuple[int, int, int] | None, SyncState] | None = None
 
     def load_sync_state(self) -> SyncState:
         """Load the cache snapshot; invalid data rebuilds from configured sources."""
-        payload = jsonio.read_json(self.cache_dir / schemas.CACHE_FILE)
-        if payload is None or payload.get("format_version") != schemas.CACHE_FORMAT_VERSION:
-            return SyncState(index_rows=[], activities={})
+        while True:
+            fingerprint = self._snapshot_stat_key()
+            cached = self._cached_sync_state
+            if cached is not None and cached[0] == fingerprint:
+                return _copy_sync_state(cached[1])
 
-        raw_activities = payload.get("activities", [])
-        raw_index = payload.get("source_index", [])
-        if not isinstance(raw_activities, list) or not isinstance(raw_index, list):
-            return SyncState(index_rows=[], activities={})
-        try:
-            activities = _ACTIVITIES_ADAPTER.validate_python(raw_activities)
-            index_rows = _SOURCE_INDEX_ADAPTER.validate_python(raw_index)
-        except ValidationError:
-            return SyncState(index_rows=[], activities={})
-        return SyncState(
-            index_rows=index_rows,
-            activities={activity.activity_id: activity for activity in activities},
-        )
+            payload = jsonio.read_json(self.cache_dir / schemas.CACHE_FILE)
+            if fingerprint != self._snapshot_stat_key():
+                continue
+            state = _decode_sync_state(payload)
+            self._cached_sync_state = (fingerprint, state)
+            return _copy_sync_state(state)
 
     def save_sync_snapshot(self, state: SyncState, *, last_sync: datetime) -> None:
         """Write records and sync stamp atomically at their respective boundaries."""
@@ -112,6 +108,7 @@ class JsonTrainingRepository(SyncRepository):
         except (TypeError, ValueError) as exc:
             raise CacheError("cannot serialize cache domain records") from exc
         jsonio.write_json_atomic(payload, self.cache_dir / schemas.CACHE_FILE)
+        self._cached_sync_state = (self._snapshot_stat_key(), _copy_sync_state(state))
 
     def _write_sync_metadata_stamp(self, *, last_sync: datetime) -> None:
         jsonio.write_json_atomic(
@@ -125,11 +122,19 @@ class JsonTrainingRepository(SyncRepository):
 
     def _snapshot_fingerprint(self) -> dict[str, int] | None:
         """Stat the snapshot for identity; ``None`` when it does not exist."""
+        key = self._snapshot_stat_key()
+        if key is None:
+            return None
+        size, mtime_ns, inode = key
+        return {"size": size, "mtime_ns": mtime_ns, "inode": inode}
+
+    def _snapshot_stat_key(self) -> tuple[int, int, int] | None:
+        """Return the atomic snapshot's size, nanosecond mtime, and inode."""
         try:
             info = (self.cache_dir / schemas.CACHE_FILE).stat()
         except OSError:
             return None
-        return {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "inode": info.st_ino}
+        return info.st_size, info.st_mtime_ns, info.st_ino
 
     def _fingerprint_matches(self, stored: object) -> bool:
         if not isinstance(stored, dict):
@@ -138,3 +143,30 @@ class JsonTrainingRepository(SyncRepository):
         if current is None:
             return False
         return all(stored.get(key) == value for key, value in current.items())
+
+
+def _decode_sync_state(payload: object) -> SyncState:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format_version") != schemas.CACHE_FORMAT_VERSION
+    ):
+        return SyncState(index_rows=[], activities={})
+
+    raw_activities = payload.get("activities", [])
+    raw_index = payload.get("source_index", [])
+    if not isinstance(raw_activities, list) or not isinstance(raw_index, list):
+        return SyncState(index_rows=[], activities={})
+    try:
+        activities = _ACTIVITIES_ADAPTER.validate_python(raw_activities)
+        index_rows = _SOURCE_INDEX_ADAPTER.validate_python(raw_index)
+    except ValidationError:
+        return SyncState(index_rows=[], activities={})
+    return SyncState(
+        index_rows=index_rows,
+        activities={activity.activity_id: activity for activity in activities},
+    )
+
+
+def _copy_sync_state(state: SyncState) -> SyncState:
+    """Copy mutable containers so repository callers cannot mutate the memo."""
+    return SyncState(index_rows=list(state.index_rows), activities=dict(state.activities))

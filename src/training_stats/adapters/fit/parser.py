@@ -52,20 +52,23 @@ class FitDecodeParser:
 
 
 def _parse_session_metadata(frame: fitdecode.FitDataMessage) -> dict[str, object]:
-    return {
-        "message_type": "session",
-        "sport": coerce_str(frame.get_value("sport", fallback=None)),
-        "sub_sport": coerce_str(frame.get_value("sub_sport", fallback=None)),
-    }
+    row: dict[str, object] = {"message_type": "session"}
+    for name in ("sport", "sub_sport"):
+        value = coerce_str(frame.get_value(name, fallback=None))
+        if value is not None:
+            row[name] = value
+    return row
 
 
 def _parse_record_row(frame: fitdecode.FitDataMessage) -> dict[str, object] | None:
     timestamp = _as_datetime(frame.get_value("timestamp", fallback=None))
     if timestamp is None:
         return None
-    return {
+    row: dict[str, object] = {
         "message_type": "record",
         "timestamp": _ensure_utc(timestamp),
+    }
+    values = {
         "heart_rate": coerce_int(frame.get_value("heart_rate", fallback=None)),
         "cadence": coerce_int(frame.get_value("cadence", fallback=None)),
         "fractional_cadence": coerce_int(frame.get_value("fractional_cadence", fallback=None)),
@@ -73,6 +76,8 @@ def _parse_record_row(frame: fitdecode.FitDataMessage) -> dict[str, object] | No
         "altitude_m": _altitude(frame),
         "speed_mps": _speed(frame, "enhanced_speed", "speed"),
     }
+    row.update({name: value for name, value in values.items() if value is not None})
+    return row
 
 
 def _parse_timer_event(frame: fitdecode.FitDataMessage) -> dict[str, object] | None:
@@ -81,12 +86,14 @@ def _parse_timer_event(frame: fitdecode.FitDataMessage) -> dict[str, object] | N
     event_type = coerce_str(frame.get_value("event_type", fallback=None))
     if timestamp is None or event is None:
         return None
-    return {
+    row: dict[str, object] = {
         "message_type": "event",
         "timestamp": _ensure_utc(timestamp),
         "event": event,
-        "event_type": event_type,
     }
+    if event_type is not None:
+        row["event_type"] = event_type
+    return row
 
 
 def _ensure_utc(value: datetime) -> datetime:

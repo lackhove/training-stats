@@ -308,10 +308,10 @@ def _count_interval_builds(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]
     builds = 0
     original = activity_statistics.build_intervals
 
-    def counting(activity: ParsedActivity) -> list[Interval]:
+    def counting(activity: ParsedActivity, max_interval_s: float = 30.0) -> list[Interval]:
         nonlocal builds
         builds += 1
-        return original(activity)
+        return original(activity, max_interval_s)
 
     monkeypatch.setattr(activity_statistics, "build_intervals", counting)
     return lambda: builds

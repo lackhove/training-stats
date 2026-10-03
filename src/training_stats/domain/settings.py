@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import pairwise
+from math import isfinite
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,26 +93,38 @@ class QualityConfig:
     decoupling_min_coverage: float = 0.80
     speed_thresholds_kmh: tuple[float, ...] = (20.0, 25.0, 30.0, 35.0)
     cadence_min_coverage: float = 0.50
+    speed_min_coverage: float = 0.5
+    max_moving_interval_s: float = 30.0
+    forgotten_stop_check_duration_s: float = 7200.0
 
     def __post_init__(self) -> None:
         positive = (
             "moving_speed_threshold_mps",
+            "max_moving_interval_s",
             "activity_gap_threshold_s",
             "activity_distance_gap_threshold_m",
             "minimum_segment_duration_s",
+            "forgotten_stop_check_duration_s",
             "forgotten_stop_max_duration_s",
             "decoupling_min_duration_s",
         )
         for name in positive:
-            if getattr(self, name) <= 0:
-                raise ValueError(f"quality.{name} must be positive")
-        for name in ("forgotten_stop_min_moving_ratio", "decoupling_min_coverage"):
             value = getattr(self, name)
-            if not 0 < value <= 1:
-                raise ValueError(f"quality.{name} must be in (0, 1]")
-        if not 0 <= self.cadence_min_coverage <= 1:
+            if not isfinite(value) or value <= 0:
+                raise ValueError(f"quality.{name} must be positive")
+        for name in (
+            "speed_min_coverage",
+            "forgotten_stop_min_moving_ratio",
+            "decoupling_min_coverage",
+        ):
+            value = getattr(self, name)
+            lower_bound = "[0, 1]" if name == "speed_min_coverage" else "(0, 1]"
+            is_valid = 0 <= value <= 1 if name == "speed_min_coverage" else 0 < value <= 1
+            if not isfinite(value) or not is_valid:
+                raise ValueError(f"quality.{name} must be in {lower_bound}")
+        if not isfinite(self.cadence_min_coverage) or not 0 <= self.cadence_min_coverage <= 1:
             raise ValueError("quality.cadence_min_coverage must be in [0, 1]")
-        if any(value < 0 for value in self.speed_thresholds_kmh):
+        if any(not isfinite(value) or value < 0 for value in self.speed_thresholds_kmh):
             raise ValueError("quality.speed_thresholds_kmh values must be non-negative")
         if tuple(sorted(set(self.speed_thresholds_kmh))) != self.speed_thresholds_kmh:
             raise ValueError("quality.speed_thresholds_kmh must be strictly increasing")

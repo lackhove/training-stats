@@ -74,9 +74,12 @@ class TestValidConfigs:
         assert config.server.host == "127.0.0.1"
         assert config.server.port == 8000
         assert config.quality.moving_speed_threshold_mps == 1.0
+        assert config.quality.speed_min_coverage == 0.5
+        assert config.quality.max_moving_interval_s == 30.0
         assert config.quality.activity_gap_threshold_s == 900.0
         assert config.quality.activity_distance_gap_threshold_m == 500.0
         assert config.quality.minimum_segment_duration_s == 300.0
+        assert config.quality.forgotten_stop_check_duration_s == 7200.0
         assert config.quality.decoupling_min_duration_s == 1200.0
         assert config.quality.decoupling_min_coverage == 0.80
 
@@ -86,23 +89,49 @@ class TestValidConfigs:
             + """
 [quality]
 moving_speed_threshold_mps = 1.5
+speed_min_coverage = 0.75
+max_moving_interval_s = 12.0
 activity_gap_threshold_s = 1200.0
 activity_distance_gap_threshold_m = 750.0
 minimum_segment_duration_s = 360.0
+forgotten_stop_check_duration_s = 9000.0
 decoupling_min_duration_s = 600.0
 decoupling_min_coverage = 0.70
 """
         )
         config = load_config(_write_config(tmp_path, content))
         assert config.quality.moving_speed_threshold_mps == 1.5
+        assert config.quality.speed_min_coverage == 0.75
+        assert config.quality.max_moving_interval_s == 12.0
         assert config.quality.activity_gap_threshold_s == 1200.0
         assert config.quality.activity_distance_gap_threshold_m == 750.0
         assert config.quality.minimum_segment_duration_s == 360.0
+        assert config.quality.forgotten_stop_check_duration_s == 9000.0
         assert config.quality.decoupling_min_duration_s == 600.0
         assert config.quality.decoupling_min_coverage == 0.70
 
+    def test_zero_speed_coverage_is_valid(self, tmp_path: Path) -> None:
+        content = VALID_LOCAL + "\n[quality]\nspeed_min_coverage = 0.0\n"
+        config = load_config(_write_config(tmp_path, content))
+        assert config.quality.speed_min_coverage == 0.0
+
 
 class TestInvalidConfigs:
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("speed_min_coverage", -0.01),
+            ("speed_min_coverage", 1.01),
+            ("max_moving_interval_s", 0.0),
+            ("max_moving_interval_s", float("inf")),
+            ("forgotten_stop_check_duration_s", -1.0),
+        ],
+    )
+    def test_invalid_analysis_thresholds(self, tmp_path: Path, name: str, value: float) -> None:
+        content = VALID_LOCAL + f"\n[quality]\n{name} = {value}\n"
+        with pytest.raises(ConfigurationError, match=name):
+            load_config(_write_config(tmp_path, content))
+
     def test_malformed_toml(self, tmp_path: Path) -> None:
         with pytest.raises(ConfigurationError, match="not valid TOML"):
             load_config(_write_config(tmp_path, "[athlete\nmax_heart_rate = "))

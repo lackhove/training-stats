@@ -44,9 +44,15 @@ z5_max = 180
 
 [quality]
 moving_speed_threshold_mps = 1.0
+# Minimum fraction of record intervals with speed data before inferring pauses.
+speed_min_coverage = 0.5
+# Maximum time attributed to one record interval in activity analytics.
+max_moving_interval_s = 30.0
 activity_gap_threshold_s = 900.0
 activity_distance_gap_threshold_m = 500.0
 minimum_segment_duration_s = 300.0
+# Apply the low-moving-time-ratio forgotten-stop check only beyond this duration.
+forgotten_stop_check_duration_s = 7200.0
 decoupling_min_duration_s = 1200.0
 decoupling_min_coverage = 0.80
 speed_thresholds_kmh = [20.0, 25.0, 30.0, 35.0]

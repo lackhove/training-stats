@@ -15,7 +15,6 @@ from ..metrics import (
     MetricMethod,
     MissingReason,
     Period,
-    ScalarValue,
     TimeBasis,
     TripPeriod,
 )
@@ -33,7 +32,7 @@ from .heart_rate import (
     time_in_zones,
 )
 from .load import LOAD_COEFFICIENT_SET, LOAD_FORMULA, LOAD_VERSION, hr_trimp_load, load_confidence
-from .metric_helpers import scalar_metric, table_metric
+from .metric_helpers import metric_number, scalar_metric, table_metric
 
 _COMPLETENESS_FIELDS = 7
 
@@ -54,19 +53,27 @@ def compute_activity_metrics(
 ) -> tuple[Metric, ...]:
     """Compute per-trip metrics from one transient parsed activity."""
     zones = build_zone_bounds(athlete.heart_rate_zones.as_bounds())
+    effective_quality = quality or QualityConfig()
     zone_result: ZoneResult = time_in_zones(
-        activity.records, zones, pause_intervals=activity.pause_intervals
+        activity.records,
+        zones,
+        max_interval_s=effective_quality.max_moving_interval_s,
+        pause_intervals=activity.pause_intervals,
     )
-    buckets = hr_bucket_averages(activity.records, pause_intervals=activity.pause_intervals)
+    buckets = hr_bucket_averages(
+        activity.records,
+        max_interval_s=effective_quality.max_moving_interval_s,
+        pause_intervals=activity.pause_intervals,
+    )
     load_value = hr_trimp_load(
         zone_result, zones, max_hr=athlete.max_heart_rate, resting_hr=athlete.resting_heart_rate
     )
-    effective_quality = quality or QualityConfig()
     decoupling: DecouplingResult = compute_aerobic_decoupling(
         activity.records,
         moving_speed_threshold_mps=effective_quality.moving_speed_threshold_mps,
         min_duration_s=effective_quality.decoupling_min_duration_s,
         min_coverage=effective_quality.decoupling_min_coverage,
+        max_interval_s=effective_quality.max_moving_interval_s,
         session_moving_time_s=activity.moving_time_s,
         pause_intervals=activity.pause_intervals,
     )
@@ -79,7 +86,11 @@ def compute_activity_metrics(
             else None
         ),
     )
-    histogram = hr_histogram(activity.records, pause_intervals=activity.pause_intervals)
+    histogram = hr_histogram(
+        activity.records,
+        max_interval_s=effective_quality.max_moving_interval_s,
+        pause_intervals=activity.pause_intervals,
+    )
     metrics: list[Metric] = []
     metrics.extend(_session_metrics(activity, analysis_version, period))
     metrics.extend(_heart_rate_metrics(period, zone_result, buckets, histogram))
@@ -465,9 +476,4 @@ def data_quality_metrics(
 
 def _record_number(record: ActivityRecord, name: str) -> float | None:
     metric = next((item for item in record.metrics if item.name == name), None)
-    if metric is None or not isinstance(metric.value, ScalarValue):
-        return None
-    value = metric.value.value
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
+    return metric_number(metric)

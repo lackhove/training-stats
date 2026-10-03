@@ -78,7 +78,6 @@ def make_app_config(
 def make_processor(
     *,
     athlete: AthleteConfig,
-    analysis_version: str,
     parser: FitParser | None = None,
     quality: QualityConfig | None = None,
 ) -> FileProcessor:
@@ -87,7 +86,6 @@ def make_processor(
         parser=parser or StubParser(),
         athlete=athlete,
         quality=quality or QualityConfig(),
-        analysis_version=analysis_version,
     )
 
 
@@ -248,14 +246,18 @@ def two_files() -> dict[str, bytes]:
 
 
 def make_sync_service(
-    tmp_path: Path, sources: list[StubSource], *, version: str = "1"
+    tmp_path: Path,
+    sources: list[StubSource],
+    *,
+    version: str = "1",
+    quality: QualityConfig | None = None,
 ) -> SyncService:
     """SyncService wired with stub sources and an isolated cache directory."""
     cache_dir = tmp_path / "cache"
     config = make_app_config(cache_dir, tmp_path / "src")
     return SyncService(
         sources=sources,
-        processor=make_processor(athlete=config.athlete, analysis_version=version),
+        processor=make_processor(athlete=config.athlete, quality=quality),
         repository=JsonTrainingRepository(cache_dir),
         analysis_version=version,
     )
@@ -286,9 +288,7 @@ def make_server(
     server = create_service(cfg)
     # Swap in the deterministic stub source/parser for cache independence.
     server.sync_service.sources = [StubSource(files=files)]
-    server.sync_service.processor = make_processor(
-        athlete=cfg.athlete, analysis_version=server.sync_service.analysis_version
-    )
+    server.sync_service.processor = make_processor(athlete=cfg.athlete, quality=cfg.quality)
     return server
 
 

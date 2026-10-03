@@ -9,10 +9,7 @@ import polars as pl
 
 from ..fit.types import PauseInterval
 from .intervals import interval_frame, merge_pause_intervals, overlap_seconds
-
-# Intervals longer than this are capped to avoid over-counting time-in-zone
-# when a device pauses recording or produces sparse smart recordings.
-MAX_RECORD_INTERVAL_S = 30.0
+from .statistics_records import MAX_INTERVAL_S as MAX_RECORD_INTERVAL_S
 
 # Bucket size for time-weighted heart-rate averages (drift detection).
 HR_BUCKET_S = 600.0
