@@ -188,57 +188,80 @@ class _Bin:
     observation_count: int
 
 
-type _WindowColumn = tuple[str, str, Callable[[_Window], MetricScalar | None]]
+type _WindowColumn = tuple[str, str, str | None, Callable[[_Window], MetricScalar | None]]
 type _EfficiencyField = tuple[
     str, str, str | None, MetricKind, Callable[[_EfficiencyFacts], MetricScalar | None]
 ]
 
 _WINDOW_COLUMNS: tuple[_WindowColumn, ...] = (
-    ("average_heart_rate_bpm", "average heart rate bpm", lambda w: w.average_heart_rate_bpm),
+    (
+        "average_heart_rate_bpm",
+        "average heart rate bpm",
+        "bpm",
+        lambda w: w.average_heart_rate_bpm,
+    ),
     (
         "average_pedaling_cadence_rpm",
         "average pedaling cadence rpm",
+        "rpm",
         lambda w: w.average_pedaling_cadence_rpm,
     ),
-    ("average_speed_kmh", "average speed kmh", lambda w: w.average_speed_kmh),
-    ("cadence_coverage_ratio", "cadence coverage ratio", lambda w: w.cadence_coverage_ratio),
-    ("cadence_reason", "cadence reason", lambda w: w.cadence_reason),
-    ("distance_m", "distance m", lambda w: w.distance_m),
-    ("duration_s", "duration", lambda w: w.duration_s),
-    ("end_s", "end", lambda w: w.end_s),
-    ("heart_rate_p25_bpm", "heart rate p25 bpm", lambda w: w.heart_rate_p25_bpm),
-    ("heart_rate_p75_bpm", "heart rate p75 bpm", lambda w: w.heart_rate_p75_bpm),
-    ("heart_rate_valid_time_s", "heart rate valid time", lambda w: w.heart_rate_valid_time_s),
+    ("average_speed_kmh", "average speed kmh", "km/h", lambda w: w.average_speed_kmh),
+    (
+        "cadence_coverage_ratio",
+        "cadence coverage ratio",
+        "ratio",
+        lambda w: w.cadence_coverage_ratio,
+    ),
+    ("cadence_reason", "cadence reason", None, lambda w: w.cadence_reason),
+    ("distance_m", "distance m", "m", lambda w: w.distance_m),
+    ("duration_s", "duration", "s", lambda w: w.duration_s),
+    ("end_s", "end", "s", lambda w: w.end_s),
+    ("heart_rate_p25_bpm", "heart rate p25 bpm", "bpm", lambda w: w.heart_rate_p25_bpm),
+    ("heart_rate_p75_bpm", "heart rate p75 bpm", "bpm", lambda w: w.heart_rate_p75_bpm),
+    (
+        "heart_rate_valid_time_s",
+        "heart rate valid time",
+        "s",
+        lambda w: w.heart_rate_valid_time_s,
+    ),
     (
         "heart_rate_zone_percent_denominator",
         "heart rate zone percent denominator",
+        None,
         lambda w: "valid_heart_rate_time",
     ),
-    ("median_heart_rate_bpm", "median heart rate bpm", lambda w: w.median_heart_rate_bpm),
+    (
+        "median_heart_rate_bpm",
+        "median heart rate bpm",
+        "bpm",
+        lambda w: w.median_heart_rate_bpm,
+    ),
     (
         "median_pedaling_cadence_rpm",
         "median pedaling cadence rpm",
+        "rpm",
         lambda w: w.median_pedaling_cadence_rpm,
     ),
-    ("median_speed_kmh", "median speed kmh", lambda w: w.median_speed_kmh),
-    ("moving_time_ratio", "moving time ratio", lambda w: w.moving_time_ratio),
-    ("moving_time_s", "moving time", lambda w: w.moving_time_s),
-    ("speed_p25_kmh", "speed p25 kmh", lambda w: w.speed_p25_kmh),
-    ("speed_p75_kmh", "speed p75 kmh", lambda w: w.speed_p75_kmh),
+    ("median_speed_kmh", "median speed kmh", "km/h", lambda w: w.median_speed_kmh),
+    ("moving_time_ratio", "moving time ratio", "ratio", lambda w: w.moving_time_ratio),
+    ("moving_time_s", "moving time", "s", lambda w: w.moving_time_s),
+    ("speed_p25_kmh", "speed p25 kmh", "km/h", lambda w: w.speed_p25_kmh),
+    ("speed_p75_kmh", "speed p75 kmh", "km/h", lambda w: w.speed_p75_kmh),
 )
 
 _EFFICIENCY_FIELDS: tuple[_EfficiencyField, ...] = (
     (
         "speed_per_heart_rate",
         "speed per heart rate for {context} during the activity.",
-        "bpm",
+        "km/h/bpm",
         MetricKind.CALCULATED,
         lambda e: e.speed_per_heart_rate,
     ),
     (
         "speed_per_heart_rate_reserve",
         "speed per heart rate reserve for {context} during the activity.",
-        "bpm",
+        "km/h",
         MetricKind.CALCULATED,
         lambda e: e.speed_per_heart_rate_reserve,
     ),
@@ -272,21 +295,21 @@ _EFFICIENCY_FIELDS: tuple[_EfficiencyField, ...] = (
     ),
     (
         "ef_first_half",
-        "ef first half for {context} during the activity.",
-        None,
+        "Speed-to-heart-rate efficiency in the first half of valid moving time.",
+        "km/h/bpm",
         MetricKind.CALCULATED,
         lambda e: e.ef_first_half,
     ),
     (
         "ef_second_half",
-        "ef second half for {context} during the activity.",
-        None,
+        "Speed-to-heart-rate efficiency in the second half of valid moving time.",
+        "km/h/bpm",
         MetricKind.CALCULATED,
         lambda e: e.ef_second_half,
     ),
     (
         "aerobic_decoupling_pct",
-        "aerobic decoupling pct for {context} during the activity.",
+        "Percent change in speed-to-heart-rate efficiency between equal moving-time halves.",
         "%",
         MetricKind.CALCULATED,
         lambda e: e.aerobic_decoupling_pct,
@@ -300,7 +323,7 @@ _EFFICIENCY_FIELDS: tuple[_EfficiencyField, ...] = (
     ),
     (
         "coverage_ratio",
-        "Share of {context} time covered by valid measurements.",
+        "Fraction of moving time with valid simultaneous speed and heart-rate measurements.",
         "ratio",
         MetricKind.CALCULATED,
         lambda e: e.coverage_ratio,
@@ -308,22 +331,22 @@ _EFFICIENCY_FIELDS: tuple[_EfficiencyField, ...] = (
     (
         "heart_rate_reserve_formula",
         "heart rate reserve formula for {context} during the activity.",
-        "bpm",
+        None,
         MetricKind.INTERPRETED,
         lambda e: e.heart_rate_reserve_formula,
     ),
 )
 
-_RELATIONSHIP_SPECS: dict[str, tuple[str, str]] = {
-    "speed_heart_rate": ("speed heart rate", "bpm"),
-    "speed_cadence": ("speed cadence", "rpm"),
-    "heart_rate_cadence": ("heart rate cadence", "bpm"),
+_RELATIONSHIP_SPECS: dict[str, str] = {
+    "speed_heart_rate": "speed heart rate",
+    "speed_cadence": "speed cadence",
+    "heart_rate_cadence": "heart rate cadence",
 }
 
-_HEATMAP_SPECS: dict[str, tuple[str, str, str]] = {
-    "heart_rate_speed": ("heart rate and speed", "heart rate speed", "bpm"),
-    "heart_rate_cadence": ("heart rate and cadence", "heart rate cadence", "bpm"),
-    "speed_cadence": ("speed and cadence", "speed cadence", "rpm"),
+_HEATMAP_SPECS: dict[str, tuple[str, str]] = {
+    "heart_rate_speed": ("heart rate and speed", "heart rate speed"),
+    "heart_rate_cadence": ("heart rate and cadence", "heart rate cadence"),
+    "speed_cadence": ("speed and cadence", "speed cadence"),
 }
 
 
@@ -421,8 +444,8 @@ def _speed_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             f"{prefix}.valid_moving_time_ratio",
             period,
             _capped_coverage(sum(weight for _speed, weight in samples), moving),
-            description="Share of speed time covered by valid measurements.",
-            unit="s",
+            description="Fraction of moving time represented by valid speed measurements.",
+            unit="ratio",
             kind=MetricKind.CALCULATED,
             time_basis=TimeBasis.MOVING_TIME,
         )
@@ -432,10 +455,9 @@ def _speed_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             f"{prefix}.valid_measurement_ratio",
             period,
             valid_samples / len(intervals) if intervals else 0.0,
-            description="Share of speed time covered by valid measurements.",
-            unit="km/h",
+            description="Fraction of record intervals containing a valid speed measurement.",
+            unit="ratio",
             kind=MetricKind.CALCULATED,
-            time_basis=TimeBasis.MOVING_TIME,
         )
     )
     metrics.append(
@@ -443,10 +465,9 @@ def _speed_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             f"{prefix}.measurements_during_movement_ratio",
             period,
             during_movement / valid_samples if valid_samples > 0 else 0.0,
-            description="Share of speed time covered by valid measurements.",
-            unit="km/h",
+            description="Fraction of valid speed samples recorded during movement.",
+            unit="ratio",
             kind=MetricKind.CALCULATED,
-            time_basis=TimeBasis.MOVING_TIME,
         )
     )
     return tuple(metrics)
@@ -557,7 +578,6 @@ def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             period,
             available,
             description="Whether cadence data meets the configured availability requirements.",
-            unit="rpm",
             kind=MetricKind.INTERPRETED,
         ),
         *_distribution_metrics(
@@ -577,6 +597,7 @@ def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             context="cadence",
             unit="rpm",
             time_basis=TimeBasis.PEDALING_TIME,
+            coverage_time_basis=TimeBasis.MOVING_TIME,
             empty_reason=pedaling_reason,
             period=period,
         ),
@@ -602,8 +623,8 @@ def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             f"{prefix}.pedaling_time_ratio",
             period,
             pedaling_time_ratio,
-            description="Share of cadence time covered by valid measurements.",
-            unit="s",
+            description="Fraction of moving time classified as pedaling from valid cadence data.",
+            unit="ratio",
             kind=MetricKind.CALCULATED,
             missing_reason=missing_reason,
         ),
@@ -611,8 +632,8 @@ def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             f"{prefix}.coverage_ratio",
             period,
             coverage,
-            description="Share of cadence time covered by valid measurements.",
-            unit="rpm",
+            description="Fraction of moving time covered by valid cadence measurements.",
+            unit="ratio",
             kind=MetricKind.CALCULATED,
         ),
     ]
@@ -672,18 +693,20 @@ def _zone_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             period,
             Axis(name="seconds", values=zone_values, unit="s"),
             tuple(seconds),
-            description="zone distribution seconds values grouped by seconds.",
+            description="Time assigned to each configured heart-rate zone.",
             unit="s",
             kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.ACTIVE_TIME,
         ),
         table_metric(
             f"{prefix}.percent",
             period,
             Axis(name="percent", values=zone_values, unit="%"),
             tuple(value / valid_time_s * 100.0 if valid_time_s > 0.0 else 0.0 for value in seconds),
-            description="zone distribution percent values grouped by percent.",
+            description="Percent of valid heart-rate time assigned to each configured zone.",
             unit="%",
             kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.VALID_HEART_RATE_TIME,
         ),
         scalar_metric(
             f"{prefix}.valid_heart_rate_time_s",
@@ -692,21 +715,22 @@ def _zone_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             description="valid heart rate time for zone distribution during the activity.",
             unit="s",
             kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.VALID_HEART_RATE_TIME,
         ),
         scalar_metric(
             f"{prefix}.unclassified_time_s",
             period,
             max(0.0, valid_time_s - sum(seconds)),
-            description="unclassified time for zone distribution during the activity.",
+            description="Valid heart-rate time outside the configured heart-rate zones.",
             unit="s",
             kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.VALID_HEART_RATE_TIME,
         ),
         scalar_metric(
             f"{prefix}.percent_denominator",
             period,
             "valid_heart_rate_time",
-            description="percent denominator for zone distribution during the activity.",
-            unit="%",
+            description="Time basis used as the denominator for heart-rate zone percentages.",
             kind=MetricKind.INTERPRETED,
         ),
     )
@@ -749,6 +773,7 @@ def _time_window_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
                 "time windows movement time variant",
                 movement,
                 period,
+                time_basis=TimeBasis.MOVING_TIME,
             )
         )
     else:
@@ -761,7 +786,7 @@ def _time_window_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
                 unit="s",
                 kind=MetricKind.CALCULATED,
                 missing_reason=MissingReason.NO_DATA,
-                time_basis=TimeBasis.ELAPSED_TIME,
+                time_basis=TimeBasis.MOVING_TIME,
             )
         )
     return tuple(metrics)
@@ -806,7 +831,7 @@ def fatigue_response_metrics(
 
 
 def _fatigue_response_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
-    """Heart-rate drift plus the efficiency values mirrored under fatigue response."""
+    """Heart-rate drift over the activity's elapsed-time windows."""
     activity = statistics.activity
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.fatigue_response"
@@ -817,25 +842,21 @@ def _fatigue_response_metrics(statistics: _ActivityStatistics) -> tuple[Metric, 
                 period,
                 None,
                 description=DRIFT_DESCRIPTION,
-                unit="bpm",
+                unit="bpm/h",
                 kind=MetricKind.CALCULATED,
                 missing_reason=MissingReason.INSUFFICIENT_DATA,
             ),
         )
-    facts = statistics.efficiency_facts()
     drift = scalar_metric(
         f"{prefix}.heart_rate_drift_bpm_per_hour",
         period,
         _heart_rate_drift(statistics),
         description=DRIFT_DESCRIPTION,
-        unit="bpm",
+        unit="bpm/h",
         kind=MetricKind.CALCULATED,
-        missing_reason=facts.missing_reason or MissingReason.NO_DATA,
+        missing_reason=MissingReason.INSUFFICIENT_DATA,
     )
-    return (
-        drift,
-        *_efficiency_metrics(prefix, "fatigue response", facts, period),
-    )
+    return (drift,)
 
 
 def relationship_metrics(
@@ -875,7 +896,7 @@ def _relationship_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]
     for name, values in pairs.items():
         if name != "speed_heart_rate" and not values:
             continue
-        label, unit = _RELATIONSHIP_SPECS[name]
+        label = _RELATIONSHIP_SPECS[name]
         spearman = _spearman(values) if len(values) >= 3 else None
         pearson = _pearson(values) if len(values) >= 3 else None
         missing_reason = (
@@ -885,13 +906,24 @@ def _relationship_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]
             if spearman is None and pearson is None
             else MissingReason.NO_DATA
         )
-        for key, value, description in (
-            ("spearman", spearman, f"spearman for relationships {label} during the activity."),
-            ("pearson", pearson, f"pearson for relationships {label} during the activity."),
+        for key, value, description, unit in (
+            (
+                "spearman",
+                spearman,
+                f"Spearman rank correlation between {label} across valid time windows.",
+                "correlation_coefficient",
+            ),
+            (
+                "pearson",
+                pearson,
+                f"Pearson correlation between {label} across valid time windows.",
+                "correlation_coefficient",
+            ),
             (
                 "window_count",
                 len(values),
-                f"window count for relationships {label} during the activity.",
+                f"Number of valid time windows used for the {label} relationship.",
+                "count",
             ),
         ):
             metrics.append(
@@ -957,7 +989,7 @@ def _heatmap_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
         ("heart_rate_cadence", 10, 10),
         ("speed_cadence", 5, 10),
     ):
-        axes, label, unit = _HEATMAP_SPECS[name]
+        axes, label = _HEATMAP_SPECS[name]
         values = cells[name] if available or name == "heart_rate_speed" else {}
         valid_observation_count = int(sum(value[1] for value in values.values()))
         base = f"{prefix}.{name}"
@@ -988,10 +1020,8 @@ def _heatmap_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
                 f"{base}.valid_observation_count",
                 period,
                 valid_observation_count,
-                description=(
-                    f"valid observation count for heatmap data {label} during the activity."
-                ),
-                unit=unit,
+                description=(f"Number of valid observations in the {label} heatmap."),
+                unit="observations",
                 kind=MetricKind.CALCULATED,
             )
         )
@@ -1047,79 +1077,79 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
     counts: tuple[tuple[str, str, str | None, int | float], ...] = (
         (
             "raw_record_points",
-            "raw record points for data quality during the activity.",
-            None,
+            "Number of raw record points in the activity.",
+            "count",
             activity.records.height,
         ),
         (
             "valid_speed_intervals",
-            "valid speed intervals for data quality during the activity.",
-            "km/h",
+            "Number of valid speed intervals classified as movement.",
+            "count",
             during_movement,
         ),
         (
             "valid_speed_samples",
-            "valid speed samples for data quality during the activity.",
-            "km/h",
+            "Number of intervals containing a valid speed sample.",
+            "count",
             valid_speed,
         ),
         (
             "speed_samples_during_movement",
-            "speed samples during movement for data quality during the activity.",
-            "km/h",
+            "Number of valid speed samples recorded during movement.",
+            "count",
             during_movement,
         ),
         (
             "valid_heart_rate_intervals",
-            "valid heart rate intervals for data quality during the activity.",
-            "bpm",
+            "Number of intervals containing a valid heart-rate sample.",
+            "count",
             valid_heart_rate,
         ),
         (
             "valid_cadence_intervals",
-            "valid cadence intervals for data quality during the activity.",
-            "rpm",
+            "Number of intervals containing a valid cadence sample.",
+            "count",
             valid_cadence,
         ),
         (
             "invalid_speed_intervals",
-            "invalid speed intervals for data quality during the activity.",
-            "km/h",
+            "Number of intervals without a valid speed sample.",
+            "count",
             len(intervals) - valid_speed,
         ),
         (
             "invalid_heart_rate_intervals",
-            "invalid heart rate intervals for data quality during the activity.",
-            "bpm",
+            "Number of intervals without a valid heart-rate sample.",
+            "count",
             len(intervals) - valid_heart_rate,
         ),
         (
             "invalid_cadence_intervals",
-            "invalid cadence intervals for data quality during the activity.",
-            "rpm",
+            "Number of intervals without a valid cadence sample.",
+            "count",
             len(intervals) - valid_cadence,
         ),
         (
             "duplicate_timestamps",
-            "duplicate timestamps for data quality during the activity.",
-            "s",
+            "Number of duplicate record timestamps.",
+            "count",
             duplicates,
         ),
         (
             "gap_intervals_over_30s",
-            "gap intervals over 30s for data quality during the activity.",
+            "Number of record gaps over 30 seconds.",
             "count",
             gaps,
         ),
         (
             "rejected_outlier_values",
-            "rejected outlier values for data quality during the activity.",
-            None,
+            "Number of sensor values rejected as outliers.",
+            "count",
             outliers,
         ),
         (
             "pause_intervals",
-            "pause intervals for data quality during the activity.",
+            "Number of pause intervals in the activity.",
             "count",
             len(activity.pause_intervals) if short else len(merged_pauses(activity)),
         ),
@@ -1139,19 +1169,38 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
         return tuple(metrics)
     moving = statistics.moving_time_s()
     active = statistics.active_time_s()
-    for key, unit, weight, denominator in (
-        ("speed_coverage_ratio", "km/h", speed_time_s, moving),
-        ("heart_rate_coverage_ratio", "bpm", heart_rate_time_s, active),
-        ("cadence_coverage_ratio", "rpm", cadence_time_s, moving),
+    for key, weight, denominator, description, time_basis in (
+        (
+            "speed_coverage_ratio",
+            speed_time_s,
+            moving,
+            "Fraction of moving time covered by valid speed measurements.",
+            TimeBasis.MOVING_TIME,
+        ),
+        (
+            "heart_rate_coverage_ratio",
+            heart_rate_time_s,
+            active,
+            "Fraction of active time covered by valid heart-rate measurements.",
+            TimeBasis.ACTIVE_TIME,
+        ),
+        (
+            "cadence_coverage_ratio",
+            cadence_time_s,
+            moving,
+            "Fraction of moving time covered by valid cadence measurements.",
+            TimeBasis.MOVING_TIME,
+        ),
     ):
         metrics.append(
             scalar_metric(
                 f"{prefix}.{key}",
                 period,
                 _capped_coverage(weight, denominator),
-                description="Share of data quality time covered by valid measurements.",
-                unit=unit,
+                description=description,
+                unit="ratio",
                 kind=MetricKind.CALCULATED,
+                time_basis=time_basis,
             )
         )
     return tuple(metrics)
@@ -1184,9 +1233,17 @@ _DISTRIBUTION_FIELDS: tuple[tuple[str, str, str | None], ...] = (
     ("p90", "Duration-weighted 90th percentile of valid {context} samples.", None),
     ("minimum", "minimum for {context} during the activity.", None),
     ("maximum", "maximum for {context} during the activity.", None),
-    ("valid_sample_count", "Number of valid {context} samples used in the distribution.", None),
+    (
+        "valid_sample_count",
+        "Number of valid {context} samples used in the distribution.",
+        "count",
+    ),
     ("valid_time_s", "Duration of valid {context} measurements used in the distribution.", "s"),
-    ("coverage_ratio", "Share of {context} time covered by valid measurements.", None),
+    (
+        "coverage_ratio",
+        "Fraction of {context} time covered by valid measurements.",
+        "ratio",
+    ),
 )
 
 
@@ -1200,7 +1257,9 @@ def _distribution_metrics(
     time_basis: TimeBasis,
     empty_reason: MissingReason,
     period: TripPeriod,
+    coverage_time_basis: TimeBasis | None = None,
 ) -> list[Metric]:
+    coverage_basis = coverage_time_basis or time_basis
     total_weight = sum(weight for _value, weight in samples)
     if not samples or total_weight <= 0.0:
         values: tuple[MetricScalar | None, ...] = (None,) * 9 + (0, 0.0, 0.0)
@@ -1232,11 +1291,22 @@ def _distribution_metrics(
             f"{prefix}.{key}",
             period,
             value,
-            description=description.format(context=context),
+            description=(
+                f"Fraction of {coverage_basis.value.replace('_', ' ')} covered by valid "
+                f"{context} measurements."
+                if key == "coverage_ratio"
+                else description.format(context=context)
+            ),
             unit=field_unit if field_unit is not None else unit,
             kind=MetricKind.CALCULATED,
             missing_reason=missing_reason,
-            time_basis=time_basis,
+            time_basis=(
+                None
+                if key == "valid_sample_count"
+                else coverage_basis
+                if key == "coverage_ratio"
+                else time_basis
+            ),
         )
         for (key, description, field_unit), value in zip(_DISTRIBUTION_FIELDS, values, strict=True)
     ]
@@ -1458,6 +1528,8 @@ def _window_tables(
     context: str,
     windows: tuple[_Window, ...],
     period: TripPeriod,
+    *,
+    time_basis: TimeBasis = TimeBasis.ELAPSED_TIME,
 ) -> list[Metric]:
     if not windows:
         return []
@@ -1467,8 +1539,9 @@ def _window_tables(
         unit="s",
     )
     masked = any(window.cadence_reason is not None for window in windows)
+    basis_description = "movement-time" if time_basis is TimeBasis.MOVING_TIME else "elapsed-time"
     metrics: list[Metric] = []
-    for key, label, extract in _WINDOW_COLUMNS:
+    for key, label, unit, extract in _WINDOW_COLUMNS:
         if key == "cadence_reason" and not masked:
             continue
         metrics.append(
@@ -1477,10 +1550,10 @@ def _window_tables(
                 period,
                 axis,
                 tuple(extract(window) for window in windows),
-                description=f"{context} {label} measured in consecutive elapsed-time windows.",
-                unit="s",
+                description=f"{context} {label} for consecutive {basis_description} windows.",
+                unit=unit,
                 kind=MetricKind.CALCULATED,
-                time_basis=TimeBasis.ELAPSED_TIME,
+                time_basis=time_basis,
             )
         )
     return metrics

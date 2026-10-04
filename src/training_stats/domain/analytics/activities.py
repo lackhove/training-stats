@@ -23,7 +23,6 @@ from ..metrics import (
 from ..models import STATUS_DUPLICATE, STATUS_FAILED, STATUS_OK, ActivityRecord, SourceIndexEntry
 from ..settings import AthleteConfig, QualityConfig
 from .activity_statistics import compute_activity_statistics
-from .endurance import DecouplingResult, compute_aerobic_decoupling
 from .heart_rate import (
     HrBucketAvg,
     ZoneResult,
@@ -74,16 +73,6 @@ def compute_activity_metrics(
     load_value = hr_trimp_load(
         zone_result, zones, max_hr=athlete.max_heart_rate, resting_hr=athlete.resting_heart_rate
     )
-    decoupling: DecouplingResult = compute_aerobic_decoupling(
-        activity.records,
-        moving_speed_threshold_mps=effective_quality.moving_speed_threshold_mps,
-        min_duration_s=effective_quality.decoupling_min_duration_s,
-        min_coverage=effective_quality.decoupling_min_coverage,
-        max_interval_s=effective_quality.max_moving_interval_s,
-        session_moving_time_s=activity.moving_time_s,
-        pause_intervals=activity.pause_intervals,
-        intervals_frame=intervals_frame,
-    )
     period = TripPeriod(
         activity_id=activity.activity_id,
         start=activity.start_time,
@@ -103,7 +92,6 @@ def compute_activity_metrics(
     metrics.extend(_session_metrics(activity, analysis_version, period))
     metrics.extend(_heart_rate_metrics(period, zone_result, buckets, histogram))
     metrics.extend(_load_metrics(activity, period, zone_result, load_value))
-    metrics.extend(_endurance_metrics(period, decoupling))
     metrics.extend(compute_activity_statistics(activity, athlete, effective_quality))
     return tuple(metrics)
 
@@ -330,55 +318,6 @@ def _load_metrics(
             kind=MetricKind.CALCULATED,
         ),
     ]
-
-
-def _endurance_metrics(period: TripPeriod, decoupling: DecouplingResult) -> list[Metric]:
-    metrics: list[Metric] = []
-    decoupling_reason = _decoupling_missing_reason(decoupling.confidence)
-    decoupling_confidence = Confidence.HIGH if decoupling.confidence == "high" else None
-    for name, description, value, unit in (
-        (
-            "endurance.efficiency_first_half",
-            "Speed-to-heart-rate efficiency in the first half of valid moving time.",
-            decoupling.ef_first_half,
-            "km/h/bpm",
-        ),
-        (
-            "endurance.efficiency_second_half",
-            "Speed-to-heart-rate efficiency in the second half of valid moving time.",
-            decoupling.ef_second_half,
-            "km/h/bpm",
-        ),
-        (
-            "endurance.aerobic_decoupling",
-            "Percent change in speed-to-heart-rate efficiency between equal moving-time halves.",
-            decoupling.aerobic_decoupling_pct,
-            "%",
-        ),
-    ):
-        metrics.append(
-            scalar_metric(
-                name,
-                period,
-                value,
-                description=description,
-                unit=unit,
-                kind=MetricKind.CALCULATED,
-                missing_reason=decoupling_reason,
-                confidence=decoupling_confidence,
-                formula="speed_per_heart_rate; compare equal moving-time halves",
-                time_basis=TimeBasis.MOVING_TIME,
-            )
-        )
-    return metrics
-
-
-def _decoupling_missing_reason(confidence: str) -> MissingReason:
-    if confidence == "insufficient_coverage":
-        return MissingReason.INSUFFICIENT_COVERAGE
-    if confidence == "invalid_ef":
-        return MissingReason.INVALID_EF
-    return MissingReason.INSUFFICIENT_DURATION
 
 
 def _completeness(activity: ParsedActivity) -> float:

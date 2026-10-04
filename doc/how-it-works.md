@@ -269,26 +269,31 @@ load      = Σ_k (minutes_in_zone_k × weight_k)
 - `load_confidence` from HR coverage: ≥ 0.9 → `high`, ≥ 0.5 → `medium`, else `low`.
 - `None` without valid HR data. This is an **estimate**, never labeled "TSS".
 
-### 5.7 Aerobic Decoupling (`endurance.py`)
+### 5.7 Efficiency and Aerobic Decoupling (`activity_statistics.py`)
 
-Compares two **equal moving-time halves** of an activity:
+Speed-to-heart-rate efficiency and aerobic decoupling use valid moving
+intervals, with speed expressed in km/h, and compare two **equal moving-time
+halves**:
 
 ```
 EF_half          = time-weighted mean speed / time-weighted mean HR
 decoupling_pct   = (EF_1 − EF_2) / EF_1 × 100
 ```
 
-Quality gates (clean `None` + confidence on failure):
+Quality gates use the configured duration and coverage thresholds. Values that
+fail a gate are missing with the corresponding reason; valid time and coverage
+remain available. Canonical efficiency fields are emitted under
+`activity.statistics.efficiency.*`.
 
 | Gate | Value |
 |---|---|
-| Minimum moving time with HR | ≥ 1200 s (`decoupling_min_duration_s`) |
-| HR coverage of moving time | ≥ 0.80 (`decoupling_min_coverage`) |
-| Moving intervals | speed ≥ 1.0 m/s, interval ≤ 30 s, same segment |
-| Moving-time basis | Records and pause intervals only |
+| Minimum moving time with HR | Configured by `decoupling_min_duration_s` |
+| Speed/HR coverage of moving time | Configured by `decoupling_min_coverage` |
+| Moving intervals | Configured speed threshold and interval cap |
+| Moving-time basis | Validated records and pause intervals |
 
-Confidence values: `high`, `insufficient_duration`, `insufficient_coverage`,
-`invalid_ef`.
+Heart-rate drift is emitted separately under
+`activity.statistics.fatigue_response.heart_rate_drift_bpm_per_hour`.
 
 ### 5.8 Data Completeness
 

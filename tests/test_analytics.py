@@ -260,9 +260,17 @@ class TestActivityMetrics:
             source_path="x",
         )
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        assert _scalar(metrics, "endurance.efficiency_first_half") is not None
-        assert _scalar(metrics, "endurance.efficiency_second_half") is not None
-        assert _scalar(metrics, "endurance.aerobic_decoupling") == pytest.approx(0.0)
+        assert _scalar(metrics, "activity.statistics.efficiency.ef_first_half") is not None
+        assert _scalar(metrics, "activity.statistics.efficiency.ef_second_half") is not None
+        assert _scalar(
+            metrics, "activity.statistics.efficiency.aerobic_decoupling_pct"
+        ) == pytest.approx(0.0)
+        assert all(not metric.name.startswith("endurance.") for metric in metrics)
+        assert all(
+            not metric.name.startswith("activity.statistics.fatigue_response.")
+            or metric.name == "activity.statistics.fatigue_response.heart_rate_drift_bpm_per_hour"
+            for metric in metrics
+        )
 
 
 class TestSummarizeDaily:

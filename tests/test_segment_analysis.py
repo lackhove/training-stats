@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from tests.conftest import make_athlete
-from training_stats.domain.analytics import endurance, heart_rate, segments
+from training_stats.domain.analytics import heart_rate, segments
 from training_stats.domain.analytics.activities import compute_activity_metrics
 from training_stats.domain.analytics.segments import SegmentAnalysis, analyze_segments
 from training_stats.domain.fit.repair import repair_timeline
@@ -166,7 +166,6 @@ class TestPauseAwareStatistics:
 
         monkeypatch.setattr(segments, "interval_frame", count_builds)
         monkeypatch.setattr(heart_rate, "interval_frame", count_builds)
-        monkeypatch.setattr(endurance, "interval_frame", count_builds)
 
         result = _analyze(_paused_activity(timer_events=True))
 
@@ -226,7 +225,7 @@ class TestPauseAwareStatistics:
         assert isinstance(statistics_hr_time.value, ScalarValue)
         assert statistics_hr_time.value.value == pytest.approx(20.0)
 
-    def test_max_moving_interval_is_applied_to_endurance_metrics(self) -> None:
+    def test_max_moving_interval_is_applied_to_efficiency_metrics(self) -> None:
         data = _fit_data(
             heart_rates=[120] * 5,
             speeds=[5.0] * 5,
@@ -245,10 +244,14 @@ class TestPauseAwareStatistics:
             ),
         ).activities[0]
         baseline_metric = next(
-            metric for metric in baseline.metrics if metric.name == "endurance.aerobic_decoupling"
+            metric
+            for metric in baseline.metrics
+            if metric.name == "activity.statistics.efficiency.aerobic_decoupling_pct"
         )
         capped_metric = next(
-            metric for metric in capped.metrics if metric.name == "endurance.aerobic_decoupling"
+            metric
+            for metric in capped.metrics
+            if metric.name == "activity.statistics.efficiency.aerobic_decoupling_pct"
         )
 
         assert isinstance(baseline_metric.value, ScalarValue)

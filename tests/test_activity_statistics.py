@@ -37,6 +37,7 @@ from training_stats.domain.metrics import (
     MissingReason,
     ScalarValue,
     TableValue,
+    TimeBasis,
 )
 from training_stats.domain.models import ActivityRecord
 from training_stats.domain.settings import QualityConfig
@@ -55,21 +56,21 @@ VARIANTS: dict[str, tuple[dict[str, bool], QualityConfig]] = {
 }
 
 EXPECTED_STATISTICS_COUNTS = {
-    "normal": 143,
-    "no_cadence": 131,
-    "sparse_cadence": 131,
-    "paused": 158,
+    "normal": 131,
+    "no_cadence": 120,
+    "sparse_cadence": 120,
+    "paused": 147,
     "empty": 74,
-    "empty_thresholds": 142,
+    "empty_thresholds": 130,
 }
 
 EXPECTED_WIRE_DIGESTS = {
-    "normal": "6021f4022d0d2bec8e0219aab78e28284752215d498509be6f0d7b2cbaaafc60",
-    "no_cadence": "348580fd4712f3a58085b006e39282e326c07147b817aefa86a67d1218a883da",
-    "sparse_cadence": "261a8aba62931d95d62ea371d84cf3774f6e61b2a974d149337c1b9e7413103d",
-    "paused": "efb3a2f958d15333e49d027bf9db16b67ccdbb84947750164c37905eef74bb92",
-    "empty": "e71f0b978ce8dea88946ab262ecf84abb47f0cdb87d2e54cea8aa3764ff25244",
-    "empty_thresholds": "3d2bb2020a9a7cc1576e723798129e9aa86bc0b16764d9b36d52b28237aaf774",
+    "normal": "7a5425612787cab6c75408146a316b27be76c2224399185c702bfd7fd77b4423",
+    "no_cadence": "ec17c27df91e988ec89e37f4d3f50f7196fc1bb3eefdbf0726b9d8ebebd8ee9d",
+    "sparse_cadence": "249256beee1393e229387b3f965ae19d90917f14ac01f0839089325076256083",
+    "paused": "46a24440c4e1aea04da1be5c3c7a4e23eea69a9c891c8fc127aa6b7df3749f30",
+    "empty": "f070aa6ef71d8492b0c1464cb325ac7fb81fff68619d11ef84e2d392b7ea36c9",
+    "empty_thresholds": "0d23a5336d2a8b20d690c106e742573f078d33f8ee8b50841b1937c5490349b2",
 }
 
 EXPECTED_NORMAL_NAMES = (
@@ -170,18 +171,6 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.efficiency.coverage_ratio",
     "activity.statistics.efficiency.heart_rate_reserve_formula",
     "activity.statistics.fatigue_response.heart_rate_drift_bpm_per_hour",
-    "activity.statistics.fatigue_response.speed_per_heart_rate",
-    "activity.statistics.fatigue_response.speed_per_heart_rate_reserve",
-    "activity.statistics.fatigue_response.first_half_average_speed_kmh",
-    "activity.statistics.fatigue_response.second_half_average_speed_kmh",
-    "activity.statistics.fatigue_response.first_half_average_heart_rate_bpm",
-    "activity.statistics.fatigue_response.second_half_average_heart_rate_bpm",
-    "activity.statistics.fatigue_response.ef_first_half",
-    "activity.statistics.fatigue_response.ef_second_half",
-    "activity.statistics.fatigue_response.aerobic_decoupling_pct",
-    "activity.statistics.fatigue_response.valid_time_s",
-    "activity.statistics.fatigue_response.coverage_ratio",
-    "activity.statistics.fatigue_response.heart_rate_reserve_formula",
     "activity.statistics.relationships.speed_heart_rate.spearman",
     "activity.statistics.relationships.speed_heart_rate.pearson",
     "activity.statistics.relationships.speed_heart_rate.window_count",
@@ -445,6 +434,71 @@ class TestDetailedActivityStatistics:
             if metric.name == "activity.statistics.heart_rate_statistics.histogram_s.seconds"
         )
         assert isinstance(histogram.value, TableValue)
+
+    def test_existing_metric_units_and_time_bases_match_their_values(self) -> None:
+        metrics = _statistics()
+        expected_units = {
+            "activity.statistics.speed_statistics.valid_sample_count": "count",
+            "activity.statistics.speed_statistics.coverage_ratio": "ratio",
+            "activity.statistics.speed_statistics.valid_moving_time_ratio": "ratio",
+            "activity.statistics.speed_statistics.valid_measurement_ratio": "ratio",
+            "activity.statistics.speed_statistics.measurements_during_movement_ratio": "ratio",
+            "activity.statistics.heart_rate_statistics.valid_sample_count": "count",
+            "activity.statistics.heart_rate_statistics.coverage_ratio": "ratio",
+            "activity.statistics.cadence_statistics.available": None,
+            "activity.statistics.cadence_statistics.overall.valid_sample_count": "count",
+            "activity.statistics.cadence_statistics.pedaling.coverage_ratio": "ratio",
+            "activity.statistics.cadence_statistics.pedaling_time_ratio": "ratio",
+            "activity.statistics.zone_distribution.percent_denominator": None,
+            "activity.statistics.time_windows.items.average_speed_kmh": "km/h",
+            "activity.statistics.time_windows.items.average_heart_rate_bpm": "bpm",
+            "activity.statistics.time_windows.items.average_pedaling_cadence_rpm": "rpm",
+            "activity.statistics.time_windows.items.cadence_coverage_ratio": "ratio",
+            "activity.statistics.time_windows.items.moving_time_ratio": "ratio",
+            "activity.statistics.efficiency.speed_per_heart_rate": "km/h/bpm",
+            "activity.statistics.efficiency.speed_per_heart_rate_reserve": "km/h",
+            "activity.statistics.efficiency.ef_first_half": "km/h/bpm",
+            "activity.statistics.relationships.speed_heart_rate.spearman": (
+                "correlation_coefficient"
+            ),
+            "activity.statistics.relationships.speed_heart_rate.window_count": "count",
+            "activity.statistics.heatmap_data.heart_rate_speed.valid_observation_count": (
+                "observations"
+            ),
+            "activity.statistics.fatigue_response.heart_rate_drift_bpm_per_hour": "bpm/h",
+            "activity.statistics.data_quality.valid_speed_samples": "count",
+            "activity.statistics.data_quality.duplicate_timestamps": "count",
+            "activity.statistics.data_quality.speed_coverage_ratio": "ratio",
+        }
+        for name, unit in expected_units.items():
+            assert _metric(metrics, name).unit == unit, name
+
+        assert (
+            _metric(
+                metrics, "activity.statistics.speed_statistics.valid_measurement_ratio"
+            ).time_basis
+            is None
+        )
+        assert (
+            _metric(
+                metrics, "activity.statistics.speed_statistics.valid_moving_time_ratio"
+            ).time_basis
+            is TimeBasis.MOVING_TIME
+        )
+        assert (
+            _metric(
+                metrics, "activity.statistics.cadence_statistics.pedaling.coverage_ratio"
+            ).time_basis
+            is TimeBasis.MOVING_TIME
+        )
+
+        paused_metrics = _statistics(pause=True)
+        movement_speed = _metric(
+            paused_metrics,
+            "activity.statistics.time_windows.movement_time_variant.average_speed_kmh",
+        )
+        assert movement_speed.unit == "km/h"
+        assert movement_speed.time_basis is TimeBasis.MOVING_TIME
 
     def test_empty_activity_keeps_coarse_schema_but_omits_intervals(self) -> None:
         metrics = _statistics(QualityConfig(), empty=True)
