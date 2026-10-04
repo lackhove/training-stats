@@ -48,6 +48,8 @@ def compute_aerobic_decoupling(
     max_interval_s: float = MAX_INTERVAL_S,
     session_moving_time_s: float | None = None,
     pause_intervals: tuple[PauseInterval, ...] = (),
+    *,
+    intervals_frame: pl.DataFrame | None = None,
 ) -> DecouplingResult:
     """Compute efficiency factor drift across two equal moving-time halves.
 
@@ -63,7 +65,11 @@ def compute_aerobic_decoupling(
     if not isinstance(first, datetime) or not isinstance(last, datetime):
         return _empty_decoupling(CONFIDENCE_INSUFFICIENT_DURATION)
 
-    frame = interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+    frame = (
+        interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+        if intervals_frame is None
+        else intervals_frame
+    )
 
     # Exclude intervals crossing capped gaps or out-of-order timestamps
     valid_intervals = frame.filter(

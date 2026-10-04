@@ -32,6 +32,7 @@ class SegmentAnalysis:
 @dataclass(frozen=True, slots=True)
 class _Facts:
     records: pl.DataFrame
+    intervals_frame: pl.DataFrame
     start_time: datetime
     sport: str
     sub_sport: str | None
@@ -61,6 +62,7 @@ def analyze_segments(
         facts for facts in candidates if facts.moving_time_s >= quality.minimum_segment_duration_s
     ]
     discarded = len(candidates) - len(retained)
+    del candidates
     activities: list[AnalyzedActivity] = []
 
     for index, facts in enumerate(retained):
@@ -93,7 +95,13 @@ def analyze_segments(
         activities.append(
             AnalyzedActivity(
                 activity=activity,
-                metrics=compute_activity_metrics(activity, athlete, analysis_version, quality),
+                metrics=compute_activity_metrics(
+                    activity,
+                    athlete,
+                    analysis_version,
+                    quality,
+                    intervals_frame=facts.intervals_frame,
+                ),
             )
         )
 
@@ -163,6 +171,7 @@ def _derive_facts(data: FitData, quality: QualityConfig) -> _Facts | None:
 
     return _Facts(
         records=records,
+        intervals_frame=intervals,
         start_time=first,
         sport=sport,
         sub_sport=sub_sport,

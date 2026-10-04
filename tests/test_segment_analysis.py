@@ -8,9 +8,11 @@ import polars as pl
 import pytest
 
 from tests.conftest import make_athlete
+from training_stats.domain.analytics import endurance, heart_rate, segments
+from training_stats.domain.analytics.activities import compute_activity_metrics
 from training_stats.domain.analytics.segments import SegmentAnalysis, analyze_segments
 from training_stats.domain.fit.repair import repair_timeline
-from training_stats.domain.fit.types import FitData
+from training_stats.domain.fit.types import FitData, PauseInterval
 from training_stats.domain.metrics import MissingReason, ScalarValue, TableValue
 from training_stats.domain.settings import QualityConfig
 
@@ -146,6 +148,41 @@ def _paused_activity(timer_events: bool) -> FitData:
 
 
 class TestPauseAwareStatistics:
+    def test_segment_interval_frame_is_reused_by_activity_metrics(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = 0
+        original = segments.interval_frame
+
+        def count_builds(
+            records: pl.DataFrame,
+            pauses: tuple[PauseInterval, ...] = (),
+            *,
+            max_interval_s: float,
+        ) -> pl.DataFrame:
+            nonlocal calls
+            calls += 1
+            return original(records, pauses, max_interval_s=max_interval_s)
+
+        monkeypatch.setattr(segments, "interval_frame", count_builds)
+        monkeypatch.setattr(heart_rate, "interval_frame", count_builds)
+        monkeypatch.setattr(endurance, "interval_frame", count_builds)
+
+        result = _analyze(_paused_activity(timer_events=True))
+
+        assert len(result.activities) == 1
+        assert calls == 1
+
+    def test_shared_frame_preserves_activity_metric_outputs(self) -> None:
+        quality = QualityConfig(minimum_segment_duration_s=1.0)
+        analyzed = _analyze(_paused_activity(timer_events=True), quality=quality).activities[0]
+
+        standalone_metrics = compute_activity_metrics(
+            analyzed.activity, make_athlete(), "test", quality
+        )
+
+        assert analyzed.metrics == standalone_metrics
+
     def test_speed_coverage_controls_speed_based_pause_inference(self) -> None:
         data = _fit_data(
             heart_rates=[120] * 5,

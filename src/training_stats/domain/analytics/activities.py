@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 
+import polars as pl
+
 from ..fit.types import ParsedActivity
 from ..metrics import (
     Axis,
@@ -50,6 +52,8 @@ def compute_activity_metrics(
     athlete: AthleteConfig,
     analysis_version: str,
     quality: QualityConfig | None = None,
+    *,
+    intervals_frame: pl.DataFrame | None = None,
 ) -> tuple[Metric, ...]:
     """Compute per-trip metrics from one transient parsed activity."""
     zones = build_zone_bounds(athlete.heart_rate_zones.as_bounds())
@@ -59,11 +63,13 @@ def compute_activity_metrics(
         zones,
         max_interval_s=effective_quality.max_moving_interval_s,
         pause_intervals=activity.pause_intervals,
+        intervals_frame=intervals_frame,
     )
     buckets = hr_bucket_averages(
         activity.records,
         max_interval_s=effective_quality.max_moving_interval_s,
         pause_intervals=activity.pause_intervals,
+        intervals_frame=intervals_frame,
     )
     load_value = hr_trimp_load(
         zone_result, zones, max_hr=athlete.max_heart_rate, resting_hr=athlete.resting_heart_rate
@@ -76,6 +82,7 @@ def compute_activity_metrics(
         max_interval_s=effective_quality.max_moving_interval_s,
         session_moving_time_s=activity.moving_time_s,
         pause_intervals=activity.pause_intervals,
+        intervals_frame=intervals_frame,
     )
     period = TripPeriod(
         activity_id=activity.activity_id,
@@ -90,6 +97,7 @@ def compute_activity_metrics(
         activity.records,
         max_interval_s=effective_quality.max_moving_interval_s,
         pause_intervals=activity.pause_intervals,
+        intervals_frame=intervals_frame,
     )
     metrics: list[Metric] = []
     metrics.extend(_session_metrics(activity, analysis_version, period))

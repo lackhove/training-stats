@@ -5,10 +5,10 @@ athlete or quality configuration it needs, derives its narrow facts from the
 record helpers in ``statistics_records`` and constructs its metrics with
 literal names, descriptions, units, kinds and missing reasons. Standalone
 calls build their own interval pass; ``compute_activity_statistics`` builds
-the intervals once and threads that shared sequence through every family via
-the private keyword-only ``intervals`` parameter, so the composition scans the
-record columns a single time. The public functions are grouped per output
-family; ``compute_activity_statistics`` is the thin composer over them.
+one per-activity ``_ActivityStatistics`` and shares its interval sequence and
+derived facts across families. Standalone family calls create their own
+statistics object. The public functions are grouped per output family;
+``compute_activity_statistics`` is the thin composer over them.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from ..metrics import (
 from ..settings import AthleteConfig, QualityConfig
 from .metric_helpers import scalar_metric, table_metric
 from .statistics_records import (
-    MAX_INTERVAL_S,
     Interval,
     active_time_s,
     build_intervals,
@@ -104,6 +103,77 @@ class _EfficiencyFacts:
     coverage_ratio: float
     heart_rate_reserve_formula: str | None
     missing_reason: MissingReason | None
+
+
+@dataclass(slots=True)
+class _ActivityStatistics:
+    """Activity-local owner of shared interval facts for statistics families."""
+
+    activity: ParsedActivity
+    quality: QualityConfig
+    athlete: AthleteConfig | None
+    intervals: tuple[Interval, ...] | None
+    _short: bool | None = None
+    _moving_time: float | None = None
+    _active_time: float | None = None
+    _cadence_coverage: float | None = None
+    _windows: tuple[tuple[_Window, ...], tuple[_Window, ...]] | None = None
+    _efficiency: _EfficiencyFacts | None = None
+
+    @classmethod
+    def build(
+        cls,
+        activity: ParsedActivity,
+        quality: QualityConfig,
+        athlete: AthleteConfig | None = None,
+        intervals: Sequence[Interval] | None = None,
+    ) -> _ActivityStatistics:
+        shared_intervals = tuple(intervals) if intervals is not None else None
+        return cls(activity, quality, athlete, shared_intervals)
+
+    def interval_sequence(self) -> tuple[Interval, ...]:
+        if self.intervals is None:
+            self.intervals = tuple(
+                build_intervals(self.activity, self.quality.max_moving_interval_s)
+            )
+        return self.intervals
+
+    def is_short(self) -> bool:
+        if self._short is None:
+            self._short = is_short_activity(self.activity)
+        return self._short
+
+    def moving_time_s(self) -> float:
+        if self._moving_time is None:
+            self._moving_time = moving_time_s(
+                self.activity, self.interval_sequence(), self.quality.moving_speed_threshold_mps
+            )
+        return self._moving_time
+
+    def active_time_s(self) -> float:
+        if self._active_time is None:
+            self._active_time = active_time_s(self.activity, short_activity=self.is_short())
+        return self._active_time
+
+    def cadence_coverage(self) -> float:
+        if self._cadence_coverage is None:
+            self._cadence_coverage = _cadence_coverage(
+                self.interval_sequence(), self.moving_time_s()
+            )
+        return self._cadence_coverage
+
+    def available_windows(self) -> tuple[tuple[_Window, ...], tuple[_Window, ...]]:
+        if self._windows is None:
+            self._windows = _build_available_windows(self)
+        return self._windows
+
+    def efficiency_facts(self) -> _EfficiencyFacts:
+        if self._efficiency is None:
+            if self.athlete is None:
+                msg = "athlete configuration is required for efficiency statistics"
+                raise ValueError(msg)
+            self._efficiency = _build_efficiency_facts(self)
+        return self._efficiency
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,38 +333,39 @@ def compute_activity_statistics(
     quality: QualityConfig,
 ) -> tuple[Metric, ...]:
     """Return detailed distribution, window, relationship, and heatmap metrics."""
-    intervals = tuple(build_intervals(activity, quality.max_moving_interval_s))
+    statistics = _ActivityStatistics.build(activity, quality, athlete)
     return (
-        *speed_metrics(activity, quality, intervals=intervals),
-        *heart_rate_metrics(activity, intervals=intervals),
-        *cadence_metrics(activity, quality, intervals=intervals),
-        *zone_metrics(activity, athlete, intervals=intervals),
-        *time_window_metrics(activity, quality, intervals=intervals),
-        *efficiency_metrics(activity, athlete, quality, intervals=intervals),
-        *fatigue_response_metrics(activity, athlete, quality, intervals=intervals),
-        *relationship_metrics(activity, quality, intervals=intervals),
-        *heatmap_metrics(activity, quality, intervals=intervals),
-        *sensor_quality_metrics(activity, quality, intervals=intervals),
+        *_speed_metrics(statistics),
+        *_heart_rate_metrics(statistics),
+        *_cadence_metrics(statistics),
+        *_zone_metrics(statistics),
+        *_time_window_metrics(statistics),
+        *_efficiency_family_metrics(statistics),
+        *_fatigue_response_metrics(statistics),
+        *_relationship_metrics(statistics),
+        *_heatmap_metrics(statistics),
+        *_sensor_quality_metrics(statistics),
     )
 
 
-def _intervals(
-    activity: ParsedActivity,
-    intervals: Sequence[Interval] | None,
-    max_interval_s: float = MAX_INTERVAL_S,
-) -> Sequence[Interval]:
-    """Reuse the composer's shared interval pass, or build one when standalone."""
-    return build_intervals(activity, max_interval_s) if intervals is None else intervals
-
-
 def speed_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build speed metrics from one activity and its quality settings."""
+    return _speed_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
+def _speed_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Speed distribution, time above configured thresholds and coverage ratios."""
+    activity = statistics.activity
+    quality = statistics.quality
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.speed_statistics"
-    short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
+    short = statistics.is_short()
+    intervals = statistics.interval_sequence()
     threshold_mps = quality.moving_speed_threshold_mps
     samples: list[tuple[float, float]] = []
     valid_samples = 0
@@ -308,7 +379,7 @@ def speed_metrics(
         if weight > 0.0:
             during_movement += 1
             samples.append((speed, weight))
-    moving = moving_time_s(activity, intervals, threshold_mps)
+    moving = statistics.moving_time_s()
     metrics = _distribution_metrics(
         prefix,
         samples,
@@ -384,10 +455,18 @@ def speed_metrics(
 def heart_rate_metrics(
     activity: ParsedActivity, *, intervals: Sequence[Interval] | None = None
 ) -> tuple[Metric, ...]:
+    """Build heart-rate metrics for one activity using default quality settings."""
+    return _heart_rate_metrics(
+        _ActivityStatistics.build(activity, QualityConfig(), intervals=intervals)
+    )
+
+
+def _heart_rate_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Heart-rate distribution and its five-beat-per-minute histogram."""
+    activity = statistics.activity
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.heart_rate_statistics"
-    intervals = _intervals(activity, intervals)
+    intervals = statistics.interval_sequence()
     samples = [
         (interval.heart_rate, interval.active_s)
         for interval in intervals
@@ -396,7 +475,7 @@ def heart_rate_metrics(
     metrics = _distribution_metrics(
         prefix,
         samples,
-        active_time_s(activity),
+        active_time_s(activity, short_activity=statistics.is_short()),
         context="heart rate",
         unit="bpm",
         time_basis=TimeBasis.ACTIVE_TIME,
@@ -423,15 +502,24 @@ def heart_rate_metrics(
 
 
 def cadence_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build cadence metrics for one activity and its quality settings."""
+    return _cadence_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
+def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Cadence availability, distributions, pedaling time and cadence bands."""
+    activity = statistics.activity
+    quality = statistics.quality
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.cadence_statistics"
-    short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
-    threshold_mps = quality.moving_speed_threshold_mps
-    moving = moving_time_s(activity, intervals, threshold_mps)
+    short = statistics.is_short()
+    intervals = statistics.interval_sequence()
+    moving = statistics.moving_time_s()
     samples: list[tuple[float, float]] = []
     pedaling_samples: list[tuple[float, float]] = []
     if short:
@@ -445,7 +533,7 @@ def cadence_metrics(
         coverage = 0.0
         bands = tuple((band, 0.0) for band, _low, _high in CADENCE_BANDS)
     else:
-        coverage = _cadence_coverage(intervals, moving)
+        coverage = statistics.cadence_coverage()
         available, reason = _cadence_availability(intervals, coverage, quality)
         samples = _cadence_samples(intervals, pedaling_only=False) if available else []
         pedaling_samples = _cadence_samples(intervals, pedaling_only=True) if available else []
@@ -544,12 +632,27 @@ def cadence_metrics(
 
 
 def zone_metrics(
-    activity: ParsedActivity, athlete: AthleteConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    athlete: AthleteConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build configured heart-rate-zone metrics for one activity."""
+    return _zone_metrics(
+        _ActivityStatistics.build(activity, QualityConfig(), athlete, intervals=intervals)
+    )
+
+
+def _zone_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Activity-level heart-rate zone time, percent and denominator."""
+    activity = statistics.activity
+    athlete = statistics.athlete
+    if athlete is None:
+        msg = "athlete configuration is required for heart-rate-zone statistics"
+        raise ValueError(msg)
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.zone_distribution"
-    intervals = _intervals(activity, intervals)
+    intervals = statistics.interval_sequence()
     zone_bounds = athlete.heart_rate_zones.as_bounds()
     seconds = [0.0] * 5
     valid_time_s = 0.0
@@ -610,9 +713,18 @@ def zone_metrics(
 
 
 def time_window_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build time-window metrics for one activity and its quality settings."""
+    return _time_window_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
+def _time_window_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Five-minute window scalars, per-window tables and the movement variant."""
+    activity = statistics.activity
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.time_windows"
     metrics: list[Metric] = [
@@ -626,9 +738,9 @@ def time_window_metrics(
             time_basis=TimeBasis.ELAPSED_TIME,
         )
     ]
-    if is_short_activity(activity):
+    if statistics.is_short():
         return tuple(metrics)
-    windows, movement = _available_windows(activity, quality, intervals=intervals)
+    windows, movement = statistics.available_windows()
     metrics.extend(_window_tables(f"{prefix}.items", "time windows", windows, period))
     if movement:
         metrics.extend(
@@ -662,11 +774,19 @@ def efficiency_metrics(
     *,
     intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build efficiency metrics for one activity and its explicit settings."""
+    return _efficiency_family_metrics(
+        _ActivityStatistics.build(activity, quality, athlete, intervals=intervals)
+    )
+
+
+def _efficiency_family_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Speed-per-heart-rate efficiency and aerobic decoupling."""
-    if is_short_activity(activity):
+    activity = statistics.activity
+    if statistics.is_short():
         return ()
     period = _period(activity)
-    facts = _efficiency_facts(activity, athlete, quality, intervals=intervals)
+    facts = statistics.efficiency_facts()
     return tuple(
         _efficiency_metrics(f"{_STATISTICS_PREFIX}.efficiency", "efficiency", facts, period)
     )
@@ -679,10 +799,18 @@ def fatigue_response_metrics(
     *,
     intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build fatigue-response metrics for one activity and its settings."""
+    return _fatigue_response_metrics(
+        _ActivityStatistics.build(activity, quality, athlete, intervals=intervals)
+    )
+
+
+def _fatigue_response_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Heart-rate drift plus the efficiency values mirrored under fatigue response."""
+    activity = statistics.activity
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.fatigue_response"
-    if is_short_activity(activity):
+    if statistics.is_short():
         return (
             scalar_metric(
                 f"{prefix}.heart_rate_drift_bpm_per_hour",
@@ -694,11 +822,11 @@ def fatigue_response_metrics(
                 missing_reason=MissingReason.INSUFFICIENT_DATA,
             ),
         )
-    facts = _efficiency_facts(activity, athlete, quality, intervals=intervals)
+    facts = statistics.efficiency_facts()
     drift = scalar_metric(
         f"{prefix}.heart_rate_drift_bpm_per_hour",
         period,
-        _heart_rate_drift(activity, quality, intervals=intervals),
+        _heart_rate_drift(statistics),
         description=DRIFT_DESCRIPTION,
         unit="bpm",
         kind=MetricKind.CALCULATED,
@@ -711,14 +839,23 @@ def fatigue_response_metrics(
 
 
 def relationship_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build window relationships for one activity and its quality settings."""
+    return _relationship_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
+def _relationship_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Spearman and Pearson correlation for each available window relationship."""
-    if is_short_activity(activity):
+    activity = statistics.activity
+    if statistics.is_short():
         return ()
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.relationships"
-    windows = _available_windows(activity, quality, intervals=intervals)[0]
+    windows = statistics.available_windows()[0]
     pairs: dict[str, list[tuple[float, float]]] = {
         "speed_heart_rate": [],
         "speed_cadence": [],
@@ -772,14 +909,24 @@ def relationship_metrics(
 
 
 def heatmap_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build sensor heatmaps for one activity and its quality settings."""
+    return _heatmap_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
+def _heatmap_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Duration and observation matrices for each binned sensor pair."""
-    if is_short_activity(activity):
+    activity = statistics.activity
+    quality = statistics.quality
+    if statistics.is_short():
         return ()
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.heatmap_data"
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
+    intervals = statistics.interval_sequence()
     threshold_mps = quality.moving_speed_threshold_mps
     cells: dict[str, dict[tuple[int, int], list[float]]] = {
         "heart_rate_speed": defaultdict(lambda: [0.0, 0.0]),
@@ -803,10 +950,7 @@ def heatmap_metrics(
             key = (int(speed // 5) * 5, int(cadence // 10) * 10)
             cells["speed_cadence"][key][0] += moving
             cells["speed_cadence"][key][1] += 1.0
-    moving = moving_time_s(activity, intervals, threshold_mps)
-    available, _reason = _cadence_availability(
-        intervals, _cadence_coverage(intervals, moving), quality
-    )
+    available, _reason = _cadence_availability(intervals, statistics.cadence_coverage(), quality)
     metrics: list[Metric] = []
     for name, x_width, y_width in (
         ("heart_rate_speed", 10, 5),
@@ -855,13 +999,25 @@ def heatmap_metrics(
 
 
 def sensor_quality_metrics(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
 ) -> tuple[Metric, ...]:
+    """Build sensor-quality metrics for one activity and its quality settings."""
+    return _sensor_quality_metrics(
+        _ActivityStatistics.build(activity, quality, intervals=intervals)
+    )
+
+
+def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Record-pass counts, outliers and sensor coverage ratios."""
+    activity = statistics.activity
+    quality = statistics.quality
     period = _period(activity)
     prefix = f"{_STATISTICS_PREFIX}.data_quality"
-    short = is_short_activity(activity)
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
+    short = statistics.is_short()
+    intervals = statistics.interval_sequence()
     threshold_mps = quality.moving_speed_threshold_mps
     valid_speed = 0
     during_movement = 0
@@ -981,8 +1137,8 @@ def sensor_quality_metrics(
     ]
     if short:
         return tuple(metrics)
-    moving = moving_time_s(activity, intervals, threshold_mps)
-    active = active_time_s(activity)
+    moving = statistics.moving_time_s()
+    active = statistics.active_time_s()
     for key, unit, weight, denominator in (
         ("speed_coverage_ratio", "km/h", speed_time_s, moving),
         ("heart_rate_coverage_ratio", "bpm", heart_rate_time_s, active),
@@ -1246,13 +1402,15 @@ def _weighted_mean(samples: Sequence[tuple[float, float]]) -> float | None:
     return sum(value * weight for value, weight in samples) / total if total > 0.0 else None
 
 
-def _available_windows(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
+def _build_available_windows(
+    statistics: _ActivityStatistics,
 ) -> tuple[tuple[_Window, ...], tuple[_Window, ...]]:
-    """Elapsed-time windows with the optional movement-time variant, cadence-masked."""
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
+    """Build elapsed-time windows and their optional movement-time variant."""
+    activity = statistics.activity
+    quality = statistics.quality
+    intervals = statistics.interval_sequence()
     threshold_mps = quality.moving_speed_threshold_mps
-    moving = moving_time_s(activity, intervals, threshold_mps)
+    moving = statistics.moving_time_s()
     span = activity.duration_s or elapsed_time_s(activity)
     windows = _build_windows(intervals, span, threshold_mps=threshold_mps, moving_basis=False)
     movement = (
@@ -1260,9 +1418,7 @@ def _available_windows(
         if abs(span - moving) > 1.0
         else ()
     )
-    available, reason = _cadence_availability(
-        intervals, _cadence_coverage(intervals, moving), quality
-    )
+    available, reason = _cadence_availability(intervals, statistics.cadence_coverage(), quality)
     if not available:
         masked = (reason or MissingReason.INSUFFICIENT_COVERAGE).value
         windows = _mask_window_cadence(windows, masked)
@@ -1330,10 +1486,8 @@ def _window_tables(
     return metrics
 
 
-def _heart_rate_drift(
-    activity: ParsedActivity, quality: QualityConfig, *, intervals: Sequence[Interval] | None = None
-) -> float | None:
-    windows = _available_windows(activity, quality, intervals=intervals)[0]
+def _heart_rate_drift(statistics: _ActivityStatistics) -> float | None:
+    windows = statistics.available_windows()[0]
     points: list[tuple[float, float]] = []
     for window in windows:
         heart_rate = window.average_heart_rate_bpm
@@ -1350,14 +1504,13 @@ def _heart_rate_drift(
     return covariance / variance * 3600.0
 
 
-def _efficiency_facts(
-    activity: ParsedActivity,
-    athlete: AthleteConfig,
-    quality: QualityConfig,
-    *,
-    intervals: Sequence[Interval] | None = None,
-) -> _EfficiencyFacts:
-    intervals = _intervals(activity, intervals, quality.max_moving_interval_s)
+def _build_efficiency_facts(statistics: _ActivityStatistics) -> _EfficiencyFacts:
+    athlete = statistics.athlete
+    if athlete is None:
+        msg = "athlete configuration is required for efficiency statistics"
+        raise ValueError(msg)
+    quality = statistics.quality
+    intervals = statistics.interval_sequence()
     threshold_mps = quality.moving_speed_threshold_mps
     pairs: list[tuple[float, float, float]] = []
     for interval in intervals:
@@ -1368,7 +1521,7 @@ def _efficiency_facts(
             continue
         pairs.append((speed, heart_rate, weight))
     valid_s = sum(duration for _speed, _heart_rate, duration in pairs)
-    moving = moving_time_s(activity, intervals, threshold_mps)
+    moving = statistics.moving_time_s()
     coverage = valid_s / moving if moving > 0.0 else 0.0
     if valid_s < quality.decoupling_min_duration_s:
         return _insufficient_efficiency(valid_s, coverage, MissingReason.INSUFFICIENT_DURATION)

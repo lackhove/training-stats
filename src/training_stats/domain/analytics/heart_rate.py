@@ -78,6 +78,7 @@ def time_in_zones(
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
     *,
     pause_intervals: tuple[PauseInterval, ...] = (),
+    intervals_frame: pl.DataFrame | None = None,
 ) -> ZoneResult:
     """Compute moving time per heart-rate zone from record samples.
 
@@ -101,9 +102,12 @@ def time_in_zones(
     if span_s <= 0:
         return _empty_zone_result()
 
-    intervals = interval_frame(records, merged_pauses, max_interval_s=max_interval_s).filter(
-        pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0)
+    frame = (
+        interval_frame(records, merged_pauses, max_interval_s=max_interval_s)
+        if intervals_frame is None
+        else intervals_frame
     )
+    intervals = frame.filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
     valid_hr_time_s = _sum_column(intervals, "active_s")
 
     zone_seconds = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -131,6 +135,7 @@ def hr_histogram(
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
     *,
     pause_intervals: tuple[PauseInterval, ...] = (),
+    intervals_frame: pl.DataFrame | None = None,
 ) -> dict[str, float]:
     """Time-weighted histogram of heart-rate samples in ``bin_bpm``-wide bins.
 
@@ -143,7 +148,11 @@ def hr_histogram(
 
     heart_rate = pl.col("heart_rate")
     intervals = (
-        interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+        (
+            interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+            if intervals_frame is None
+            else intervals_frame
+        )
         .filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
         .with_columns(((heart_rate // bin_bpm) * bin_bpm).alias("bin_start"))
     )
@@ -163,6 +172,7 @@ def hr_bucket_averages(
     max_interval_s: float = MAX_RECORD_INTERVAL_S,
     *,
     pause_intervals: tuple[PauseInterval, ...] = (),
+    intervals_frame: pl.DataFrame | None = None,
 ) -> list[HrBucketAvg]:
     """Time-weighted heart-rate averages per ``bucket_s`` window.
 
@@ -175,7 +185,11 @@ def hr_bucket_averages(
         return []
 
     intervals = (
-        interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+        (
+            interval_frame(records, pause_intervals, max_interval_s=max_interval_s)
+            if intervals_frame is None
+            else intervals_frame
+        )
         .filter(pl.col("heart_rate").is_not_null() & (pl.col("heart_rate") > 0))
         .with_columns((pl.col("active_elapsed_s") // bucket_s).cast(pl.UInt32).alias("bucket"))
     )

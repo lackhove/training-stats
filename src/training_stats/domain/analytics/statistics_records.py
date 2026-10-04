@@ -123,9 +123,10 @@ def moving_time_s(
     )
 
 
-def active_time_s(activity: ParsedActivity) -> float:
+def active_time_s(activity: ParsedActivity, *, short_activity: bool | None = None) -> float:
     """Non-paused span of the activity, in seconds."""
-    if is_short_activity(activity):
+    short = is_short_activity(activity) if short_activity is None else short_activity
+    if short:
         return activity.duration_s or 0.0
     span = activity.duration_s or elapsed_time_s(activity)
     return max(0.0, span - (activity.paused_time_s or 0.0))

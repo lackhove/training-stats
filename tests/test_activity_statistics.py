@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -583,7 +583,7 @@ class TestSharedIntervalPass:
             (lambda: zone_metrics(activity, athlete), 1),
             (lambda: time_window_metrics(activity, quality), 1),
             (lambda: efficiency_metrics(activity, athlete, quality), 1),
-            (lambda: fatigue_response_metrics(activity, athlete, quality), 2),
+            (lambda: fatigue_response_metrics(activity, athlete, quality), 1),
             (lambda: relationship_metrics(activity, quality), 1),
             (lambda: heatmap_metrics(activity, quality), 1),
             (lambda: sensor_quality_metrics(activity, quality), 1),
@@ -592,9 +592,57 @@ class TestSharedIntervalPass:
             before = builds()
             produce()
             assert builds() - before == expected_builds
-        assert builds() == 11
+        assert builds() == 10
 
-    def test_shared_interval_sequence_suppresses_standalone_builds(
+    def test_activity_statistics_reuses_derived_facts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = {"windows": 0, "efficiency": 0, "cadence": 0, "short": 0, "moving": 0}
+        original_windows = activity_statistics._build_available_windows
+        original_efficiency = activity_statistics._build_efficiency_facts
+        original_cadence = activity_statistics._cadence_coverage
+        original_short = activity_statistics.is_short_activity
+        original_moving = activity_statistics.moving_time_s
+
+        def count_windows(
+            statistics: activity_statistics._ActivityStatistics,
+        ) -> tuple[
+            tuple[activity_statistics._Window, ...], tuple[activity_statistics._Window, ...]
+        ]:
+            calls["windows"] += 1
+            return original_windows(statistics)
+
+        def count_efficiency(
+            statistics: activity_statistics._ActivityStatistics,
+        ) -> activity_statistics._EfficiencyFacts:
+            calls["efficiency"] += 1
+            return original_efficiency(statistics)
+
+        def count_cadence(intervals: Sequence[Interval], moving: float) -> float:
+            calls["cadence"] += 1
+            return original_cadence(intervals, moving)
+
+        def count_short(activity: ParsedActivity) -> bool:
+            calls["short"] += 1
+            return original_short(activity)
+
+        def count_moving(
+            activity: ParsedActivity, intervals: Sequence[Interval], threshold_mps: float
+        ) -> float:
+            calls["moving"] += 1
+            return original_moving(activity, intervals, threshold_mps)
+
+        monkeypatch.setattr(activity_statistics, "_build_available_windows", count_windows)
+        monkeypatch.setattr(activity_statistics, "_build_efficiency_facts", count_efficiency)
+        monkeypatch.setattr(activity_statistics, "_cadence_coverage", count_cadence)
+        monkeypatch.setattr(activity_statistics, "is_short_activity", count_short)
+        monkeypatch.setattr(activity_statistics, "moving_time_s", count_moving)
+
+        compute_activity_statistics(_activity(), make_athlete(), _DECOUPLING_QUALITY)
+
+        assert calls == {"windows": 1, "efficiency": 1, "cadence": 1, "short": 1, "moving": 1}
+
+    def test_shared_statistics_object_suppresses_standalone_interval_builds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         builds = _count_interval_builds(monkeypatch)
@@ -602,16 +650,19 @@ class TestSharedIntervalPass:
         athlete = make_athlete()
         quality = _DECOUPLING_QUALITY
         shared = build_intervals(activity)
-        speed_metrics(activity, quality, intervals=shared)
-        heart_rate_metrics(activity, intervals=shared)
-        cadence_metrics(activity, quality, intervals=shared)
-        zone_metrics(activity, athlete, intervals=shared)
-        time_window_metrics(activity, quality, intervals=shared)
-        efficiency_metrics(activity, athlete, quality, intervals=shared)
-        fatigue_response_metrics(activity, athlete, quality, intervals=shared)
-        relationship_metrics(activity, quality, intervals=shared)
-        heatmap_metrics(activity, quality, intervals=shared)
-        sensor_quality_metrics(activity, quality, intervals=shared)
+        statistics = activity_statistics._ActivityStatistics.build(
+            activity, quality, athlete, intervals=shared
+        )
+        activity_statistics._speed_metrics(statistics)
+        activity_statistics._heart_rate_metrics(statistics)
+        activity_statistics._cadence_metrics(statistics)
+        activity_statistics._zone_metrics(statistics)
+        activity_statistics._time_window_metrics(statistics)
+        activity_statistics._efficiency_family_metrics(statistics)
+        activity_statistics._fatigue_response_metrics(statistics)
+        activity_statistics._relationship_metrics(statistics)
+        activity_statistics._heatmap_metrics(statistics)
+        activity_statistics._sensor_quality_metrics(statistics)
         assert builds() == 0
 
 
