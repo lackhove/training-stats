@@ -21,6 +21,7 @@ MAX_INTERVAL_S = 30.0
 SPEED_BOUNDS_MPS = (0.0, 40.0)
 HEART_RATE_BOUNDS_BPM = (25.0, 240.0)
 CADENCE_BOUNDS_RPM = (0.0, 220.0)
+POWER_BOUNDS_W = (0.0, 3000.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class Interval:
     speed_kmh: float | None
     heart_rate: float | None
     cadence_rpm: float | None
+    power_w: float | None
     distance_m: float
     rejected_values: int
 
@@ -165,6 +167,7 @@ def build_intervals(
     heart_rate_column = records["heart_rate"]
     cadence_column = records["cadence"]
     fractional_cadence_column = records["fractional_cadence"]
+    power_column = records["power_w"]
     distance_column = records["distance_m"]
     intervals: list[Interval] = []
     elapsed_s = 0.0
@@ -190,6 +193,7 @@ def build_intervals(
         cadence_rpm, rejected_cadence = _cadence_sample(
             cadence_column[index], fractional_cadence_column[index]
         )
+        power_w, rejected_power = accept(number(power_column[index]), *POWER_BOUNDS_W)
         distance = _distance_delta(
             distance_column[index], distance_column[index + 1], active_s, dt_s
         )
@@ -201,10 +205,12 @@ def build_intervals(
                 speed_kmh=speed * 3.6 if speed is not None else None,
                 heart_rate=heart_rate,
                 cadence_rpm=cadence_rpm,
+                power_w=power_w,
                 distance_m=distance,
                 rejected_values=int(rejected_speed)
                 + int(rejected_heart_rate)
-                + int(rejected_cadence),
+                + int(rejected_cadence)
+                + int(rejected_power),
             )
         )
         elapsed_s += dt_s

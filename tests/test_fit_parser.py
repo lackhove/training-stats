@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import fitdecode
@@ -10,7 +10,11 @@ import polars as pl
 import pytest
 
 from tests.conftest import FIXTURES, ZONE_BOUNDS, make_athlete
-from training_stats.adapters.fit.parser import FitDecodeParser, _parse_record_row
+from training_stats.adapters.fit.parser import (
+    FitDecodeParser,
+    _coalesce_record_rows,
+    _parse_record_row,
+)
 from training_stats.domain.analytics.heart_rate import build_zone_bounds, time_in_zones
 from training_stats.domain.analytics.segments import analyze_segments
 from training_stats.domain.errors import FitParseError
@@ -132,6 +136,8 @@ class TestRawFitData:
             "max_heart_rate",
             "avg_speed",
             "max_speed",
+            "avg_power",
+            "max_power",
         }.isdisjoint(decoded.frame.columns)
         session_rows = decoded.frame.filter(pl.col("message_type") == "session")
         assert session_rows["sport"][0] == "cycling"
@@ -139,9 +145,29 @@ class TestRawFitData:
         # Session rows carry no record fields; the schema fills them with nulls.
         assert session_rows["heart_rate"][0] is None
         assert session_rows["distance_m"][0] is None
+        assert session_rows["power_w"][0] is None
 
 
 class TestCadenceParsing:
+    def test_separate_sensor_messages_at_the_same_timestamp_are_merged(self) -> None:
+        timestamp = datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)
+        rows = [
+            {"message_type": "record", "timestamp": timestamp, "power_w": 251},
+            {"message_type": "record", "timestamp": timestamp, "heart_rate": 128},
+            {
+                "message_type": "record",
+                "timestamp": timestamp + timedelta(seconds=1),
+                "power_w": 240,
+            },
+        ]
+
+        merged = _coalesce_record_rows(rows)
+
+        assert len(merged) == 2
+        assert merged[0]["power_w"] == 251
+        assert merged[0]["heart_rate"] == 128
+        assert merged[1]["power_w"] == 240
+
     def test_record_cadence_fields_are_normalized(self) -> None:
         timestamp = datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)
         message = _SyntheticRecordMessage(
@@ -158,6 +184,15 @@ class TestCadenceParsing:
         assert row["cadence"] == 87
         assert row["fractional_cadence"] == 64
 
+    def test_record_power_is_normalized_to_watts(self) -> None:
+        timestamp = datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)
+        message = _SyntheticRecordMessage({"timestamp": timestamp, "power": 251})
+
+        row = _parse_record_row(cast(fitdecode.FitDataMessage, message))
+
+        assert row is not None
+        assert row["power_w"] == 251
+
     def test_missing_record_cadence_fields_are_null(self) -> None:
         message = _SyntheticRecordMessage(
             {"timestamp": datetime(2026, 9, 24, 10, 27, 59, tzinfo=UTC)}
@@ -168,12 +203,14 @@ class TestCadenceParsing:
         assert row is not None
         assert "cadence" not in row
         assert "fractional_cadence" not in row
+        assert "power_w" not in row
         # Rows carry no null padding: the declared schema fills the absent
         # columns (and every column a record row never provides) with nulls.
         frame = pl.DataFrame([row], schema=FitData.SCHEMA)
         assert frame.schema == pl.Schema(FitData.SCHEMA)
         assert frame["cadence"][0] is None
         assert frame["fractional_cadence"][0] is None
+        assert frame["power_w"][0] is None
         assert frame["sport"][0] is None
         assert frame["event"][0] is None
 

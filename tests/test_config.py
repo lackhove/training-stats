@@ -75,6 +75,7 @@ class TestValidConfigs:
         assert config.server.port == 8000
         assert config.quality.moving_speed_threshold_mps == 1.0
         assert config.quality.speed_min_coverage == 0.5
+        assert config.quality.power_min_coverage == 0.5
         assert config.quality.max_moving_interval_s == 30.0
         assert config.quality.activity_gap_threshold_s == 900.0
         assert config.quality.activity_distance_gap_threshold_m == 500.0
@@ -90,6 +91,7 @@ class TestValidConfigs:
 [quality]
 moving_speed_threshold_mps = 1.5
 speed_min_coverage = 0.75
+power_min_coverage = 0.65
 max_moving_interval_s = 12.0
 activity_gap_threshold_s = 1200.0
 activity_distance_gap_threshold_m = 750.0
@@ -102,6 +104,7 @@ decoupling_min_coverage = 0.70
         config = load_config(_write_config(tmp_path, content))
         assert config.quality.moving_speed_threshold_mps == 1.5
         assert config.quality.speed_min_coverage == 0.75
+        assert config.quality.power_min_coverage == 0.65
         assert config.quality.max_moving_interval_s == 12.0
         assert config.quality.activity_gap_threshold_s == 1200.0
         assert config.quality.activity_distance_gap_threshold_m == 750.0
@@ -122,6 +125,8 @@ class TestInvalidConfigs:
         [
             ("speed_min_coverage", -0.01),
             ("speed_min_coverage", 1.01),
+            ("power_min_coverage", -0.01),
+            ("power_min_coverage", 1.01),
             ("max_moving_interval_s", 0.0),
             ("max_moving_interval_s", float("inf")),
             ("forgotten_stop_check_duration_s", -1.0),

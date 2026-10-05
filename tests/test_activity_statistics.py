@@ -22,6 +22,7 @@ from training_stats.domain.analytics.activity_statistics import (
     fatigue_response_metrics,
     heart_rate_metrics,
     heatmap_metrics,
+    power_metrics,
     relationship_metrics,
     sensor_quality_metrics,
     speed_metrics,
@@ -50,27 +51,33 @@ VARIANTS: dict[str, tuple[dict[str, bool], QualityConfig]] = {
     "normal": ({"cadence": True}, _DECOUPLING_QUALITY),
     "no_cadence": ({"cadence": False}, QualityConfig()),
     "sparse_cadence": ({"sparse_cadence": True}, QualityConfig()),
+    "no_power": ({"power": False}, QualityConfig()),
+    "sparse_power": ({"sparse_power": True}, QualityConfig()),
     "paused": ({"pause": True}, QualityConfig()),
     "empty": ({"empty": True}, QualityConfig()),
     "empty_thresholds": ({}, replace(_DECOUPLING_QUALITY, speed_thresholds_kmh=())),
 }
 
 EXPECTED_STATISTICS_COUNTS = {
-    "normal": 131,
-    "no_cadence": 120,
-    "sparse_cadence": 120,
-    "paused": 147,
-    "empty": 74,
-    "empty_thresholds": 130,
+    "normal": 169,
+    "no_cadence": 156,
+    "sparse_cadence": 156,
+    "no_power": 163,
+    "sparse_power": 163,
+    "paused": 187,
+    "empty": 91,
+    "empty_thresholds": 168,
 }
 
 EXPECTED_WIRE_DIGESTS = {
-    "normal": "7a5425612787cab6c75408146a316b27be76c2224399185c702bfd7fd77b4423",
-    "no_cadence": "ec17c27df91e988ec89e37f4d3f50f7196fc1bb3eefdbf0726b9d8ebebd8ee9d",
-    "sparse_cadence": "249256beee1393e229387b3f965ae19d90917f14ac01f0839089325076256083",
-    "paused": "46a24440c4e1aea04da1be5c3c7a4e23eea69a9c891c8fc127aa6b7df3749f30",
-    "empty": "f070aa6ef71d8492b0c1464cb325ac7fb81fff68619d11ef84e2d392b7ea36c9",
-    "empty_thresholds": "0d23a5336d2a8b20d690c106e742573f078d33f8ee8b50841b1937c5490349b2",
+    "normal": "a7e4d0139e34c41bf1e2baa46808416f6a4522e254a18eee2351d2aced563eb1",
+    "no_cadence": "98558976ed5a1cfa883e0a29d3c33028f69888e26a1fa7ef418c72bfb9a245f9",
+    "sparse_cadence": "52af255f32c99e38a14d700c8b315b346eba7cdf2bf5ccadcd653f9e184376ff",
+    "no_power": "2cefe9bfa90033eb4b22829945e4165f9763ff37269ecb01210098355dff1342",
+    "sparse_power": "be09e8fd14d910e449d1cc83cf6c1023ada890f1bb049c1e5324b1589e8683bf",
+    "paused": "c675f553fef90cb595b36e0319c6e7b76eff78aab43093076ae6f6ede648e231",
+    "empty": "4dd5605f6d1977c33dcfd43cfb52f54aba2216e1c0bdd6b4c24bab721da79293",
+    "empty_thresholds": "ec3b219e5b2131c74b162c7b52be3b42891ade5390efe28b412c71f40ac7e7a5",
 }
 
 EXPECTED_NORMAL_NAMES = (
@@ -133,6 +140,21 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.cadence_statistics.pedaling_time_ratio",
     "activity.statistics.cadence_statistics.coverage_ratio",
     "activity.statistics.cadence_statistics.bands_s.seconds",
+    "activity.statistics.power_statistics.available",
+    "activity.statistics.power_statistics.overall.mean",
+    "activity.statistics.power_statistics.overall.median",
+    "activity.statistics.power_statistics.overall.standard_deviation",
+    "activity.statistics.power_statistics.overall.p10",
+    "activity.statistics.power_statistics.overall.p25",
+    "activity.statistics.power_statistics.overall.p75",
+    "activity.statistics.power_statistics.overall.p90",
+    "activity.statistics.power_statistics.overall.minimum",
+    "activity.statistics.power_statistics.overall.maximum",
+    "activity.statistics.power_statistics.overall.valid_sample_count",
+    "activity.statistics.power_statistics.overall.valid_time_s",
+    "activity.statistics.power_statistics.overall.coverage_ratio",
+    "activity.statistics.power_statistics.coverage_ratio",
+    "activity.statistics.power_statistics.histogram_s.seconds",
     "activity.statistics.zone_distribution.seconds",
     "activity.statistics.zone_distribution.percent",
     "activity.statistics.zone_distribution.valid_heart_rate_time_s",
@@ -141,8 +163,10 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.time_windows.window_s",
     "activity.statistics.time_windows.items.average_heart_rate_bpm",
     "activity.statistics.time_windows.items.average_pedaling_cadence_rpm",
+    "activity.statistics.time_windows.items.average_power_w",
     "activity.statistics.time_windows.items.average_speed_kmh",
     "activity.statistics.time_windows.items.cadence_coverage_ratio",
+    "activity.statistics.time_windows.items.power_coverage_ratio",
     "activity.statistics.time_windows.items.distance_m",
     "activity.statistics.time_windows.items.duration_s",
     "activity.statistics.time_windows.items.end_s",
@@ -180,6 +204,15 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.relationships.heart_rate_cadence.spearman",
     "activity.statistics.relationships.heart_rate_cadence.pearson",
     "activity.statistics.relationships.heart_rate_cadence.window_count",
+    "activity.statistics.relationships.power_heart_rate.spearman",
+    "activity.statistics.relationships.power_heart_rate.pearson",
+    "activity.statistics.relationships.power_heart_rate.window_count",
+    "activity.statistics.relationships.power_speed.spearman",
+    "activity.statistics.relationships.power_speed.pearson",
+    "activity.statistics.relationships.power_speed.window_count",
+    "activity.statistics.relationships.power_cadence.spearman",
+    "activity.statistics.relationships.power_cadence.pearson",
+    "activity.statistics.relationships.power_cadence.window_count",
     "activity.statistics.heatmap_data.heart_rate_speed.duration_s",
     "activity.statistics.heatmap_data.heart_rate_speed.observation_count",
     "activity.statistics.heatmap_data.heart_rate_speed.valid_observation_count",
@@ -189,15 +222,26 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.heatmap_data.speed_cadence.duration_s",
     "activity.statistics.heatmap_data.speed_cadence.observation_count",
     "activity.statistics.heatmap_data.speed_cadence.valid_observation_count",
+    "activity.statistics.heatmap_data.power_heart_rate.duration_s",
+    "activity.statistics.heatmap_data.power_heart_rate.observation_count",
+    "activity.statistics.heatmap_data.power_heart_rate.valid_observation_count",
+    "activity.statistics.heatmap_data.power_cadence.duration_s",
+    "activity.statistics.heatmap_data.power_cadence.observation_count",
+    "activity.statistics.heatmap_data.power_cadence.valid_observation_count",
+    "activity.statistics.heatmap_data.power_speed.duration_s",
+    "activity.statistics.heatmap_data.power_speed.observation_count",
+    "activity.statistics.heatmap_data.power_speed.valid_observation_count",
     "activity.statistics.data_quality.raw_record_points",
     "activity.statistics.data_quality.valid_speed_intervals",
     "activity.statistics.data_quality.valid_speed_samples",
     "activity.statistics.data_quality.speed_samples_during_movement",
     "activity.statistics.data_quality.valid_heart_rate_intervals",
     "activity.statistics.data_quality.valid_cadence_intervals",
+    "activity.statistics.data_quality.valid_power_intervals",
     "activity.statistics.data_quality.invalid_speed_intervals",
     "activity.statistics.data_quality.invalid_heart_rate_intervals",
     "activity.statistics.data_quality.invalid_cadence_intervals",
+    "activity.statistics.data_quality.invalid_power_intervals",
     "activity.statistics.data_quality.duplicate_timestamps",
     "activity.statistics.data_quality.gap_intervals_over_30s",
     "activity.statistics.data_quality.rejected_outlier_values",
@@ -205,11 +249,18 @@ EXPECTED_NORMAL_NAMES = (
     "activity.statistics.data_quality.speed_coverage_ratio",
     "activity.statistics.data_quality.heart_rate_coverage_ratio",
     "activity.statistics.data_quality.cadence_coverage_ratio",
+    "activity.statistics.data_quality.power_coverage_ratio",
 )
 
 
 def _activity(
-    *, cadence: bool = True, sparse_cadence: bool = False, pause: bool = False, empty: bool = False
+    *,
+    cadence: bool = True,
+    sparse_cadence: bool = False,
+    power: bool = True,
+    sparse_power: bool = False,
+    pause: bool = False,
+    empty: bool = False,
 ) -> ParsedActivity:
     start = datetime(2026, 6, 1, 10, tzinfo=UTC)
     rows: list[dict[str, object]] = []
@@ -217,6 +268,7 @@ def _activity(
         speed = 5.0 if index < 10 else 6.0 if index < 20 else 7.0
         heart_rate = 120 if index < 10 else 145 if index < 20 else 160
         cadence_value: int | None = None
+        power_value: int | None = None
         if cadence:
             cadence_value = (
                 None
@@ -227,12 +279,15 @@ def _activity(
                 if index < 20
                 else 95
             )
+        if power and not (sparse_power and index % 5 != 0):
+            power_value = 0 if index < 5 else 100 if index < 10 else 200 if index < 20 else 300
         rows.append(
             {
                 "timestamp": start + timedelta(seconds=index * 30),
                 "heart_rate": heart_rate,
                 "cadence": cadence_value,
                 "fractional_cadence": 0,
+                "power_w": power_value,
                 "distance_m": index * 180.0,
                 "altitude_m": None,
                 "speed_mps": speed,
@@ -329,6 +384,17 @@ class TestDetailedActivityStatistics:
         assert _cell(bands, "rpm_80_89") == pytest.approx(450.0)
         assert _cell(bands, "rpm_90_99") == pytest.approx(300.0)
 
+        assert _scalar(metrics, "activity.statistics.power_statistics.available") is True
+        assert _scalar(
+            metrics, "activity.statistics.power_statistics.overall.mean"
+        ) == pytest.approx(183.333333)
+        assert _scalar(metrics, "activity.statistics.power_statistics.overall.maximum") == 300.0
+        power_histogram = _table(
+            metrics, "activity.statistics.power_statistics.histogram_s.seconds"
+        )
+        assert _cell(power_histogram, "0-24") == pytest.approx(150.0)
+        assert _cell(power_histogram, "100-124") == pytest.approx(150.0)
+
         seconds = _table(metrics, "activity.statistics.zone_distribution.seconds")
         assert _cell(seconds, "zone_2") == pytest.approx(300.0)
         assert _cell(seconds, "zone_4") == pytest.approx(600.0)
@@ -343,6 +409,8 @@ class TestDetailedActivityStatistics:
         )
         assert windowed_hr.axis.values == (0.0, 300.0, 600.0)
         assert windowed_hr.values == (120.0, 145.0, 160.0)
+        windowed_power = _table(metrics, "activity.statistics.time_windows.items.average_power_w")
+        assert windowed_power.values == (50.0, 200.0, 300.0)
         assert _missing(metrics, "activity.statistics.time_windows.movement_time_variant") == (
             "no_data"
         )
@@ -353,6 +421,13 @@ class TestDetailedActivityStatistics:
         assert _scalar(
             metrics, "activity.statistics.relationships.speed_heart_rate.spearman"
         ) == pytest.approx(1.0)
+        assert _scalar(
+            metrics, "activity.statistics.relationships.power_heart_rate.spearman"
+        ) == pytest.approx(1.0)
+        assert _scalar(
+            metrics, "activity.statistics.relationships.power_speed.spearman"
+        ) == pytest.approx(1.0)
+        assert _scalar(metrics, "activity.statistics.relationships.power_cadence.window_count") == 3
 
         heatmap = _metric(
             metrics, "activity.statistics.heatmap_data.heart_rate_speed.duration_s"
@@ -365,6 +440,20 @@ class TestDetailedActivityStatistics:
             )
             == 30
         )
+        assert (
+            _scalar(
+                metrics,
+                "activity.statistics.heatmap_data.power_heart_rate.valid_observation_count",
+            )
+            == 30
+        )
+        power_speed_map = _metric(
+            metrics, "activity.statistics.heatmap_data.power_speed.duration_s"
+        ).value
+        assert isinstance(power_speed_map, MatrixValue)
+        assert sum(
+            value for row in power_speed_map.values for value in row if value is not None
+        ) == (pytest.approx(900.0))
 
         assert _scalar(
             metrics, "activity.statistics.efficiency.first_half_average_speed_kmh"
@@ -411,11 +500,97 @@ class TestDetailedActivityStatistics:
             )
             == 0
         )
+        assert (
+            _scalar(
+                metrics,
+                "activity.statistics.heatmap_data.power_cadence.valid_observation_count",
+            )
+            == 0
+        )
+        assert (
+            _missing(metrics, "activity.statistics.relationships.power_cadence.spearman")
+            is MissingReason.INSUFFICIENT_COVERAGE
+        )
+
+    def test_absent_power_reports_missing_reason_and_empty_power_heatmaps(self) -> None:
+        metrics = _statistics(QualityConfig(), power=False)
+        assert _scalar(metrics, "activity.statistics.power_statistics.available") is False
+        assert _missing(metrics, "activity.statistics.power_statistics.overall.mean") is (
+            MissingReason.NO_POWER_DATA
+        )
+        assert _missing(metrics, "activity.statistics.power_statistics.histogram_s.seconds") is (
+            MissingReason.NO_POWER_DATA
+        )
+        assert _missing(metrics, "activity.statistics.relationships.power_heart_rate.spearman") is (
+            MissingReason.NO_POWER_DATA
+        )
+        assert (
+            _scalar(
+                metrics,
+                "activity.statistics.heatmap_data.power_heart_rate.valid_observation_count",
+            )
+            == 0
+        )
+
+    def test_power_below_coverage_threshold_is_masked_but_coverage_is_reported(self) -> None:
+        metrics = _statistics(QualityConfig(), sparse_power=True)
+        assert _scalar(metrics, "activity.statistics.power_statistics.available") is False
+        assert _scalar(
+            metrics, "activity.statistics.power_statistics.coverage_ratio"
+        ) == pytest.approx(0.2)
+        assert _missing(metrics, "activity.statistics.power_statistics.overall.mean") is (
+            MissingReason.INSUFFICIENT_COVERAGE
+        )
+        windowed_power = _table(metrics, "activity.statistics.time_windows.items.average_power_w")
+        assert windowed_power.values == (None, None, None)
+        assert (
+            _scalar(
+                metrics,
+                "activity.statistics.heatmap_data.power_heart_rate.valid_observation_count",
+            )
+            == 0
+        )
+
+    def test_power_coverage_threshold_is_configurable(self) -> None:
+        activity = _activity(sparse_power=True)
+        metrics = power_metrics(activity, QualityConfig(power_min_coverage=0.0))
+        assert _scalar(metrics, "activity.statistics.power_statistics.available") is True
+        assert _scalar(
+            metrics, "activity.statistics.power_statistics.coverage_ratio"
+        ) == pytest.approx(0.2)
+
+    def test_power_zero_is_valid_and_outliers_are_rejected(self) -> None:
+        activity = _activity()
+        power_values = [-1, 0, 3001, *([100] * (activity.records.height - 3))]
+        records = activity.records.with_columns(
+            pl.Series("power_w", power_values, dtype=pl.Int32())
+        )
+        intervals = build_intervals(replace(activity, records=records))
+
+        assert intervals[0].power_w is None
+        assert intervals[0].rejected_values == 1
+        assert intervals[1].power_w == 0.0
+        assert intervals[2].power_w is None
+        assert intervals[2].rejected_values == 1
+
+    def test_power_correlations_require_three_valid_five_minute_windows(self) -> None:
+        activity = replace(_activity(), duration_s=600.0)
+        metrics = relationship_metrics(activity, QualityConfig())
+
+        assert (
+            _scalar(metrics, "activity.statistics.relationships.power_heart_rate.window_count") == 2
+        )
+        assert _missing(metrics, "activity.statistics.relationships.power_heart_rate.spearman") is (
+            MissingReason.INSUFFICIENT_WINDOWS
+        )
 
     def test_paused_time_is_excluded_from_sensor_statistics(self) -> None:
         metrics = _statistics(QualityConfig(), pause=True)
         assert _scalar(metrics, "activity.statistics.data_quality.pause_intervals") == 1
         assert _scalar(metrics, "activity.statistics.data_quality.heart_rate_coverage_ratio") <= 1.0
+        assert _scalar(metrics, "activity.statistics.power_statistics.overall.valid_time_s") == (
+            pytest.approx(600.0)
+        )
 
     def test_public_function_returns_metrics_including_heatmap(self) -> None:
         metrics = _statistics()
@@ -448,12 +623,17 @@ class TestDetailedActivityStatistics:
             "activity.statistics.cadence_statistics.available": None,
             "activity.statistics.cadence_statistics.overall.valid_sample_count": "count",
             "activity.statistics.cadence_statistics.pedaling.coverage_ratio": "ratio",
+            "activity.statistics.power_statistics.available": None,
+            "activity.statistics.power_statistics.overall.valid_sample_count": "count",
+            "activity.statistics.power_statistics.coverage_ratio": "ratio",
             "activity.statistics.cadence_statistics.pedaling_time_ratio": "ratio",
             "activity.statistics.zone_distribution.percent_denominator": None,
             "activity.statistics.time_windows.items.average_speed_kmh": "km/h",
             "activity.statistics.time_windows.items.average_heart_rate_bpm": "bpm",
             "activity.statistics.time_windows.items.average_pedaling_cadence_rpm": "rpm",
+            "activity.statistics.time_windows.items.average_power_w": "W",
             "activity.statistics.time_windows.items.cadence_coverage_ratio": "ratio",
+            "activity.statistics.time_windows.items.power_coverage_ratio": "ratio",
             "activity.statistics.time_windows.items.moving_time_ratio": "ratio",
             "activity.statistics.efficiency.speed_per_heart_rate": "km/h/bpm",
             "activity.statistics.efficiency.speed_per_heart_rate_reserve": "km/h",
@@ -508,7 +688,9 @@ class TestDetailedActivityStatistics:
         for name in (
             "activity.statistics.efficiency.aerobic_decoupling_pct",
             "activity.statistics.relationships.speed_heart_rate.spearman",
+            "activity.statistics.relationships.power_heart_rate.spearman",
             "activity.statistics.heatmap_data.heart_rate_speed.duration_s",
+            "activity.statistics.heatmap_data.power_heart_rate.duration_s",
             "activity.statistics.time_windows.items.average_pedaling_cadence_rpm",
         ):
             assert all(metric.name != name for metric in metrics)
@@ -560,6 +742,7 @@ class TestFamilyProducers:
             (speed_metrics(activity, quality), "activity.statistics.speed_statistics."),
             (heart_rate_metrics(activity), "activity.statistics.heart_rate_statistics."),
             (cadence_metrics(activity, quality), "activity.statistics.cadence_statistics."),
+            (power_metrics(activity, quality), "activity.statistics.power_statistics."),
             (zone_metrics(activity, athlete), "activity.statistics.zone_distribution."),
             (time_window_metrics(activity, quality), "activity.statistics.time_windows."),
             (efficiency_metrics(activity, athlete, quality), "activity.statistics.efficiency."),
@@ -583,6 +766,7 @@ class TestFamilyProducers:
             speed_metrics(activity, quality),
             heart_rate_metrics(activity),
             cadence_metrics(activity, quality),
+            power_metrics(activity, quality),
             zone_metrics(activity, athlete),
             time_window_metrics(activity, quality),
             efficiency_metrics(activity, athlete, quality),
@@ -634,6 +818,7 @@ class TestSharedIntervalPass:
             (lambda: speed_metrics(activity, quality), 1),
             (lambda: heart_rate_metrics(activity), 1),
             (lambda: cadence_metrics(activity, quality), 1),
+            (lambda: power_metrics(activity, quality), 1),
             (lambda: zone_metrics(activity, athlete), 1),
             (lambda: time_window_metrics(activity, quality), 1),
             (lambda: efficiency_metrics(activity, athlete, quality), 1),
@@ -646,7 +831,7 @@ class TestSharedIntervalPass:
             before = builds()
             produce()
             assert builds() - before == expected_builds
-        assert builds() == 10
+        assert builds() == 11
 
     def test_activity_statistics_reuses_derived_facts(
         self, monkeypatch: pytest.MonkeyPatch
@@ -710,6 +895,7 @@ class TestSharedIntervalPass:
         activity_statistics._speed_metrics(statistics)
         activity_statistics._heart_rate_metrics(statistics)
         activity_statistics._cadence_metrics(statistics)
+        activity_statistics._power_metrics(statistics)
         activity_statistics._zone_metrics(statistics)
         activity_statistics._time_window_metrics(statistics)
         activity_statistics._efficiency_family_metrics(statistics)

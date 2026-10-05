@@ -48,6 +48,7 @@ class FitDecodeParser:
         if not rows:
             msg = f"no session or record messages found in FIT file {source_file.path!r}"
             raise FitParseError(msg)
+        rows = _coalesce_record_rows(rows)
         return FitData(frame=pl.DataFrame(rows, schema=FitData.SCHEMA))
 
 
@@ -72,12 +73,38 @@ def _parse_record_row(frame: fitdecode.FitDataMessage) -> dict[str, object] | No
         "heart_rate": coerce_int(frame.get_value("heart_rate", fallback=None)),
         "cadence": coerce_int(frame.get_value("cadence", fallback=None)),
         "fractional_cadence": coerce_int(frame.get_value("fractional_cadence", fallback=None)),
+        "power_w": coerce_int(frame.get_value("power", fallback=None)),
         "distance_m": coerce_float(frame.get_value("distance", fallback=None)),
         "altitude_m": _altitude(frame),
         "speed_mps": _speed(frame, "enhanced_speed", "speed"),
     }
     row.update({name: value for name, value in values.items() if value is not None})
     return row
+
+
+def _coalesce_record_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Merge sensor fields emitted in separate record messages at one timestamp."""
+    normalized: list[dict[str, object]] = []
+    record_indices: dict[datetime, int] = {}
+    for row in rows:
+        timestamp = row.get("timestamp")
+        if row.get("message_type") != "record" or not isinstance(timestamp, datetime):
+            normalized.append(row)
+            continue
+        index = record_indices.get(timestamp)
+        if index is None:
+            record_indices[timestamp] = len(normalized)
+            normalized.append(row.copy())
+            continue
+        merged = normalized[index]
+        merged.update(
+            {
+                name: value
+                for name, value in row.items()
+                if name not in {"message_type", "timestamp"} and value is not None
+            }
+        )
+    return normalized
 
 
 def _parse_timer_event(frame: fitdecode.FitDataMessage) -> dict[str, object] | None:

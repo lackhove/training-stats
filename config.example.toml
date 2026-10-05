@@ -57,6 +57,7 @@ decoupling_min_duration_s = 1200.0
 decoupling_min_coverage = 0.80
 speed_thresholds_kmh = [20.0, 25.0, 30.0, 35.0]
 cadence_min_coverage = 0.50
+power_min_coverage = 0.50
 
 # ----- Input sources ---------------------------------------------------------
 # Multiple sources are supported; every entry is active.

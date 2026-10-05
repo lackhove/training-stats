@@ -102,6 +102,7 @@ def make_record_frame(
                 "heart_rate": heart_rate,
                 "cadence": None,
                 "fractional_cadence": None,
+                "power_w": None,
             }
         )
         timestamp = timestamp + timedelta(seconds=interval_s)
@@ -189,6 +190,7 @@ class StubParser:
                 "heart_rate": None,
                 "cadence": None,
                 "fractional_cadence": None,
+                "power_w": None,
                 "distance_m": None,
                 "altitude_m": None,
                 "speed_mps": None,
@@ -208,6 +210,7 @@ class StubParser:
                     "heart_rate": heart_rate,
                     "cadence": None,
                     "fractional_cadence": None,
+                    "power_w": None,
                     "distance_m": distance * index / intervals,
                     "altitude_m": None,
                     "speed_mps": 5.0,

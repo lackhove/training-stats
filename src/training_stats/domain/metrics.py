@@ -39,6 +39,7 @@ class TimeBasis(StrEnum):
 class MissingReason(StrEnum):
     NO_DATA = "no_data"
     INSUFFICIENT_DATA = "insufficient_data"
+    NO_POWER_DATA = "no_power_data"
     INSUFFICIENT_DURATION = "insufficient_duration"
     INSUFFICIENT_COVERAGE = "insufficient_coverage"
     INSUFFICIENT_WINDOWS = "insufficient_windows"

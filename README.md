@@ -18,6 +18,10 @@ Key properties:
   configuration, never invented by an LLM. The load method (`hr_trimp`, a
   Banister-style TRIMP estimate) is stored alongside its version and
   confidence.
+- **Recorded-power analytics** — FIT record power contributes time-weighted
+  distributions, histograms, five-minute correlations, and binned sensor
+  heatmaps when coverage is sufficient. Power remains separate from the
+  HR-based training-load estimate.
 - **Secret hygiene** — configuration comes from TOML, credentials exclusively
   from environment variables.
 

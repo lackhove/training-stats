@@ -47,6 +47,8 @@ from .statistics_records import (
 
 _STATISTICS_PREFIX = "activity.statistics"
 WINDOW_S = 300.0
+POWER_HISTOGRAM_BIN_W = 25
+POWER_HEATMAP_BIN_W = 50
 
 CADENCE_BANDS: tuple[tuple[str, float, float | None], ...] = (
     ("rpm_1_59", 1.0, 60.0),
@@ -84,6 +86,9 @@ class _Window:
     median_pedaling_cadence_rpm: float | None
     cadence_coverage_ratio: float
     cadence_reason: str | None
+    average_power_w: float | None
+    power_coverage_ratio: float
+    power_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +122,7 @@ class _ActivityStatistics:
     _moving_time: float | None = None
     _active_time: float | None = None
     _cadence_coverage: float | None = None
+    _power_coverage: float | None = None
     _windows: tuple[tuple[_Window, ...], tuple[_Window, ...]] | None = None
     _efficiency: _EfficiencyFacts | None = None
 
@@ -162,6 +168,19 @@ class _ActivityStatistics:
             )
         return self._cadence_coverage
 
+    def power_coverage(self) -> float:
+        if self._power_coverage is None:
+            power_time = sum(
+                interval.active_s
+                for interval in self.interval_sequence()
+                if interval.power_w is not None
+            )
+            self._power_coverage = _capped_coverage(power_time, self.active_time_s())
+        return self._power_coverage
+
+    def power_availability(self) -> tuple[bool, MissingReason | None]:
+        return _power_availability(self.interval_sequence(), self.power_coverage(), self.quality)
+
     def available_windows(self) -> tuple[tuple[_Window, ...], tuple[_Window, ...]]:
         if self._windows is None:
             self._windows = _build_available_windows(self)
@@ -206,6 +225,7 @@ _WINDOW_COLUMNS: tuple[_WindowColumn, ...] = (
         "rpm",
         lambda w: w.average_pedaling_cadence_rpm,
     ),
+    ("average_power_w", "average recorded power", "W", lambda w: w.average_power_w),
     ("average_speed_kmh", "average speed kmh", "km/h", lambda w: w.average_speed_kmh),
     (
         "cadence_coverage_ratio",
@@ -214,6 +234,13 @@ _WINDOW_COLUMNS: tuple[_WindowColumn, ...] = (
         lambda w: w.cadence_coverage_ratio,
     ),
     ("cadence_reason", "cadence reason", None, lambda w: w.cadence_reason),
+    (
+        "power_coverage_ratio",
+        "recorded power coverage ratio",
+        "ratio",
+        lambda w: w.power_coverage_ratio,
+    ),
+    ("power_reason", "recorded power reason", None, lambda w: w.power_reason),
     ("distance_m", "distance m", "m", lambda w: w.distance_m),
     ("duration_s", "duration", "s", lambda w: w.duration_s),
     ("end_s", "end", "s", lambda w: w.end_s),
@@ -341,12 +368,18 @@ _RELATIONSHIP_SPECS: dict[str, str] = {
     "speed_heart_rate": "speed heart rate",
     "speed_cadence": "speed cadence",
     "heart_rate_cadence": "heart rate cadence",
+    "power_heart_rate": "recorded power heart rate",
+    "power_speed": "recorded power speed",
+    "power_cadence": "recorded power cadence",
 }
 
 _HEATMAP_SPECS: dict[str, tuple[str, str]] = {
     "heart_rate_speed": ("heart rate and speed", "heart rate speed"),
     "heart_rate_cadence": ("heart rate and cadence", "heart rate cadence"),
     "speed_cadence": ("speed and cadence", "speed cadence"),
+    "power_heart_rate": ("recorded power and heart rate", "recorded power heart rate"),
+    "power_cadence": ("recorded power and cadence", "recorded power cadence"),
+    "power_speed": ("recorded power and speed", "recorded power speed"),
 }
 
 
@@ -361,6 +394,7 @@ def compute_activity_statistics(
         *_speed_metrics(statistics),
         *_heart_rate_metrics(statistics),
         *_cadence_metrics(statistics),
+        *_power_metrics(statistics),
         *_zone_metrics(statistics),
         *_time_window_metrics(statistics),
         *_efficiency_family_metrics(statistics),
@@ -532,6 +566,16 @@ def cadence_metrics(
     return _cadence_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
 
 
+def power_metrics(
+    activity: ParsedActivity,
+    quality: QualityConfig,
+    *,
+    intervals: Sequence[Interval] | None = None,
+) -> tuple[Metric, ...]:
+    """Build recorded-power metrics from one activity and its quality settings."""
+    return _power_metrics(_ActivityStatistics.build(activity, quality, intervals=intervals))
+
+
 def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
     """Cadence availability, distributions, pedaling time and cadence bands."""
     activity = statistics.activity
@@ -649,6 +693,76 @@ def _cadence_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
                 kind=MetricKind.CALCULATED,
             )
         )
+    return tuple(metrics)
+
+
+def _power_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
+    """Recorded-power distribution, coverage, and time-weighted histogram."""
+    activity = statistics.activity
+    period = _period(activity)
+    prefix = f"{_STATISTICS_PREFIX}.power_statistics"
+    short = statistics.is_short()
+    intervals = statistics.interval_sequence()
+    reason: MissingReason | None
+    if short:
+        available = False
+        reason = MissingReason.NO_POWER_DATA
+    else:
+        available, reason = statistics.power_availability()
+    samples = (
+        [
+            (interval.power_w, interval.active_s)
+            for interval in intervals
+            if interval.power_w is not None
+        ]
+        if available
+        else []
+    )
+    overall_reason = reason or MissingReason.INSUFFICIENT_DATA
+    metrics = [
+        scalar_metric(
+            f"{prefix}.available",
+            period,
+            available,
+            description=(
+                "Whether recorded power data meets the configured availability requirements."
+            ),
+            kind=MetricKind.INTERPRETED,
+        ),
+        *_distribution_metrics(
+            f"{prefix}.overall",
+            samples,
+            statistics.active_time_s(),
+            context="recorded power",
+            unit="W",
+            time_basis=TimeBasis.ACTIVE_TIME,
+            empty_reason=overall_reason,
+            period=period,
+        ),
+        scalar_metric(
+            f"{prefix}.coverage_ratio",
+            period,
+            statistics.power_coverage(),
+            description="Fraction of active time covered by valid recorded-power measurements.",
+            unit="ratio",
+            kind=MetricKind.CALCULATED,
+            time_basis=TimeBasis.ACTIVE_TIME,
+        ),
+    ]
+    histogram = _power_histogram(samples)
+    labels = tuple(label for label, _seconds in histogram)
+    metrics.append(
+        table_metric(
+            f"{prefix}.histogram_s.seconds",
+            period,
+            Axis(name="power_bin_w", values=labels, unit="W"),
+            tuple(seconds for _label, seconds in histogram),
+            description="Active time accumulated in 25-watt recorded-power bins.",
+            unit="s",
+            missing_reason=overall_reason if not histogram else None,
+            time_basis=TimeBasis.ACTIVE_TIME,
+        )
+    )
     return tuple(metrics)
 
 
@@ -881,31 +995,52 @@ def _relationship_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]
         "speed_heart_rate": [],
         "speed_cadence": [],
         "heart_rate_cadence": [],
+        "power_heart_rate": [],
+        "power_speed": [],
+        "power_cadence": [],
     }
+    power_available, power_reason = statistics.power_availability()
+    cadence_available, cadence_reason = _cadence_availability(
+        statistics.interval_sequence(), statistics.cadence_coverage(), statistics.quality
+    )
     for window in windows:
         speed = window.average_speed_kmh
         heart_rate = window.average_heart_rate_bpm
         cadence = window.average_pedaling_cadence_rpm
+        power = window.average_power_w
         if speed is not None and heart_rate is not None:
             pairs["speed_heart_rate"].append((speed, heart_rate))
         if speed is not None and cadence is not None:
             pairs["speed_cadence"].append((speed, cadence))
         if heart_rate is not None and cadence is not None:
             pairs["heart_rate_cadence"].append((heart_rate, cadence))
+        if power is not None and heart_rate is not None:
+            pairs["power_heart_rate"].append((power, heart_rate))
+        if power is not None and speed is not None:
+            pairs["power_speed"].append((power, speed))
+        if power is not None and cadence is not None:
+            pairs["power_cadence"].append((power, cadence))
     metrics: list[Metric] = []
     for name, values in pairs.items():
-        if name != "speed_heart_rate" and not values:
+        if (
+            name not in {"speed_heart_rate", "power_heart_rate", "power_speed", "power_cadence"}
+            and not values
+        ):
             continue
         label = _RELATIONSHIP_SPECS[name]
         spearman = _spearman(values) if len(values) >= 3 else None
         pearson = _pearson(values) if len(values) >= 3 else None
-        missing_reason = (
-            MissingReason.INSUFFICIENT_WINDOWS
-            if len(values) < 3
-            else MissingReason.INSUFFICIENT_DATA
-            if spearman is None and pearson is None
-            else MissingReason.NO_DATA
-        )
+        missing_reason = power_reason if name.startswith("power_") and not power_available else None
+        if name == "power_cadence" and power_available and not cadence_available:
+            missing_reason = cadence_reason or MissingReason.INSUFFICIENT_COVERAGE
+        if missing_reason is None:
+            missing_reason = (
+                MissingReason.INSUFFICIENT_WINDOWS
+                if len(values) < 3
+                else MissingReason.INSUFFICIENT_DATA
+                if spearman is None and pearson is None
+                else MissingReason.NO_DATA
+            )
         for key, value, description, unit in (
             (
                 "spearman",
@@ -964,11 +1099,15 @@ def _heatmap_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
         "heart_rate_speed": defaultdict(lambda: [0.0, 0.0]),
         "heart_rate_cadence": defaultdict(lambda: [0.0, 0.0]),
         "speed_cadence": defaultdict(lambda: [0.0, 0.0]),
+        "power_heart_rate": defaultdict(lambda: [0.0, 0.0]),
+        "power_cadence": defaultdict(lambda: [0.0, 0.0]),
+        "power_speed": defaultdict(lambda: [0.0, 0.0]),
     }
     for interval in intervals:
         heart_rate = interval.heart_rate
         speed = interval.speed_kmh
         cadence = interval.cadence_rpm
+        power = interval.power_w
         moving = moving_s(interval, threshold_mps)
         if heart_rate is not None and speed is not None and moving > 0.0:
             key = (int(heart_rate // 10) * 10, int(speed // 5) * 5)
@@ -982,15 +1121,40 @@ def _heatmap_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ...]:
             key = (int(speed // 5) * 5, int(cadence // 10) * 10)
             cells["speed_cadence"][key][0] += moving
             cells["speed_cadence"][key][1] += 1.0
+        if power is not None and heart_rate is not None:
+            key = (
+                int(power // POWER_HEATMAP_BIN_W) * POWER_HEATMAP_BIN_W,
+                int(heart_rate // 10) * 10,
+            )
+            cells["power_heart_rate"][key][0] += interval.active_s
+            cells["power_heart_rate"][key][1] += 1.0
+        if power is not None and cadence is not None and cadence > 0.0:
+            key = (int(power // POWER_HEATMAP_BIN_W) * POWER_HEATMAP_BIN_W, int(cadence // 10) * 10)
+            cells["power_cadence"][key][0] += interval.active_s
+            cells["power_cadence"][key][1] += 1.0
+        if power is not None and speed is not None and moving > 0.0:
+            key = (int(power // POWER_HEATMAP_BIN_W) * POWER_HEATMAP_BIN_W, int(speed // 5) * 5)
+            cells["power_speed"][key][0] += moving
+            cells["power_speed"][key][1] += 1.0
     available, _reason = _cadence_availability(intervals, statistics.cadence_coverage(), quality)
+    power_available, _power_reason = statistics.power_availability()
     metrics: list[Metric] = []
     for name, x_width, y_width in (
         ("heart_rate_speed", 10, 5),
         ("heart_rate_cadence", 10, 10),
         ("speed_cadence", 5, 10),
+        ("power_heart_rate", POWER_HEATMAP_BIN_W, 10),
+        ("power_cadence", POWER_HEATMAP_BIN_W, 10),
+        ("power_speed", POWER_HEATMAP_BIN_W, 5),
     ):
         axes, label = _HEATMAP_SPECS[name]
-        values = cells[name] if available or name == "heart_rate_speed" else {}
+        if name.startswith("power_"):
+            if name == "power_cadence":
+                values = cells[name] if power_available and available else {}
+            else:
+                values = cells[name] if power_available else {}
+        else:
+            values = cells[name] if available or name == "heart_rate_speed" else {}
         valid_observation_count = int(sum(value[1] for value in values.values()))
         base = f"{prefix}.{name}"
         bins = _bins(values, x_width, y_width)
@@ -1053,9 +1217,11 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
     during_movement = 0
     valid_heart_rate = 0
     valid_cadence = 0
+    valid_power = 0
     speed_time_s = 0.0
     heart_rate_time_s = 0.0
     cadence_time_s = 0.0
+    power_time_s = 0.0
     for interval in intervals:
         weight = moving_s(interval, threshold_mps)
         if interval.speed_kmh is not None:
@@ -1069,6 +1235,9 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
         if interval.cadence_rpm is not None:
             valid_cadence += 1
             cadence_time_s += interval.active_s
+        if interval.power_w is not None:
+            valid_power += 1
+            power_time_s += interval.active_s
     if short:
         duplicates, gaps = 0, 0
     else:
@@ -1112,6 +1281,12 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
             valid_cadence,
         ),
         (
+            "valid_power_intervals",
+            "Number of intervals containing a valid recorded-power sample.",
+            "count",
+            valid_power,
+        ),
+        (
             "invalid_speed_intervals",
             "Number of intervals without a valid speed sample.",
             "count",
@@ -1128,6 +1303,12 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
             "Number of intervals without a valid cadence sample.",
             "count",
             len(intervals) - valid_cadence,
+        ),
+        (
+            "invalid_power_intervals",
+            "Number of intervals without a valid recorded-power sample.",
+            "count",
+            len(intervals) - valid_power,
         ),
         (
             "duplicate_timestamps",
@@ -1190,6 +1371,13 @@ def _sensor_quality_metrics(statistics: _ActivityStatistics) -> tuple[Metric, ..
             moving,
             "Fraction of moving time covered by valid cadence measurements.",
             TimeBasis.MOVING_TIME,
+        ),
+        (
+            "power_coverage_ratio",
+            power_time_s,
+            active,
+            "Fraction of active time covered by valid recorded-power measurements.",
+            TimeBasis.ACTIVE_TIME,
         ),
     ):
         metrics.append(
@@ -1332,6 +1520,15 @@ def _hr_histogram(samples: Sequence[tuple[float, float]]) -> tuple[tuple[str, fl
     return tuple(sorted(histogram.items()))
 
 
+def _power_histogram(samples: Sequence[tuple[float, float]]) -> tuple[tuple[str, float], ...]:
+    histogram: dict[str, float] = {}
+    for value, duration in samples:
+        low = int(value // POWER_HISTOGRAM_BIN_W) * POWER_HISTOGRAM_BIN_W
+        label = f"{low}-{low + POWER_HISTOGRAM_BIN_W - 1}"
+        histogram[label] = histogram.get(label, 0.0) + duration
+    return tuple(sorted(histogram.items(), key=lambda item: int(item[0].split("-", 1)[0])))
+
+
 def _spearman(values: list[tuple[float, float]]) -> float | None:
     return _pearson(
         list(zip(_ranks([x for x, _y in values]), _ranks([y for _x, y in values]), strict=True))
@@ -1400,6 +1597,16 @@ def _cadence_availability(
     return True, None
 
 
+def _power_availability(
+    intervals: Sequence[Interval], coverage: float, quality: QualityConfig
+) -> tuple[bool, MissingReason | None]:
+    if not any(interval.power_w is not None for interval in intervals):
+        return False, MissingReason.NO_POWER_DATA
+    if coverage < quality.power_min_coverage:
+        return False, MissingReason.INSUFFICIENT_COVERAGE
+    return True, None
+
+
 def _build_windows(
     intervals: Sequence[Interval],
     span_s: float,
@@ -1437,8 +1644,14 @@ def _build_windows(
             for interval in group
             if interval.cadence_rpm is not None and interval.cadence_rpm > 0.0
         ]
+        power = [
+            (interval.power_w, interval.active_s)
+            for interval in group
+            if interval.power_w is not None
+        ]
         moving = sum(moving_s(interval, threshold_mps) for interval in group)
         heart_rate_valid_s = sum(weight for _value, weight in heart)
+        active_s = sum(interval.active_s for interval in group)
         windows.append(
             _Window(
                 start_s=start_s,
@@ -1462,6 +1675,11 @@ def _build_windows(
                     sum(weight for _value, weight in cadence) / moving if moving > 0.0 else 0.0
                 ),
                 cadence_reason=None,
+                average_power_w=_weighted_mean(power),
+                power_coverage_ratio=(
+                    sum(weight for _value, weight in power) / active_s if active_s > 0.0 else 0.0
+                ),
+                power_reason=None,
             )
         )
     return tuple(windows)
@@ -1493,6 +1711,11 @@ def _build_available_windows(
         masked = (reason or MissingReason.INSUFFICIENT_COVERAGE).value
         windows = _mask_window_cadence(windows, masked)
         movement = _mask_window_cadence(movement, masked)
+    power_available, power_reason = statistics.power_availability()
+    if not power_available:
+        masked = (power_reason or MissingReason.INSUFFICIENT_COVERAGE).value
+        windows = _mask_window_power(windows, masked)
+        movement = _mask_window_power(movement, masked)
     return windows, movement
 
 
@@ -1518,6 +1741,39 @@ def _mask_window_cadence(windows: tuple[_Window, ...], reason: str) -> tuple[_Wi
             median_pedaling_cadence_rpm=None,
             cadence_coverage_ratio=window.cadence_coverage_ratio,
             cadence_reason=reason,
+            average_power_w=window.average_power_w,
+            power_coverage_ratio=window.power_coverage_ratio,
+            power_reason=window.power_reason,
+        )
+        for window in windows
+    )
+
+
+def _mask_window_power(windows: tuple[_Window, ...], reason: str) -> tuple[_Window, ...]:
+    return tuple(
+        _Window(
+            start_s=window.start_s,
+            end_s=window.end_s,
+            duration_s=window.duration_s,
+            moving_time_s=window.moving_time_s,
+            distance_m=window.distance_m,
+            moving_time_ratio=window.moving_time_ratio,
+            average_speed_kmh=window.average_speed_kmh,
+            median_speed_kmh=window.median_speed_kmh,
+            speed_p25_kmh=window.speed_p25_kmh,
+            speed_p75_kmh=window.speed_p75_kmh,
+            average_heart_rate_bpm=window.average_heart_rate_bpm,
+            median_heart_rate_bpm=window.median_heart_rate_bpm,
+            heart_rate_p25_bpm=window.heart_rate_p25_bpm,
+            heart_rate_p75_bpm=window.heart_rate_p75_bpm,
+            heart_rate_valid_time_s=window.heart_rate_valid_time_s,
+            average_pedaling_cadence_rpm=window.average_pedaling_cadence_rpm,
+            median_pedaling_cadence_rpm=window.median_pedaling_cadence_rpm,
+            cadence_coverage_ratio=window.cadence_coverage_ratio,
+            cadence_reason=window.cadence_reason,
+            average_power_w=None,
+            power_coverage_ratio=window.power_coverage_ratio,
+            power_reason=reason,
         )
         for window in windows
     )
@@ -1538,11 +1794,14 @@ def _window_tables(
         values=tuple(window.start_s for window in windows),
         unit="s",
     )
-    masked = any(window.cadence_reason is not None for window in windows)
+    cadence_masked = any(window.cadence_reason is not None for window in windows)
+    power_masked = any(window.power_reason is not None for window in windows)
     basis_description = "movement-time" if time_basis is TimeBasis.MOVING_TIME else "elapsed-time"
     metrics: list[Metric] = []
     for key, label, unit, extract in _WINDOW_COLUMNS:
-        if key == "cadence_reason" and not masked:
+        if key == "cadence_reason" and not cadence_masked:
+            continue
+        if key == "power_reason" and not power_masked:
             continue
         metrics.append(
             table_metric(
