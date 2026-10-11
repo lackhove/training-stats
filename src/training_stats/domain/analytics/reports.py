@@ -154,10 +154,10 @@ def _weekly_metrics(
     rows: Sequence[WeeklySummaryRow], period: DateRangePeriod
 ) -> tuple[Metric, ...]:
     axis = Axis(name="week_start", values=tuple(row.week_start.isoformat() for row in rows))
-    has_duration = any(row.duration_value_count > 0 for row in rows)
-    has_distance = any(row.distance_quantity_count > 0 for row in rows)
-    has_elevation = any(row.elevation_quantity_count > 0 for row in rows)
-    has_heart_rate = any(row.heart_rate_quantity_count > 0 for row in rows)
+    has_duration = any(row.metric_counts.duration_values > 0 for row in rows)
+    has_distance = any(row.metric_counts.distance_available > 0 for row in rows)
+    has_elevation = any(row.metric_counts.elevation_available > 0 for row in rows)
+    has_heart_rate = any(row.metric_counts.heart_rate_available > 0 for row in rows)
     specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind, bool], ...] = (
         (
             "activity.count_by_week",
@@ -171,7 +171,7 @@ def _weekly_metrics(
             "activity.duration_by_week",
             "Total elapsed activity duration in each ISO week.",
             "s",
-            tuple(row.duration_s if row.duration_value_count else None for row in rows),
+            tuple(row.duration_s if row.metric_counts.duration_values else None for row in rows),
             MetricKind.CALCULATED,
             has_duration,
         ),
@@ -179,7 +179,7 @@ def _weekly_metrics(
             "activity.distance_by_week",
             "Total recorded distance in each ISO week.",
             "m",
-            tuple(row.distance_m if row.distance_value_count else None for row in rows),
+            tuple(row.distance_m if row.metric_counts.distance_values else None for row in rows),
             MetricKind.CALCULATED,
             has_distance,
         ),
@@ -187,7 +187,9 @@ def _weekly_metrics(
             "activity.elevation_gain_by_week",
             "Total positive elevation gain in each ISO week.",
             "m",
-            tuple(row.elevation_gain_m if row.elevation_value_count else None for row in rows),
+            tuple(
+                row.elevation_gain_m if row.metric_counts.elevation_values else None for row in rows
+            ),
             MetricKind.CALCULATED,
             has_elevation,
         ),
@@ -195,7 +197,7 @@ def _weekly_metrics(
             "training_load.hr_trimp_by_week",
             "Sum of estimated Banister heart-rate load in each ISO week.",
             "TRIMP",
-            tuple(row.load_value if row.load_value_count else None for row in rows),
+            tuple(row.load_value if row.metric_counts.load_values else None for row in rows),
             MetricKind.ESTIMATED,
             has_heart_rate,
         ),
@@ -203,7 +205,9 @@ def _weekly_metrics(
             "activity.hard_count_by_week",
             "Number of activities meeting the hard-load threshold in each ISO week.",
             "activities",
-            tuple(row.hard_activity_count if row.load_value_count else None for row in rows),
+            tuple(
+                row.hard_activity_count if row.metric_counts.load_values else None for row in rows
+            ),
             MetricKind.CALCULATED,
             has_heart_rate,
         ),
@@ -211,7 +215,10 @@ def _weekly_metrics(
             "activity.longest_duration_by_week",
             "Elapsed duration of the longest activity in each ISO week.",
             "s",
-            tuple(row.longest_activity_s if row.duration_value_count else None for row in rows),
+            tuple(
+                row.longest_activity_s if row.metric_counts.duration_values else None
+                for row in rows
+            ),
             MetricKind.CALCULATED,
             has_duration,
         ),
@@ -245,7 +252,9 @@ def _weekly_metrics(
                     period,
                     axis,
                     tuple(
-                        row.zone_seconds()[f"zone_{zone}"] if row.zone_value_count else None
+                        row.zone_seconds()[f"zone_{zone}"]
+                        if row.metric_counts.heart_rate_zone_cells[zone - 1]
+                        else None
                         for row in rows
                     ),
                     description=(
@@ -266,7 +275,7 @@ def _weekly_metrics(
                 axis,
                 tuple(
                     row.distance_m - row.distance_m_prev
-                    if row.distance_value_count and row.distance_m_prev is not None
+                    if row.metric_counts.distance_values and row.distance_m_prev is not None
                     else None
                     for row in rows
                 ),
@@ -283,7 +292,7 @@ def _weekly_metrics(
                 axis,
                 tuple(
                     row.load_value - row.load_value_prev
-                    if row.load_value_count and row.load_value_prev is not None
+                    if row.metric_counts.load_values and row.load_value_prev is not None
                     else None
                     for row in rows
                 ),

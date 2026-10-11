@@ -82,13 +82,13 @@ def daily_to_weekly(daily_rows: list[DailySummaryRow]) -> list[WeeklySummaryRow]
                 sport=sport,
                 load_value_prev=(
                     previous.load_value
-                    if previous is not None and previous.load_value_count > 0
+                    if previous is not None and previous.metric_counts.load_values > 0
                     else None
                 ),
                 duration_s_prev=previous.duration_s if previous else None,
                 distance_m_prev=(
                     previous.distance_m
-                    if previous is not None and previous.distance_value_count > 0
+                    if previous is not None and previous.metric_counts.distance_values > 0
                     else None
                 ),
             )

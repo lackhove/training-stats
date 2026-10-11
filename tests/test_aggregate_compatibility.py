@@ -64,7 +64,7 @@ def _record(
     elevation: object = _ABSENT,
     load: object = _ABSENT,
     confidence: str | None = None,
-    zones: tuple[float, ...] | None = None,
+    zones: tuple[float | None, ...] | None = None,
     coverage: float | None = None,
     completeness: float | None = None,
     present_quantities: tuple[str, ...] | None = None,
@@ -514,7 +514,7 @@ class TestWeeklyReportParity:
                     distance=0.0,
                     elevation=0.0,
                     load=0.0,
-                    zones=(0.0, 0.0, 0.0, 0.0, 0.0),
+                    zones=(0.0, None, 0.0, 0.0, 0.0),
                 ),
                 _record(
                     "without-sensors",
@@ -544,6 +544,7 @@ class TestWeeklyReportParity:
         assert _table(report, "training_load.hr_trimp_by_week")[1] == (None, 0.0)
         assert _table(report, "activity.hard_count_by_week")[1] == (None, 0)
         assert _table(report, "heart_rate.zone_1_time_by_week")[1] == (None, 0.0)
+        assert _table(report, "heart_rate.zone_2_time_by_week")[1] == (None, None)
 
     def test_metrics_are_omitted_when_no_selected_activity_has_the_quantity(self) -> None:
         no_sensors = _record(
