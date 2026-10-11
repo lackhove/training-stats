@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -210,6 +211,48 @@ class TestWeeklyCommand:
         assert all("period" not in metric for metric in report["metrics"])
         assert all("value" not in metric for metric in json_metrics(report))
         assert "sync" not in captured.err
+
+    def test_weekly_quantity_aware_metrics_preserve_full_activity_counts(
+        self,
+        config_path: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        server = make_server(
+            tmp_path,
+            {
+                "measured.fit": stub_activity_content(
+                    T0, "cycling", 1800.0, 10000.0, heart_rates=[120] * 31
+                ),
+                "no-hr-same-week.fit": stub_activity_content(
+                    T0 + timedelta(days=1), "cycling", 1800.0, 20000.0
+                ),
+                "no-hr-next-week.fit": stub_activity_content(
+                    T0 + timedelta(days=7), "running", 1800.0, 30000.0
+                ),
+            },
+        )
+        server.sync_service.sync()
+        monkeypatch.setattr(cli_app, "_service", lambda _config: server)
+
+        assert main(["-c", str(config_path), "weekly", "--no-sync"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert json_metric(report, "activity.count_by_week")["value"]["values"] == [1, 2]
+        load = json_metric(report, "training_load.hr_trimp_by_week")
+        assert load["value"]["values"][0] is None
+        assert load["method"] == "hr_trimp"
+        assert load["algorithm_version"] == "1"
+        assert json_metric(report, "heart_rate.zone_1_time_by_week")["value"]["values"][0] is None
+
+        assert main(["-c", str(config_path), "weekly", "--sport", "running", "--no-sync"]) == 0
+        running = json.loads(capsys.readouterr().out)
+        assert "training_load.hr_trimp_by_week" not in {
+            metric["name"] for metric in running["metrics"]
+        }
+        assert "heart_rate.zone_1_time_by_week" not in {
+            metric["name"] for metric in running["metrics"]
+        }
 
 
 class TestOverviewCommand:

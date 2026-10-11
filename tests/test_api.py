@@ -321,6 +321,53 @@ class TestSummaryEndpoints:
         distance = json_metric(report, "activity.distance_by_week")
         assert len(distance["value"]["axis"]["values"]) == 1
 
+    def test_weekly_quantity_aware_metrics_preserve_full_activity_counts(
+        self, tmp_path: Path
+    ) -> None:
+        server = make_server(
+            tmp_path,
+            {
+                "measured.fit": stub_activity_content(
+                    T0, "cycling", 1800.0, 10000.0, heart_rates=[120] * 31
+                ),
+                "no-hr-same-week.fit": stub_activity_content(
+                    T0 + timedelta(days=1), "cycling", 1800.0, 20000.0
+                ),
+                "no-hr-next-week.fit": stub_activity_content(
+                    T0 + timedelta(days=7), "running", 1800.0, 30000.0
+                ),
+            },
+        )
+        server.sync_service.sync()
+
+        with _client(server) as client:
+            report = client.get("/weekly", params={"weeks": 4}).json()
+            running = client.get("/weekly", params={"weeks": 4, "sport": "running"}).json()
+            activities = server.repository.load_sync_state().activities.values()
+            measured = next(
+                item
+                for item in activities
+                if "training_load.hr_trimp" in {metric.name for metric in item.metrics}
+            )
+            detail = client.get(f"/activities/{measured.activity_id}").json()
+
+        assert json_metric(report, "activity.count_by_week")["value"]["values"] == [1, 2]
+        weekly_load = json_metric(report, "training_load.hr_trimp_by_week")
+        assert weekly_load["value"]["values"][0] is None
+        assert weekly_load["method"] == "hr_trimp"
+        assert weekly_load["algorithm_version"] == "1"
+        assert (
+            weekly_load["value"]["values"][1]
+            == json_metric(detail, "training_load.hr_trimp")["value"]["value"]
+        )
+        assert json_metric(report, "heart_rate.zone_1_time_by_week")["value"]["values"][0] is None
+        assert "training_load.hr_trimp_by_week" not in {
+            metric["name"] for metric in running["metrics"]
+        }
+        assert "heart_rate.zone_1_time_by_week" not in {
+            metric["name"] for metric in running["metrics"]
+        }
+
     def test_overview_is_generic_metric_report(self, tmp_path: Path) -> None:
         server = make_server(tmp_path, _stub_files())
         server.sync_service.sync()

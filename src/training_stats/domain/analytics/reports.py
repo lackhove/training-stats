@@ -154,59 +154,72 @@ def _weekly_metrics(
     rows: Sequence[WeeklySummaryRow], period: DateRangePeriod
 ) -> tuple[Metric, ...]:
     axis = Axis(name="week_start", values=tuple(row.week_start.isoformat() for row in rows))
-    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
+    has_duration = any(row.duration_value_count > 0 for row in rows)
+    has_distance = any(row.distance_quantity_count > 0 for row in rows)
+    has_elevation = any(row.elevation_quantity_count > 0 for row in rows)
+    has_heart_rate = any(row.heart_rate_quantity_count > 0 for row in rows)
+    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind, bool], ...] = (
         (
             "activity.count_by_week",
             "Number of accepted activities that started in each ISO week.",
             "activities",
             tuple(row.activity_count for row in rows),
             MetricKind.CALCULATED,
+            True,
         ),
         (
             "activity.duration_by_week",
             "Total elapsed activity duration in each ISO week.",
             "s",
-            tuple(row.duration_s for row in rows),
+            tuple(row.duration_s if row.duration_value_count else None for row in rows),
             MetricKind.CALCULATED,
+            has_duration,
         ),
         (
             "activity.distance_by_week",
             "Total recorded distance in each ISO week.",
             "m",
-            tuple(row.distance_m for row in rows),
+            tuple(row.distance_m if row.distance_value_count else None for row in rows),
             MetricKind.CALCULATED,
+            has_distance,
         ),
         (
             "activity.elevation_gain_by_week",
             "Total positive elevation gain in each ISO week.",
             "m",
-            tuple(row.elevation_gain_m for row in rows),
+            tuple(row.elevation_gain_m if row.elevation_value_count else None for row in rows),
             MetricKind.CALCULATED,
+            has_elevation,
         ),
         (
             "training_load.hr_trimp_by_week",
             "Sum of estimated Banister heart-rate load in each ISO week.",
             "TRIMP",
-            tuple(row.load_value for row in rows),
+            tuple(row.load_value if row.load_value_count else None for row in rows),
             MetricKind.ESTIMATED,
+            has_heart_rate,
         ),
         (
             "activity.hard_count_by_week",
             "Number of activities meeting the hard-load threshold in each ISO week.",
             "activities",
-            tuple(row.hard_activity_count for row in rows),
+            tuple(row.hard_activity_count if row.load_value_count else None for row in rows),
             MetricKind.CALCULATED,
+            has_heart_rate,
         ),
         (
             "activity.longest_duration_by_week",
             "Elapsed duration of the longest activity in each ISO week.",
             "s",
-            tuple(row.longest_activity_s for row in rows),
+            tuple(row.longest_activity_s if row.duration_value_count else None for row in rows),
             MetricKind.CALCULATED,
+            has_duration,
         ),
     )
     metrics = []
-    for name, description, unit, values, kind in specs:
+    for name, description, unit, values, kind, include in specs:
+        if not include:
+            continue
         load_provenance = name == "training_load.hr_trimp_by_week"
         metrics.append(
             table_metric(
@@ -224,43 +237,53 @@ def _weekly_metrics(
                 coefficient_set=LOAD_COEFFICIENT_SET if load_provenance else None,
             )
         )
-    for zone in range(1, 6):
-        metrics.append(
-            table_metric(
-                f"heart_rate.zone_{zone}_time_by_week",
-                period,
-                axis,
-                tuple(row.zone_seconds()[f"zone_{zone}"] for row in rows),
-                description=f"Active time spent in configured heart-rate zone {zone} per ISO week.",
-                unit="s",
-                kind=MetricKind.CALCULATED,
-                missing_reason=MissingReason.NO_DATA if not rows else None,
-                time_basis=TimeBasis.ACTIVE_TIME,
+    if has_heart_rate:
+        for zone in range(1, 6):
+            metrics.append(
+                table_metric(
+                    f"heart_rate.zone_{zone}_time_by_week",
+                    period,
+                    axis,
+                    tuple(
+                        row.zone_seconds()[f"zone_{zone}"] if row.zone_value_count else None
+                        for row in rows
+                    ),
+                    description=(
+                        f"Active time spent in configured heart-rate zone {zone} per ISO week."
+                    ),
+                    unit="s",
+                    kind=MetricKind.CALCULATED,
+                    missing_reason=MissingReason.NO_DATA if not rows else None,
+                    time_basis=TimeBasis.ACTIVE_TIME,
+                )
             )
-        )
-    metrics.extend(
-        [
+    comparisons: list[Metric] = []
+    if has_distance:
+        comparisons.append(
             table_metric(
                 "activity.distance_change_vs_previous_week",
                 period,
                 axis,
                 tuple(
                     row.distance_m - row.distance_m_prev
-                    if row.distance_m_prev is not None
+                    if row.distance_value_count and row.distance_m_prev is not None
                     else None
                     for row in rows
                 ),
                 description="Distance difference from the previous ISO week.",
                 unit="m",
                 missing_reason=MissingReason.NO_DATA if not rows else None,
-            ),
+            )
+        )
+    if has_heart_rate:
+        comparisons.append(
             table_metric(
                 "training_load.change_vs_previous_week",
                 period,
                 axis,
                 tuple(
                     row.load_value - row.load_value_prev
-                    if row.load_value_prev is not None
+                    if row.load_value_count and row.load_value_prev is not None
                     else None
                     for row in rows
                 ),
@@ -268,9 +291,9 @@ def _weekly_metrics(
                 unit="TRIMP",
                 kind=MetricKind.ESTIMATED,
                 missing_reason=MissingReason.NO_DATA if not rows else None,
-            ),
-        ]
-    )
+            )
+        )
+    metrics.extend(comparisons)
     return tuple(metrics)
 
 

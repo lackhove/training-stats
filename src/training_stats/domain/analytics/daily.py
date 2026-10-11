@@ -9,7 +9,7 @@ operate on the (few) resulting dataclass rows.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, tzinfo
 from typing import TypedDict
 
@@ -40,6 +40,14 @@ class PeriodTotalsRow:
     hard_activity_count: int
     longest_activity_s: float
     longest_activity_id: str | None
+    duration_value_count: int = field(default=0, kw_only=True)
+    distance_quantity_count: int = field(default=0, kw_only=True)
+    distance_value_count: int = field(default=0, kw_only=True)
+    elevation_quantity_count: int = field(default=0, kw_only=True)
+    elevation_value_count: int = field(default=0, kw_only=True)
+    heart_rate_quantity_count: int = field(default=0, kw_only=True)
+    zone_value_count: int = field(default=0, kw_only=True)
+    load_value_count: int = field(default=0, kw_only=True)
 
     def zone_seconds(self) -> dict[str, float]:
         return {
@@ -65,6 +73,14 @@ class _TotalsKwargs(TypedDict):
     hard_activity_count: int
     longest_activity_s: float
     longest_activity_id: str | None
+    duration_value_count: int
+    distance_quantity_count: int
+    distance_value_count: int
+    elevation_quantity_count: int
+    elevation_value_count: int
+    heart_rate_quantity_count: int
+    zone_value_count: int
+    load_value_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +98,20 @@ class _PeriodTotalsAccumulator:
         "_has_longest",
         "activity_count",
         "distance_m",
+        "distance_quantity_count",
+        "distance_value_count",
         "duration_s",
+        "duration_value_count",
         "elevation_gain_m",
+        "elevation_quantity_count",
+        "elevation_value_count",
         "hard_activity_count",
+        "heart_rate_quantity_count",
         "load_value",
+        "load_value_count",
         "longest_activity_id",
         "longest_activity_s",
+        "zone_value_count",
         "zones",
     )
 
@@ -102,12 +126,27 @@ class _PeriodTotalsAccumulator:
         self.longest_activity_s = 0.0
         self.longest_activity_id: str | None = None
         self._has_longest = False
+        self.duration_value_count = 0
+        self.distance_quantity_count = 0
+        self.distance_value_count = 0
+        self.elevation_quantity_count = 0
+        self.elevation_value_count = 0
+        self.heart_rate_quantity_count = 0
+        self.zone_value_count = 0
+        self.load_value_count = 0
 
-    def add_activity(self, activity_id: str, metrics: dict[str, Metric]) -> None:
+    def add_activity(
+        self,
+        activity_id: str,
+        metrics: dict[str, Metric],
+        present_quantities: tuple[str, ...],
+    ) -> None:
         duration = metric_number(metrics.get("activity.duration"))
         distance = metric_number(metrics.get("activity.distance"))
         elevation = metric_number(metrics.get("activity.elevation_gain"))
-        zones = metric_table_values(metrics.get("heart_rate.zone_time"))
+        zone_metric = metrics.get("heart_rate.zone_time")
+        has_zone_values = zone_metric is not None and isinstance(zone_metric.value, TableValue)
+        zones = metric_table_values(zone_metric) if has_zone_values else ()
         load = metric_number(metrics.get("training_load.hr_trimp"))
         self._add_totals(
             activity_count=1,
@@ -119,6 +158,14 @@ class _PeriodTotalsAccumulator:
             hard_activity_count=int(load is not None and load >= HARD_LOAD_THRESHOLD),
             longest_activity_s=duration if duration is not None else 0.0,
             longest_activity_id=(activity_id if duration is not None and duration > 0.0 else None),
+            duration_value_count=int(duration is not None),
+            distance_quantity_count=int("distance" in present_quantities),
+            distance_value_count=int(distance is not None),
+            elevation_quantity_count=int("elevation" in present_quantities),
+            elevation_value_count=int(elevation is not None),
+            heart_rate_quantity_count=int("heart_rate" in present_quantities),
+            zone_value_count=int(has_zone_values),
+            load_value_count=int(load is not None),
             first_tie_wins=True,
         )
 
@@ -139,6 +186,14 @@ class _PeriodTotalsAccumulator:
             hard_activity_count=row.hard_activity_count,
             longest_activity_s=row.longest_activity_s,
             longest_activity_id=row.longest_activity_id,
+            duration_value_count=row.duration_value_count,
+            distance_quantity_count=row.distance_quantity_count,
+            distance_value_count=row.distance_value_count,
+            elevation_quantity_count=row.elevation_quantity_count,
+            elevation_value_count=row.elevation_value_count,
+            heart_rate_quantity_count=row.heart_rate_quantity_count,
+            zone_value_count=row.zone_value_count,
+            load_value_count=row.load_value_count,
             first_tie_wins=first_tie_wins,
         )
 
@@ -154,12 +209,28 @@ class _PeriodTotalsAccumulator:
         hard_activity_count: int,
         longest_activity_s: float,
         longest_activity_id: str | None,
+        duration_value_count: int,
+        distance_quantity_count: int,
+        distance_value_count: int,
+        elevation_quantity_count: int,
+        elevation_value_count: int,
+        heart_rate_quantity_count: int,
+        zone_value_count: int,
+        load_value_count: int,
         first_tie_wins: bool,
     ) -> None:
         self.activity_count += activity_count
         self.duration_s += duration_s
         self.distance_m += distance_m
         self.elevation_gain_m += elevation_gain_m
+        self.duration_value_count += duration_value_count
+        self.distance_quantity_count += distance_quantity_count
+        self.distance_value_count += distance_value_count
+        self.elevation_quantity_count += elevation_quantity_count
+        self.elevation_value_count += elevation_value_count
+        self.heart_rate_quantity_count += heart_rate_quantity_count
+        self.zone_value_count += zone_value_count
+        self.load_value_count += load_value_count
         for index in range(_ZONE_COUNT):
             self.zones[index] += zones[index]
         self.load_value += load_value
@@ -186,6 +257,14 @@ class _PeriodTotalsAccumulator:
             hard_activity_count=self.hard_activity_count,
             longest_activity_s=self.longest_activity_s,
             longest_activity_id=self.longest_activity_id,
+            duration_value_count=self.duration_value_count,
+            distance_quantity_count=self.distance_quantity_count,
+            distance_value_count=self.distance_value_count,
+            elevation_quantity_count=self.elevation_quantity_count,
+            elevation_value_count=self.elevation_value_count,
+            heart_rate_quantity_count=self.heart_rate_quantity_count,
+            zone_value_count=self.zone_value_count,
+            load_value_count=self.load_value_count,
         )
 
 
@@ -204,7 +283,7 @@ def summarize_daily(records: Sequence[ActivityRecord], tz: tzinfo) -> list[Daily
         if group is None:
             group = _PeriodTotalsAccumulator()
             groups[key] = group
-        group.add_activity(record.activity_id, metrics)
+        group.add_activity(record.activity_id, metrics, record.present_quantities)
     rows = [
         DailySummaryRow(
             **_totals_kwargs(group.to_row()),
@@ -281,6 +360,14 @@ def _totals_kwargs(row: PeriodTotalsRow) -> _TotalsKwargs:
         "hard_activity_count": row.hard_activity_count,
         "longest_activity_s": row.longest_activity_s,
         "longest_activity_id": row.longest_activity_id,
+        "duration_value_count": row.duration_value_count,
+        "distance_quantity_count": row.distance_quantity_count,
+        "distance_value_count": row.distance_value_count,
+        "elevation_quantity_count": row.elevation_quantity_count,
+        "elevation_value_count": row.elevation_value_count,
+        "heart_rate_quantity_count": row.heart_rate_quantity_count,
+        "zone_value_count": row.zone_value_count,
+        "load_value_count": row.load_value_count,
     }
 
 
