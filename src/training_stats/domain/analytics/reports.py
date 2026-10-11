@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, tzinfo
 
 from ..metrics import (
@@ -28,6 +29,12 @@ from .load import LOAD_COEFFICIENT_SET, LOAD_FORMULA, LOAD_VERSION
 from .metric_helpers import scalar_metric, table_metric
 from .profile import athlete_profile
 from .weekly import WeeklySummaryRow, daily_to_weekly, select_weekly
+
+
+@dataclass(frozen=True, slots=True)
+class _DistanceWindowState:
+    has_quantity: bool
+    has_value: bool
 
 
 def activity_summaries(
@@ -116,6 +123,24 @@ def overview_report(
     period = DateRangePeriod(start=period_start, end=today, timezone=str(tz))
     daily_all = summarize_daily(records, tz)
     selected_daily = select_daily(daily_all, start_date=period_start, end_date=today, sport=sport)
+    readiness_distance = {
+        "tour_readiness.rolling_7d_distance": _distance_window_state(
+            select_daily(
+                daily_all,
+                start_date=today - timedelta(days=6),
+                end_date=today,
+                sport=sport,
+            )
+        ),
+        "tour_readiness.rolling_28d_distance": _distance_window_state(
+            select_daily(
+                daily_all,
+                start_date=today - timedelta(days=27),
+                end_date=today,
+                sport=sport,
+            )
+        ),
+    }
     selected_weekly = select_weekly(daily_to_weekly(daily_all), weeks=4, sport=sport)
     weekly_period = (
         DateRangePeriod(
@@ -150,6 +175,7 @@ def overview_report(
             has_heart_rate="heart_rate" in form_quantities,
             has_distance="distance" in form_quantities,
             daily_load_values=daily_load_values,
+            readiness_distance=readiness_distance,
         )
     )
     metrics.extend(data_quality_metrics(records, source_index, AllTimePeriod()))
@@ -450,9 +476,10 @@ def _form_metrics(
     has_heart_rate: bool,
     has_distance: bool,
     daily_load_values: dict[date, float | None],
+    readiness_distance: dict[str, _DistanceWindowState],
 ) -> tuple[Metric, ...]:
     snapshot = SnapshotPeriod(at=today)
-    values: tuple[tuple[str, str, MetricScalar, str], ...] = (
+    values: tuple[tuple[str, str, MetricScalar | None, str], ...] = (
         (
             "training_form.ctl",
             "Current chronic training load (42-day EWMA).",
@@ -492,13 +519,21 @@ def _form_metrics(
         (
             "tour_readiness.rolling_7d_distance",
             "Distance accumulated in the seven days through the snapshot date.",
-            result.rolling_7d_distance_km,
+            (
+                result.rolling_7d_distance_km
+                if readiness_distance["tour_readiness.rolling_7d_distance"].has_value
+                else None
+            ),
             "km",
         ),
         (
             "tour_readiness.rolling_28d_distance",
             "Distance accumulated in the 28 days through the snapshot date.",
-            result.rolling_28d_distance_km,
+            (
+                result.rolling_28d_distance_km
+                if readiness_distance["tour_readiness.rolling_28d_distance"].has_value
+                else None
+            ),
             "km",
         ),
     )
@@ -549,9 +584,7 @@ def _form_metrics(
         ):
             load_provenance = name == "training_load.daily_hr_trimp"
             trend_values = tuple(
-                daily_load_values.get(point.date, point.daily_load)
-                if load_provenance
-                else getattr(point, attr)
+                daily_load_values.get(point.date) if load_provenance else getattr(point, attr)
                 for point in result.trend_points
             )
             metrics.append(
@@ -574,6 +607,14 @@ def _form_metrics(
         for metric in metrics
         if (has_heart_rate or not metric.name.startswith(("training_form.", "training_load.")))
         and (has_distance or not metric.name.startswith("tour_readiness."))
+        and (metric.name not in readiness_distance or readiness_distance[metric.name].has_quantity)
+    )
+
+
+def _distance_window_state(rows: Sequence[DailySummaryRow]) -> _DistanceWindowState:
+    return _DistanceWindowState(
+        has_quantity=any(row.metric_counts.distance_available for row in rows),
+        has_value=any(row.metric_counts.distance_values for row in rows),
     )
 
 

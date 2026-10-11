@@ -446,7 +446,8 @@ class TestSummaryEndpoints:
             & names
         )
         assert "activity.distance_by_day" in names
-        assert "tour_readiness.rolling_7d_distance" in names
+        assert "tour_readiness.rolling_28d_distance" in names
+        assert "tour_readiness.rolling_7d_distance" not in names
         assert json_metric(report, "data_quality.mean_hr_coverage_ratio")["value"]["value"] == 0
 
     def test_weekly_and_overview_sync_first(self, tmp_path: Path) -> None:

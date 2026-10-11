@@ -346,6 +346,7 @@ class TestOverviewCommand:
             & names
         )
         assert "activity.distance_by_day" in names
+        assert "tour_readiness.rolling_28d_distance" in names
         assert "tour_readiness.rolling_7d_distance" in names
         assert json_metric(report, "data_quality.mean_hr_coverage_ratio")["value"]["value"] == 0
 
