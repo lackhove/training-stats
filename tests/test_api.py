@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import (
+    StubParser,
     assert_no_none_fields,
     json_activity_ids,
     json_metric,
@@ -18,6 +20,8 @@ from tests.conftest import (
 )
 from training_stats.adapters.http.api import build_app
 from training_stats.domain.errors import TrainingStatsError
+from training_stats.domain.fit.types import FitData
+from training_stats.domain.models import SourceFile
 from training_stats.services.training import TrainingStatsService
 
 T0 = (datetime.now(UTC) - timedelta(days=8)).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -109,6 +113,142 @@ class TestActivitiesEndpoint:
         assert json_metric(report, "heart_rate.zone_time")["value"]["shape"] == "table"
         assert missing.status_code == 404
         assert_no_none_fields(missing.json())
+
+    def test_activity_detail_omits_analysis_for_unmeasured_quantities(self, tmp_path: Path) -> None:
+        server = make_server(
+            tmp_path,
+            {"no-sensors.fit": stub_activity_content(T0, "running", 1800.0, 8000.0)},
+        )
+        server.sync_service.sync()
+        activity_id = next(iter(server.repository.load_sync_state().activities))
+
+        with _client(server) as client:
+            report = client.get(f"/activities/{activity_id}").json()
+
+        names = {metric["name"] for metric in report["metrics"]}
+        assert "activity.average_heart_rate" not in names
+        assert "activity.maximum_heart_rate" not in names
+        assert "activity.elevation_gain" not in names
+        assert "heart_rate.zone_time" not in names
+        assert "heart_rate.histogram" not in names
+        assert "training_load.hr_trimp" not in names
+        assert "activity.statistics.heart_rate_statistics.mean" not in names
+        assert "activity.statistics.cadence_statistics.overall.mean" not in names
+        assert "activity.statistics.power_statistics.overall.mean" not in names
+        assert "activity.statistics.efficiency.speed_per_heart_rate" not in names
+        assert "activity.statistics.relationships.speed_heart_rate.window_count" not in names
+        assert "activity.statistics.relationships.power_cadence.window_count" not in names
+        assert (
+            "activity.statistics.heatmap_data.heart_rate_speed.valid_observation_count" not in names
+        )
+        assert "activity.statistics.heatmap_data.power_cadence.valid_observation_count" not in names
+
+        assert json_metric(report, "heart_rate.coverage")["value"]["value"] == 0.0
+        assert (
+            json_metric(report, "activity.statistics.heart_rate_statistics.coverage_ratio")[
+                "value"
+            ]["value"]
+            == 0.0
+        )
+        assert (
+            json_metric(report, "activity.statistics.cadence_statistics.available")["value"][
+                "value"
+            ]
+            is False
+        )
+        assert (
+            json_metric(report, "activity.statistics.cadence_statistics.coverage_ratio")["value"][
+                "value"
+            ]
+            == 0.0
+        )
+        assert (
+            json_metric(report, "activity.statistics.power_statistics.available")["value"]["value"]
+            is False
+        )
+        assert (
+            json_metric(report, "activity.statistics.power_statistics.coverage_ratio")["value"][
+                "value"
+            ]
+            == 0.0
+        )
+        assert "data.completeness" in names
+        assert "activity.statistics.data_quality.heart_rate_coverage_ratio" in names
+        assert "present_quantities" not in report
+        assert "records" not in report
+
+    def test_activity_detail_omits_movement_analysis_without_speed_or_distance(
+        self, tmp_path: Path
+    ) -> None:
+        class NoMovementSensorsParser(StubParser):
+            def parse(self, content: bytes, source_file: SourceFile) -> FitData:
+                fit_data = super().parse(content, source_file)
+                return FitData(
+                    frame=fit_data.frame.with_columns(
+                        pl.lit(None, dtype=pl.Float64).alias("speed_mps"),
+                        pl.lit(None, dtype=pl.Float64).alias("distance_m"),
+                    )
+                )
+
+        server = make_server(
+            tmp_path,
+            {"no-movement-sensors.fit": stub_activity_content(T0, "running", 1800.0, 8000.0)},
+        )
+        server.sync_service.processor.parser = NoMovementSensorsParser()
+        server.sync_service.sync()
+        activity_id = next(iter(server.repository.load_sync_state().activities))
+
+        with _client(server) as client:
+            report = client.get(f"/activities/{activity_id}").json()
+
+        names = {metric["name"] for metric in report["metrics"]}
+        assert "activity.distance" not in names
+        assert "activity.average_speed" not in names
+        assert "activity.maximum_speed" not in names
+        assert "activity.statistics.speed_statistics.mean" not in names
+        assert "activity.statistics.time_windows.items.distance_m" not in names
+        assert "activity.statistics.time_windows.items.average_speed_kmh" not in names
+        assert (
+            json_metric(report, "activity.statistics.speed_statistics.coverage_ratio")["value"][
+                "value"
+            ]
+            == 0.0
+        )
+        assert (
+            json_metric(report, "activity.statistics.speed_statistics.valid_moving_time_ratio")[
+                "value"
+            ]["value"]
+            == 0.0
+        )
+        assert (
+            json_metric(report, "activity.statistics.data_quality.speed_coverage_ratio")["value"][
+                "value"
+            ]
+            == 0.0
+        )
+
+    def test_zero_heart_rate_sample_counts_as_measured(self, tmp_path: Path) -> None:
+        server = make_server(
+            tmp_path,
+            {
+                "zero-hr.fit": stub_activity_content(
+                    T0, "cycling", 1800.0, 8000.0, heart_rates=[0] * 31
+                )
+            },
+        )
+        server.sync_service.sync()
+        activity_id = next(iter(server.repository.load_sync_state().activities))
+
+        with _client(server) as client:
+            report = client.get(f"/activities/{activity_id}").json()
+
+        names = {metric["name"] for metric in report["metrics"]}
+        assert "heart_rate.zone_time" in names
+        assert "activity.statistics.heart_rate_statistics.mean" in names
+        assert (
+            json_metric(report, "activity.statistics.heart_rate_statistics.mean")["missing_reason"]
+            == "insufficient_data"
+        )
 
 
 class TestValidation:

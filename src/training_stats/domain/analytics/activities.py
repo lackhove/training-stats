@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import polars as pl
 
+from ..fit.quantities import QuantityAvailability
 from ..fit.types import ParsedActivity
 from ..metrics import (
     Axis,
@@ -34,6 +35,7 @@ from .heart_rate import (
 )
 from .load import LOAD_COEFFICIENT_SET, LOAD_FORMULA, LOAD_VERSION, hr_trimp_load, load_confidence
 from .metric_helpers import metric_number, scalar_metric, table_metric
+from .quantity_gating import omit_unmeasured_metrics
 
 _COMPLETENESS_FIELDS = 7
 
@@ -93,7 +95,8 @@ def compute_activity_metrics(
     metrics.extend(_heart_rate_metrics(period, zone_result, buckets, histogram))
     metrics.extend(_load_metrics(activity, period, zone_result, load_value))
     metrics.extend(compute_activity_statistics(activity, athlete, effective_quality))
-    return tuple(metrics)
+    availability = QuantityAvailability.from_activity(activity)
+    return omit_unmeasured_metrics(metrics, availability.present)
 
 
 def _session_metrics(

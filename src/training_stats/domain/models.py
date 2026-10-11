@@ -38,6 +38,7 @@ class ActivityRecord:
     source_path: str
     analysis_version: str
     metrics: tuple[Metric, ...]
+    present_quantities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.metrics:

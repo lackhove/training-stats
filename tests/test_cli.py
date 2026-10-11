@@ -11,11 +11,15 @@ import pytest
 
 from tests.conftest import (
     FIXTURES,
+    T0,
     assert_no_none_fields,
     json_activity_ids,
     json_metric,
     json_metrics,
+    make_server,
+    stub_activity_content,
 )
+from training_stats.adapters.cli import app as cli_app
 from training_stats.adapters.cli.app import main
 
 
@@ -156,6 +160,29 @@ class TestShowCommand:
         assert json.loads(captured.err)["detail"].startswith("activity not found")
         assert_no_none_fields(json.loads(captured.err))
         assert captured.out == ""
+
+    def test_show_omits_analysis_for_unmeasured_quantities(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        server = make_server(
+            tmp_path,
+            {"no-sensors.fit": stub_activity_content(T0, "running", 1800.0, 8000.0)},
+        )
+        server.sync_service.sync()
+        activity_id = next(iter(server.repository.load_sync_state().activities))
+        monkeypatch.setattr(cli_app, "_service", lambda _config: server)
+
+        assert main(["show", activity_id]) == 0
+
+        report = json.loads(capsys.readouterr().out)
+        names = {metric["name"] for metric in report["metrics"]}
+        assert "heart_rate.zone_time" not in names
+        assert "training_load.hr_trimp" not in names
+        assert "activity.statistics.cadence_statistics.overall.mean" not in names
+        assert "activity.statistics.power_statistics.overall.mean" not in names
+        assert json_metric(report, "heart_rate.coverage")["value"]["value"] == 0.0
+        assert "present_quantities" not in report
+        assert "records" not in report
 
 
 class TestWeeklyCommand:

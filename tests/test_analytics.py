@@ -203,13 +203,13 @@ class TestActivityMetrics:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))
         activity = _parsed(datetime(2026, 6, 1, tzinfo=UTC))
         metrics = compute_activity_metrics(activity, config.athlete, "1")
-        load = next(metric for metric in metrics if metric.name == "training_load.hr_trimp")
-        histogram = next(metric for metric in metrics if metric.name == "heart_rate.histogram")
-        assert load.value is None
-        assert load.method == "hr_trimp"
+        names = {metric.name for metric in metrics}
+        assert "training_load.hr_trimp" not in names
+        assert "heart_rate.histogram" not in names
+        assert "heart_rate.zone_time" not in names
         assert _scalar(metrics, "heart_rate.coverage") == 0.0
-        assert histogram.value is None
-        assert _scalar(metrics, "heart_rate.drift") is None
+        assert _scalar(metrics, "activity.statistics.heart_rate_statistics.coverage_ratio") == 0.0
+        assert "data.completeness" in names
 
     def test_histogram_and_buckets_present(self) -> None:
         config = make_app_config(Path("/tmp/x1"), Path("/tmp/x2"))

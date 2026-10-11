@@ -227,6 +227,37 @@ class TestIncrementalSync:
         assert payload["format_version"] == schemas.CACHE_FORMAT_VERSION
         assert len(payload["activities"]) == 1
 
+    def test_quantity_presence_round_trips_without_raw_records(self, tmp_path: Path) -> None:
+        service, _source, cache_dir = make_sync(tmp_path, one_file())
+        service.sync()
+
+        payload = json.loads((cache_dir / schemas.CACHE_FILE).read_text())
+        raw_activity = payload["activities"][0]
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        activity = next(iter(state.activities.values()))
+
+        assert raw_activity["present_quantities"] == ["distance", "speed"]
+        assert activity.present_quantities == ("distance", "speed")
+        assert "records" not in raw_activity
+
+    def test_analysis_version_change_populates_quantity_presence_for_unchanged_file(
+        self, tmp_path: Path
+    ) -> None:
+        source = CountingSource(one_file())
+        initial, _source, cache_dir = make_sync(tmp_path, source=source, version="10")
+        initial.sync()
+
+        current_version = schemas.effective_analysis_version(QualityConfig())
+        updated, _source, _cache_dir = make_sync(tmp_path, source=source, version=current_version)
+        result = updated.sync()
+
+        assert result.files_processed == 1
+        assert source.read_count == 2
+        state = JsonTrainingRepository(cache_dir).load_sync_state()
+        activity = next(iter(state.activities.values()))
+        assert activity.analysis_version == current_version
+        assert activity.present_quantities == ("distance", "speed")
+
     def test_unchanged_source_is_not_read_again(self, tmp_path: Path) -> None:
         source = CountingSource(one_file())
         service, _source, _cache_dir = make_sync(tmp_path, source=source)
