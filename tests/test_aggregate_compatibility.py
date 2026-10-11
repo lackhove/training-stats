@@ -637,6 +637,130 @@ class TestOverviewReportParity:
             (160.0, 370.0, 1580.0, 2750.0, 1950.0),
         )
 
+    def test_aggregates_use_only_activities_with_the_required_quantities(self) -> None:
+        records = (
+            _record(
+                "measured",
+                datetime(2026, 6, 2, 9, 0, tzinfo=TZ),
+                "cycling",
+                duration=100.0,
+                distance=10_000.0,
+                elevation=0.0,
+                load=100.0,
+                zones=(60.0, 0.0, 0.0, 0.0, 0.0),
+                coverage=0.6,
+                completeness=1.0,
+            ),
+            _record(
+                "without-heart-rate",
+                datetime(2026, 6, 2, 10, 0, tzinfo=TZ),
+                "cycling",
+                duration=200.0,
+                distance=20_000.0,
+                coverage=0.0,
+                completeness=0.5,
+            ),
+            _record(
+                "heart-rate-free-week",
+                datetime(2026, 6, 10, 9, 0, tzinfo=TZ),
+                "cycling",
+                duration=300.0,
+                coverage=0.0,
+                completeness=0.5,
+            ),
+        )
+        report = overview_report(records, (), athlete=ATHLETE, tz=TZ, days=14, today=TODAY)
+
+        assert _table(report, "activity.count_by_day") == (
+            ("2026-06-02", "2026-06-10"),
+            (2, 1),
+        )
+        assert _table(report, "activity.duration_by_day")[1] == (300.0, 300.0)
+        assert _table(report, "activity.distance_by_day")[1] == (30_000.0, None)
+        assert _table(report, "activity.elevation_gain_by_day")[1] == (0.0, None)
+        assert _table(report, "training_load.hr_trimp_by_day")[1] == (100.0, None)
+        assert _matrix(report, "heart_rate.zone_matrix_by_day")[2] == (
+            (60.0, None),
+            (0.0, None),
+            (0.0, None),
+            (0.0, None),
+            (0.0, None),
+        )
+        assert _table(report, "activity.distance_by_week")[1] == (None, 30_000.0)
+        assert _table(report, "training_load.hr_trimp_by_week")[1] == (None, 100.0)
+        assert _table(report, "heart_rate.zone_1_time_by_week")[1] == (None, 60.0)
+        assert _table(report, "heart_rate.zone_time_overview")[1] == (
+            60.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        load_axis, load_values = _table(report, "training_load.daily_hr_trimp")
+        assert load_values[load_axis.index("2026-06-10")] is None
+        assert load_values[load_axis.index("2026-06-11")] == 0.0
+        ctl_axis, ctl_values = _table(report, "training_form.ctl_by_day")
+        assert ctl_values[ctl_axis.index("2026-06-10")] is not None
+        assert _scalar(report, "data_quality.activity_count") == 3
+        assert _scalar(report, "data_quality.mean_hr_coverage_ratio") == pytest.approx(0.2)
+        assert _scalar(report, "data_quality.mean_data_completeness") == pytest.approx(2 / 3)
+
+    def test_quantity_dependent_metrics_are_omitted_when_no_activity_has_that_quantity(
+        self,
+    ) -> None:
+        no_heart_rate = _record(
+            "no-heart-rate",
+            datetime(2026, 6, 2, 9, 0, tzinfo=TZ),
+            "running",
+            duration=600.0,
+            distance=10_000.0,
+            coverage=0.0,
+            completeness=0.5,
+        )
+        report = overview_report((no_heart_rate,), (), athlete=ATHLETE, tz=TZ, days=14, today=TODAY)
+        names = set(_names(report))
+
+        assert (
+            not {
+                "training_load.hr_trimp_by_day",
+                "heart_rate.zone_matrix_by_day",
+                "heart_rate.zone_time_overview",
+                "training_load.hr_trimp_by_week",
+                "activity.hard_count_by_week",
+                "heart_rate.zone_1_time_by_week",
+                "training_form.ctl",
+                "training_form.ctl_by_day",
+                "training_load.daily_hr_trimp",
+            }
+            & names
+        )
+        assert {
+            "activity.distance_by_day",
+            "activity.distance_by_week",
+            "tour_readiness.rolling_7d_distance",
+        } <= names
+        assert _scalar(report, "data_quality.activity_count") == 1
+        assert _scalar(report, "data_quality.mean_hr_coverage_ratio") == 0.0
+
+    def test_zone_cells_without_contributing_measurements_are_null(self) -> None:
+        report = overview_report(
+            RECORDS,
+            SOURCE_INDEX,
+            athlete=ATHLETE,
+            tz=TZ,
+            days=28,
+            sport="running",
+            today=TODAY,
+        )
+
+        assert _table(report, "heart_rate.zone_time_overview")[1] == (
+            10.0,
+            20.0,
+            30.0,
+            None,
+            None,
+        )
+
     def test_training_form_scalars(self) -> None:
         report = self._report()
         assert _scalar(report, "training_form.ctl") == pytest.approx(16.203992919332396)
@@ -672,7 +796,18 @@ class TestOverviewReportParity:
         report = overview_report(
             RECORDS, SOURCE_INDEX, athlete=ATHLETE, tz=TZ, days=7, sport="running", today=TODAY
         )
-        assert _names(report) == OVERVIEW_NAMES
+        names = set(_names(report))
+        assert (
+            not {
+                "activity.duration_by_day",
+                "activity.distance_by_day",
+                "activity.elevation_gain_by_day",
+                "training_load.hr_trimp_by_day",
+                "heart_rate.zone_matrix_by_day",
+                "heart_rate.zone_time_overview",
+            }
+            & names
+        )
         assert _metric(report, "activity.count_by_day").value is None
         assert _metric(report, "activity.count_by_day").missing_reason is MissingReason.NO_DATA
         assert _table(report, "activity.count_by_week") == (("2026-06-01",), (1,))
@@ -684,30 +819,17 @@ class TestOverviewReportParity:
             _metric(report, "tour_readiness.days_since_60k_ride").missing_reason
             is MissingReason.NO_DATA
         )
-        assert _table(report, "heart_rate.zone_time_overview")[1] == (0.0, 0.0, 0.0, 0.0, 0.0)
 
     def test_empty_report(self) -> None:
         report = overview_report((), (), athlete=ATHLETE, tz=TZ, days=28, today=TODAY)
         expected = [
             name
             for name in OVERVIEW_NAMES
-            if name
-            not in {
-                "training_form.ctl_by_day",
-                "training_form.atl_by_day",
-                "training_form.tsb_by_day",
-                "training_load.daily_hr_trimp",
-            }
-            and (name not in WEEKLY_NAMES or name == "activity.count_by_week")
+            if name.startswith(("athlete_profile.", "data_quality."))
+            or name in {"activity.count_by_day", "activity.count_by_week"}
         ]
         assert _names(report) == expected
-        assert _scalar(report, "training_form.ctl") == 0.0
-        assert _scalar(report, "training_form.classification") == "optimal"
-        assert _scalar(report, "training_form.is_warmup") is True
-        assert _scalar(report, "training_form.load_confidence_ratio") == 1.0
-        assert _scalar(report, "tour_readiness.days_since_60k_ride") is None
         assert _scalar(report, "data_quality.activity_count") == 0
-        assert _table(report, "heart_rate.zone_time_overview")[1] == (0.0, 0.0, 0.0, 0.0, 0.0)
         assert all(
             metric.value is None
             for metric in report.metrics

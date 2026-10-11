@@ -127,26 +127,48 @@ def overview_report(
         else period
     )
     form = training_form_from(records, tz=tz, days=days, sport=sport, today=today)
+    form_records = (
+        record for record in records if sport is None or record.sport.casefold() == sport.casefold()
+    )
+    form_quantities = {
+        quantity for record in form_records for quantity in record.present_quantities
+    }
+    daily_load_values = {
+        row.date: row.load_value if row.metric_counts.load_values else None
+        for row in selected_daily
+    }
 
     metrics: list[Metric] = []
     metrics.extend(athlete_profile(athlete))
     metrics.extend(_daily_metrics(selected_daily, period))
     metrics.extend(_weekly_metrics(selected_weekly, weekly_period))
-    metrics.extend(_form_metrics(form, today, str(tz)))
-    metrics.extend(data_quality_metrics(records, source_index, AllTimePeriod()))
-    zone_values = _zone_distribution(selected_daily)
-    metrics.append(
-        table_metric(
-            "heart_rate.zone_time_overview",
-            period,
-            Axis(name="heart_rate_zone", values=tuple(zone_values)),
-            tuple(zone_values.values()),
-            description="Total active time in each configured heart-rate zone for this overview.",
-            unit="s",
-            time_basis=TimeBasis.ACTIVE_TIME,
-            kind=MetricKind.CALCULATED,
+    metrics.extend(
+        _form_metrics(
+            form,
+            today,
+            str(tz),
+            has_heart_rate="heart_rate" in form_quantities,
+            has_distance="distance" in form_quantities,
+            daily_load_values=daily_load_values,
         )
     )
+    metrics.extend(data_quality_metrics(records, source_index, AllTimePeriod()))
+    if any(row.metric_counts.heart_rate_available for row in selected_daily):
+        zone_values = _zone_distribution(selected_daily)
+        metrics.append(
+            table_metric(
+                "heart_rate.zone_time_overview",
+                period,
+                Axis(name="heart_rate_zone", values=tuple(zone_values)),
+                tuple(zone_values.values()),
+                description=(
+                    "Total active time in each configured heart-rate zone for this overview."
+                ),
+                unit="s",
+                time_basis=TimeBasis.ACTIVE_TIME,
+                kind=MetricKind.CALCULATED,
+            )
+        )
     return MetricReport(metrics=tuple(metrics))
 
 
@@ -308,45 +330,58 @@ def _weekly_metrics(
 
 def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> tuple[Metric, ...]:
     axis = Axis(name="date", values=tuple(row.date.isoformat() for row in rows))
-    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind], ...] = (
+    has_duration = any(row.metric_counts.duration_values for row in rows)
+    has_distance = any(row.metric_counts.distance_available for row in rows)
+    has_elevation = any(row.metric_counts.elevation_available for row in rows)
+    has_heart_rate = any(row.metric_counts.heart_rate_available for row in rows)
+    specs: tuple[tuple[str, str, str, tuple[MetricScalar | None, ...], MetricKind, bool], ...] = (
         (
             "activity.count_by_day",
             "Number of accepted activities that started on each local date.",
             "activities",
             tuple(row.activity_count for row in rows),
             MetricKind.CALCULATED,
+            True,
         ),
         (
             "activity.duration_by_day",
             "Total elapsed activity duration on each local date.",
             "s",
-            tuple(row.duration_s for row in rows),
+            tuple(row.duration_s if row.metric_counts.duration_values else None for row in rows),
             MetricKind.CALCULATED,
+            has_duration,
         ),
         (
             "activity.distance_by_day",
             "Total recorded distance on each local date.",
             "m",
-            tuple(row.distance_m for row in rows),
+            tuple(row.distance_m if row.metric_counts.distance_values else None for row in rows),
             MetricKind.CALCULATED,
+            has_distance,
         ),
         (
             "activity.elevation_gain_by_day",
             "Total positive elevation gain on each local date.",
             "m",
-            tuple(row.elevation_gain_m for row in rows),
+            tuple(
+                row.elevation_gain_m if row.metric_counts.elevation_values else None for row in rows
+            ),
             MetricKind.CALCULATED,
+            has_elevation,
         ),
         (
             "training_load.hr_trimp_by_day",
             "Sum of estimated Banister heart-rate load on each local date.",
             "TRIMP",
-            tuple(row.load_value for row in rows),
+            tuple(row.load_value if row.metric_counts.load_values else None for row in rows),
             MetricKind.ESTIMATED,
+            has_heart_rate,
         ),
     )
     metrics = []
-    for name, description, unit, values, kind in specs:
+    for name, description, unit, values, kind, include in specs:
+        if not include:
+            continue
         load_provenance = name == "training_load.hr_trimp_by_day"
         metrics.append(
             table_metric(
@@ -366,29 +401,25 @@ def _daily_metrics(rows: Sequence[DailySummaryRow], period: DateRangePeriod) -> 
         )
     zone_axis = Axis(name="heart_rate_zone", values=tuple(f"zone_{i}" for i in range(1, 6)))
     matrix_values = tuple(
-        tuple(row.zone_seconds()[f"zone_{zone}"] for row in rows) for zone in range(1, 6)
-    )
-    metrics.append(
-        Metric(
-            name="heart_rate.zone_matrix_by_day",
-            description="Active time in each configured heart-rate zone on each local date.",
-            period=period,
-            value=None,
-            kind=MetricKind.CALCULATED,
-            unit="s",
-            missing_reason=MissingReason.NO_DATA,
-            time_basis=TimeBasis.ACTIVE_TIME,
+        tuple(
+            row.zone_seconds()[f"zone_{zone}"]
+            if row.metric_counts.heart_rate_zone_cells[zone - 1]
+            else None
+            for row in rows
         )
-        if not rows
-        else _matrix_metric(
-            "heart_rate.zone_matrix_by_day",
-            "Active time in each configured heart-rate zone on each local date.",
-            period,
-            axis,
-            zone_axis,
-            matrix_values,
-        )
+        for zone in range(1, 6)
     )
+    if has_heart_rate:
+        metrics.append(
+            _matrix_metric(
+                "heart_rate.zone_matrix_by_day",
+                "Active time in each configured heart-rate zone on each local date.",
+                period,
+                axis,
+                zone_axis,
+                matrix_values,
+            )
+        )
     return tuple(metrics)
 
 
@@ -411,7 +442,15 @@ def _matrix_metric(
     )
 
 
-def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tuple[Metric, ...]:
+def _form_metrics(
+    result: TrainingFormResult,
+    today: date,
+    timezone: str,
+    *,
+    has_heart_rate: bool,
+    has_distance: bool,
+    daily_load_values: dict[date, float | None],
+) -> tuple[Metric, ...]:
     snapshot = SnapshotPeriod(at=today)
     values: tuple[tuple[str, str, MetricScalar, str], ...] = (
         (
@@ -509,12 +548,18 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
             ),
         ):
             load_provenance = name == "training_load.daily_hr_trimp"
+            trend_values = tuple(
+                daily_load_values.get(point.date, point.daily_load)
+                if load_provenance
+                else getattr(point, attr)
+                for point in result.trend_points
+            )
             metrics.append(
                 table_metric(
                     name,
                     period,
                     axis,
-                    tuple(getattr(point, attr) for point in result.trend_points),
+                    trend_values,
                     description=description,
                     unit="TRIMP",
                     kind=MetricKind.CALCULATED,
@@ -524,15 +569,24 @@ def _form_metrics(result: TrainingFormResult, today: date, timezone: str) -> tup
                     coefficient_set=LOAD_COEFFICIENT_SET if load_provenance else None,
                 )
             )
-    return tuple(metrics)
+    return tuple(
+        metric
+        for metric in metrics
+        if (has_heart_rate or not metric.name.startswith(("training_form.", "training_load.")))
+        and (has_distance or not metric.name.startswith("tour_readiness."))
+    )
 
 
-def _zone_distribution(rows: Sequence[DailySummaryRow]) -> dict[str, float]:
-    zones = {f"zone_{index}": 0.0 for index in range(1, 6)}
+def _zone_distribution(rows: Sequence[DailySummaryRow]) -> dict[str, float | None]:
+    totals = [0.0] * 5
+    counts = [0] * 5
     for row in rows:
-        for name, seconds in row.zone_seconds().items():
-            zones[name] += seconds
-    return zones
+        for index, seconds in enumerate(row.zone_seconds().values()):
+            if not row.metric_counts.heart_rate_zone_cells[index]:
+                continue
+            totals[index] += seconds
+            counts[index] += 1
+    return {f"zone_{index + 1}": totals[index] if counts[index] else None for index in range(5)}
 
 
 def _in_range(value: date, start: date | None, end: date | None) -> bool:

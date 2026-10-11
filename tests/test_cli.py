@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -265,6 +265,89 @@ class TestOverviewCommand:
         assert json_metric(overview, "athlete_profile.max_heart_rate")["value"]["value"] == 180
         assert json_metric(overview, "data_quality.activity_count")["value"]["value"] == 2
         assert json_metric(overview, "training_form.ctl_by_day")["value"]["shape"] == "table"
+
+    def test_overview_quantity_aware_json(
+        self,
+        config_path: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        start = (datetime.now(UTC) - timedelta(days=3)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
+        server = make_server(
+            tmp_path,
+            {
+                "measured.fit": stub_activity_content(
+                    start, "cycling", 1800.0, 10000.0, heart_rates=[120] * 31
+                ),
+                "without-heart-rate-same-day.fit": stub_activity_content(
+                    start + timedelta(hours=1), "cycling", 1800.0, 20000.0
+                ),
+                "without-heart-rate-next-day.fit": stub_activity_content(
+                    start + timedelta(days=1), "cycling", 1800.0, 30000.0
+                ),
+            },
+        )
+        server.sync_service.sync()
+        monkeypatch.setattr(cli_app, "_service", lambda _config: server)
+
+        assert main(["-c", str(config_path), "overview", "--days", "14", "--no-sync"]) == 0
+        report = _stdout_payload(capsys)
+
+        assert json_metric(report, "activity.count_by_day")["value"]["values"] == [2, 1]
+        assert json_metric(report, "activity.distance_by_day")["value"]["values"] == [
+            30_000.0,
+            30_000.0,
+        ]
+        daily_load = json_metric(report, "training_load.hr_trimp_by_day")
+        assert daily_load["value"]["values"][0] is not None
+        assert daily_load["value"]["values"][1] is None
+        assert all(
+            cell is None
+            for row in json_metric(report, "heart_rate.zone_matrix_by_day")["value"]["values"]
+            for cell in row[1:]
+        )
+        assert json_metric(report, "data_quality.activity_count")["value"]["value"] == 3
+
+    def test_overview_omits_heart_rate_metrics_without_heart_rate_samples(
+        self,
+        config_path: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        start = (datetime.now(UTC) - timedelta(days=3)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
+        server = make_server(
+            tmp_path,
+            {"without-heart-rate.fit": stub_activity_content(start, "cycling", 1800.0, 10000.0)},
+        )
+        server.sync_service.sync()
+        monkeypatch.setattr(cli_app, "_service", lambda _config: server)
+
+        assert main(["-c", str(config_path), "overview", "--days", "14", "--no-sync"]) == 0
+        report = _stdout_payload(capsys)
+        names = {metric["name"] for metric in json_metrics(report)}
+
+        assert (
+            not {
+                "training_load.hr_trimp_by_day",
+                "heart_rate.zone_matrix_by_day",
+                "heart_rate.zone_time_overview",
+                "training_load.hr_trimp_by_week",
+                "heart_rate.zone_1_time_by_week",
+                "training_form.ctl",
+                "training_form.ctl_by_day",
+                "training_load.daily_hr_trimp",
+            }
+            & names
+        )
+        assert "activity.distance_by_day" in names
+        assert "tour_readiness.rolling_7d_distance" in names
+        assert json_metric(report, "data_quality.mean_hr_coverage_ratio")["value"]["value"] == 0
 
 
 class TestErrorExits:

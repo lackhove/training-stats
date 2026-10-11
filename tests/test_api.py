@@ -381,6 +381,74 @@ class TestSummaryEndpoints:
         assert json_metric(report, "data_quality.activity_count")["value"]["value"] == 2
         assert json_metric(report, "training_form.ctl")["period"]["kind"] == "snapshot"
 
+    def test_overview_aggregates_only_measured_quantities(self, tmp_path: Path) -> None:
+        server = make_server(
+            tmp_path,
+            {
+                "measured.fit": stub_activity_content(
+                    T0, "cycling", 1800.0, 10000.0, heart_rates=[120] * 31
+                ),
+                "without-heart-rate-same-day.fit": stub_activity_content(
+                    T0 + timedelta(hours=1), "cycling", 1800.0, 20000.0
+                ),
+                "without-heart-rate-next-day.fit": stub_activity_content(
+                    T0 + timedelta(days=1), "cycling", 1800.0, 30000.0
+                ),
+            },
+        )
+        server.sync_service.sync()
+
+        with _client(server) as client:
+            report = client.get("/overview", params={"days": 14}).json()
+
+        assert json_metric(report, "activity.count_by_day")["value"]["values"] == [2, 1]
+        distance = json_metric(report, "activity.distance_by_day")
+        assert distance["value"]["values"] == [30_000.0, 30_000.0]
+        assert distance["unit"] == "m"
+        assert distance["description"] == "Total recorded distance on each local date."
+        daily_load = json_metric(report, "training_load.hr_trimp_by_day")
+        assert daily_load["value"]["values"][0] is not None
+        assert daily_load["value"]["values"][1] is None
+        assert daily_load["method"] == "hr_trimp"
+        assert all(
+            cell is None
+            for row in json_metric(report, "heart_rate.zone_matrix_by_day")["value"]["values"]
+            for cell in row[1:]
+        )
+        assert json_metric(report, "heart_rate.zone_time_overview")["value"]["values"][1] > 0
+        assert json_metric(report, "data_quality.activity_count")["value"]["value"] == 3
+        assert json_metric(report, "data_quality.mean_hr_coverage_ratio")["value"]["value"] > 0
+
+    def test_overview_omits_heart_rate_aggregates_without_heart_rate_samples(
+        self, tmp_path: Path
+    ) -> None:
+        server = make_server(
+            tmp_path,
+            {"without-heart-rate.fit": stub_activity_content(T0, "cycling", 1800.0, 10000.0)},
+        )
+        server.sync_service.sync()
+
+        with _client(server) as client:
+            report = client.get("/overview", params={"days": 14}).json()
+
+        names = {metric["name"] for metric in report["metrics"]}
+        assert (
+            not {
+                "training_load.hr_trimp_by_day",
+                "heart_rate.zone_matrix_by_day",
+                "heart_rate.zone_time_overview",
+                "training_load.hr_trimp_by_week",
+                "heart_rate.zone_1_time_by_week",
+                "training_form.ctl",
+                "training_form.ctl_by_day",
+                "training_load.daily_hr_trimp",
+            }
+            & names
+        )
+        assert "activity.distance_by_day" in names
+        assert "tour_readiness.rolling_7d_distance" in names
+        assert json_metric(report, "data_quality.mean_hr_coverage_ratio")["value"]["value"] == 0
+
     def test_weekly_and_overview_sync_first(self, tmp_path: Path) -> None:
         server = make_server(tmp_path, _stub_files())
         with _client(server) as client:
