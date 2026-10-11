@@ -9,6 +9,7 @@ from datetime import datetime
 from ..domain.analytics.activities import AnalyzedActivity
 from ..domain.analytics.segments import analyze_segments
 from ..domain.errors import FitParseError
+from ..domain.fit.quantities import QuantityAvailability
 from ..domain.fit.repair import repair_timeline
 from ..domain.models import (
     STATUS_DUPLICATE,
@@ -222,4 +223,5 @@ def _activity_record(
         source_path=activity.source_path,
         analysis_version=analysis_version,
         metrics=item.metrics,
+        present_quantities=tuple(sorted(QuantityAvailability.from_activity(activity).present)),
     )

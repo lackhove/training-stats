@@ -585,7 +585,7 @@ def test_weekly_report_wire_json_hoists_shared_period() -> None:
         (Metric, MetricWire, frozenset()),
         (Metric, MetricWithoutPeriodWire, frozenset({"period"})),
         (MetricReport, MetricReportWire, frozenset()),
-        (ActivityRecord, ActivityRecordWire, frozenset()),
+        (ActivityRecord, ActivityRecordWire, frozenset({"present_quantities"})),
         (ActivitySummary, ActivitySummaryWire, frozenset()),
     ],
     ids=["metric", "metric-without-period", "metric-report", "activity-record", "summary"],

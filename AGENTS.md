@@ -205,3 +205,17 @@ These are core design decisions — do not violate them casually:
   `.env` file.
 - `data/` (cache output) and `config.toml` are gitignored; never commit
   caches, credentials, or personal FIT data.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in this repo's GitHub Issues; use `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context layout. See `docs/agents/domain.md`.

@@ -70,14 +70,14 @@ EXPECTED_STATISTICS_COUNTS = {
 }
 
 EXPECTED_WIRE_DIGESTS = {
-    "normal": "a7e4d0139e34c41bf1e2baa46808416f6a4522e254a18eee2351d2aced563eb1",
-    "no_cadence": "98558976ed5a1cfa883e0a29d3c33028f69888e26a1fa7ef418c72bfb9a245f9",
-    "sparse_cadence": "52af255f32c99e38a14d700c8b315b346eba7cdf2bf5ccadcd653f9e184376ff",
-    "no_power": "2cefe9bfa90033eb4b22829945e4165f9763ff37269ecb01210098355dff1342",
-    "sparse_power": "be09e8fd14d910e449d1cc83cf6c1023ada890f1bb049c1e5324b1589e8683bf",
-    "paused": "c675f553fef90cb595b36e0319c6e7b76eff78aab43093076ae6f6ede648e231",
-    "empty": "4dd5605f6d1977c33dcfd43cfb52f54aba2216e1c0bdd6b4c24bab721da79293",
-    "empty_thresholds": "ec3b219e5b2131c74b162c7b52be3b42891ade5390efe28b412c71f40ac7e7a5",
+    "normal": "4964c3a3f0db0d03533c84dac0f77becb43c92d56ee95b02586aee61780ecbc8",
+    "no_cadence": "8e1775ef86bf8b34a3812bfb9f3dbabb9f5a6653de4372c7a255cadbcad2fc1c",
+    "sparse_cadence": "a31fb1e4d3bf2b404deed14a18f1a0f7664c87f5718388c7e389f4e86de8756e",
+    "no_power": "777e4bbf1ef652ba62b4ae9bb54d1d51f9610c9f92adf977764a8892cbfcfdb6",
+    "sparse_power": "a65afc7e7cb2e19ab36737b16b8ffa50a848dfd408e46e8a3ef2c6203392b7ce",
+    "paused": "1543b5e7ff12b48b346bd6dbae98e83988c3b9a03aa139bc3ab1c07cad5985a7",
+    "empty": "ff2dad58b10c6d86be192aa2fb11f014ab2d87f43df7d133dfe4388682c94845",
+    "empty_thresholds": "2283b529a35e36d28920dbc9ec964ff1df1686ec3692579ad9b12503aa0515e2",
 }
 
 EXPECTED_NORMAL_NAMES = (

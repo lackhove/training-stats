@@ -14,7 +14,7 @@ LOCK_FILE = "cache.lock"
 CACHE_FORMAT_VERSION = 2
 
 # Cache-invalidation key for per-activity metric semantics.
-ANALYSIS_VERSION_VALUE = "10"
+ANALYSIS_VERSION_VALUE = "11"
 
 
 def effective_analysis_version(quality: QualityConfig) -> str:
